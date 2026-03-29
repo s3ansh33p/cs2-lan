@@ -82,6 +82,45 @@ networkingMode=mirrored
 
 Then restart WSL: `wsl --shutdown` in PowerShell.
 
+Open the firewall for LAN players (run as Administrator in PowerShell):
+
+```powershell
+.\cs2-firewall.ps1 enable                # allow game ports (27015-27030)
+.\cs2-firewall.ps1 enable -WebPort 8080  # also open the web panel port
+.\cs2-firewall.ps1 disable               # remove all rules when done
+```
+
+## Web Panel
+
+An optional web interface for managing servers from any device on the LAN.
+
+```bash
+cd panel
+make build
+./cs2-panel --password <secret> --compose-file ../docker-compose.yml
+```
+
+Visit `http://<your-lan-ip>:8080` from any device on the network. Features:
+
+- Dashboard with all running servers
+- Launch and stop servers
+- Live container logs (WebSocket)
+- RCON console with autocomplete
+- Real-time scoreboard, killfeed with weapon icons, and player equipment
+- Team scores and round tracking
+- Per-player money, weapons, grenades, armor, and bomb status
+
+Options:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--password` | (required) | Panel access password |
+| `--port` | `8080` | HTTP listen port |
+| `--compose-file` | `./docker-compose.yml` | Path to compose file |
+| `--rcon-default` | `changeme` | Default RCON password for new servers |
+
+If using WSL2, open the web port in the firewall: `.\cs2-firewall.ps1 enable -WebPort 8080`
+
 ## Update game files
 
 Stop all running servers first, then update:
