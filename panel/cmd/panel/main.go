@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 
 	"cs2-panel/internal/auth"
 	"cs2-panel/internal/docker"
+	"cs2-panel/internal/gametracker"
 	"cs2-panel/internal/rcon"
 	"cs2-panel/internal/web"
 )
@@ -45,9 +47,19 @@ func main() {
 	rm := rcon.NewManager()
 	defer rm.CloseAll()
 
+	tm := gametracker.NewManager(
+		func(ctx context.Context, name string) (<-chan string, func(), error) {
+			return dc.StreamLogLines(ctx, name)
+		},
+		func(addr, password, command string) (string, error) {
+			return rm.Execute(addr, password, command)
+		},
+	)
+	defer tm.StopAll()
+
 	a := auth.New(*password)
 
-	h, err := web.NewHandler(dc, rm, absCompose, *defaultRCON)
+	h, err := web.NewHandler(dc, rm, tm, absCompose, *defaultRCON)
 	if err != nil {
 		log.Fatalf("handler: %v", err)
 	}

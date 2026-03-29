@@ -43,10 +43,13 @@
             <div class="text-slate-500 text-xs">Connected to {{.Server.Name}} on port {{.Server.Port}}</div>
         </div>
         <form id="rcon-form" hx-post="/server/{{.Server.Name}}/rcon" hx-target="#rcon-output" hx-swap="beforeend"
-            class="border-t border-slate-700 p-2 flex gap-2">
+            class="border-t border-slate-700 p-2 flex gap-2 relative">
             <span class="text-orange-400 py-2 pl-2">&gt;</span>
-            <input type="text" name="command" autocomplete="off" placeholder="Enter RCON command..."
-                class="flex-1 bg-transparent border-none text-white focus:outline-none text-sm">
+            <div class="flex-1 relative">
+                <input type="text" name="command" id="rcon-input" autocomplete="off" placeholder="Enter RCON command..."
+                    class="w-full bg-transparent border-none text-white focus:outline-none text-sm">
+                <div id="rcon-suggestions" class="hidden absolute bottom-full left-0 w-full bg-slate-700 border border-slate-600 rounded-t max-h-48 overflow-y-auto"></div>
+            </div>
             <button type="submit" class="bg-slate-700 hover:bg-slate-600 text-white rounded px-3 py-1 text-sm">Send</button>
         </form>
     </div>
@@ -67,11 +70,21 @@
     </div>
 </div>
 
-<!-- Player List -->
+<!-- Players & Scoreboard -->
 <div class="mt-6 bg-slate-800 border border-slate-700 rounded-lg">
     <div class="px-4 py-3 border-b border-slate-700 text-sm font-medium text-slate-300">Players</div>
     <div id="player-list" hx-get="/server/{{.Server.Name}}/players" hx-trigger="every 5s" hx-swap="innerHTML">
         {{template "player_list.html" .}}
+    </div>
+</div>
+
+<div class="mt-6">
+    <!-- Killfeed -->
+    <div class="bg-slate-800 border border-slate-700 rounded-lg" style="max-height: 400px;">
+        <div class="px-4 py-3 border-b border-slate-700 text-sm font-medium text-slate-300">Killfeed</div>
+        <div id="killfeed" hx-get="/server/{{.Server.Name}}/killfeed" hx-trigger="every 3s" hx-swap="innerHTML" class="overflow-y-auto" style="max-height: 350px;">
+            {{template "killfeed.html" .}}
+        </div>
     </div>
 </div>
 

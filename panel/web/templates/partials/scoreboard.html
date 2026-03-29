@@ -1,38 +1,32 @@
-{{define "player_list.html"}}
-{{if .Players}}
+{{define "scoreboard.html"}}
+{{if .Scoreboard}}
 <table class="w-full text-sm">
     <thead>
         <tr class="border-b border-slate-700 text-slate-400 text-left">
-            <th class="px-4 py-2 font-medium">Name</th>
+            <th class="px-4 py-2 font-medium">Player</th>
             <th class="px-4 py-2 font-medium text-center">K</th>
             <th class="px-4 py-2 font-medium text-center">D</th>
             <th class="px-4 py-2 font-medium text-center">A</th>
             <th class="px-4 py-2 font-medium text-center">K/D</th>
-            <th class="px-4 py-2 font-medium">Ping</th>
-            <th class="px-4 py-2 font-medium">Time</th>
         </tr>
     </thead>
     <tbody>
-        {{range .Players}}
-        <tr class="border-b border-slate-700/50{{if not .Online}} opacity-50{{end}}">
-            <td class="px-4 py-2 text-white">
-                {{if .IsBot}}<span class="text-slate-400">(BOT)</span> {{end}}{{.Name}}{{if not .Online}} <span class="text-slate-500 text-xs">(offline)</span>{{end}}
-            </td>
+        {{range .Scoreboard}}
+        <tr class="border-b border-slate-700/50">
+            <td class="px-4 py-2 text-white">{{.Name}}</td>
             <td class="px-4 py-2 text-green-400 text-center">{{.Kills}}</td>
             <td class="px-4 py-2 text-red-400 text-center">{{.Deaths}}</td>
             <td class="px-4 py-2 text-yellow-400 text-center">{{.Assists}}</td>
             <td class="px-4 py-2 text-slate-300 text-center">
                 {{if eq .Deaths 0}}-{{else}}{{printf "%.1f" (divf .Kills .Deaths)}}{{end}}
             </td>
-            <td class="px-4 py-2 text-slate-300">{{if .Online}}{{if .IsBot}}-{{else}}{{.Ping}}ms{{end}}{{else}}-{{end}}</td>
-            <td class="px-4 py-2 text-slate-300">{{if .Online}}{{.Duration}}{{else}}-{{end}}</td>
         </tr>
         {{end}}
     </tbody>
 </table>
 {{else}}
 <div class="px-4 py-8 text-center text-slate-500 text-sm">
-    {{if .Status}}No players connected{{else}}Waiting for server...{{end}}
+    No kills recorded yet
 </div>
 {{end}}
 {{end}}

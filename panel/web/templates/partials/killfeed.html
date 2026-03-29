@@ -1,0 +1,18 @@
+{{define "killfeed.html"}}
+{{if .Killfeed}}
+<div class="space-y-1 p-4 text-sm">
+    {{range .Killfeed}}
+    <div class="flex items-center gap-2">
+        <span class="text-white">{{.Killer}}</span>
+        <span class="text-slate-500 text-xs">{{.Weapon}}{{if .Headshot}} HS{{end}}</span>
+        <span class="text-red-400">{{.Victim}}</span>
+        <span class="text-slate-600 text-xs ml-auto">{{.Time.Format "15:04:05"}}</span>
+    </div>
+    {{end}}
+</div>
+{{else}}
+<div class="px-4 py-8 text-center text-slate-500 text-sm">
+    No kills yet
+</div>
+{{end}}
+{{end}}

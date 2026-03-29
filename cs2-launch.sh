@@ -72,6 +72,9 @@ docker compose run -d \
     -e CS2_PW="${PASSWORD}" \
     -e TV_ENABLE="${TV}" \
     -e TV_PORT="${TV_PORT}" \
+    -e CS2_LOG=on \
+    -e CS2_LOG_DETAIL=3 \
+    -e CS2_LOG_ECHO=1 \
     "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" \
     cs2
 

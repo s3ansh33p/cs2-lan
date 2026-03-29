@@ -56,6 +56,9 @@ func (c *Client) Launch(ctx context.Context, req LaunchRequest, composeFile stri
 		"-e", "CS2_PW=" + req.Password,
 		"-e", "TV_ENABLE=" + tvEnable,
 		"-e", "TV_PORT=" + strconv.Itoa(tvPort),
+		"-e", "CS2_LOG=on",
+		"-e", "CS2_LOG_DETAIL=3",
+		"-e", "CS2_LOG_ECHO=1",
 		"cs2",
 	}
 

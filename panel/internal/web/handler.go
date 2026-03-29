@@ -6,10 +6,12 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
 	"cs2-panel/internal/docker"
+	"cs2-panel/internal/gametracker"
 	"cs2-panel/internal/rcon"
 	webfs "cs2-panel/web"
 )
@@ -17,12 +19,13 @@ import (
 type Handler struct {
 	docker      *docker.Client
 	rcon        *rcon.Manager
+	tracker     *gametracker.Manager
 	composeFile string
 	defaultRCON string
 	pages       map[string]*template.Template
 }
 
-func NewHandler(dc *docker.Client, rm *rcon.Manager, composeFile, defaultRCON string) (*Handler, error) {
+func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, composeFile, defaultRCON string) (*Handler, error) {
 	tmplFS, err := fs.Sub(webfs.Assets, "templates")
 	if err != nil {
 		return nil, fmt.Errorf("template fs: %w", err)
@@ -30,6 +33,12 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, composeFile, defaultRCON st
 
 	funcMap := template.FuncMap{
 		"upper": strings.ToUpper,
+		"divf": func(a, b int) float64 {
+			if b == 0 {
+				return 0
+			}
+			return float64(a) / float64(b)
+		},
 	}
 
 	// Parse base layout + partials as a clonable base
@@ -62,10 +71,13 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, composeFile, defaultRCON st
 	pages["server_rows.html"] = base
 	pages["player_list.html"] = base
 	pages["rcon_output.html"] = base
+	pages["scoreboard.html"] = base
+	pages["killfeed.html"] = base
 
 	return &Handler{
 		docker:      dc,
 		rcon:        rm,
+		tracker:     tm,
 		composeFile: composeFile,
 		defaultRCON: defaultRCON,
 		pages:       pages,
@@ -241,10 +253,15 @@ func (h *Handler) ServerDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Start tracking this server for killfeed/scoreboard via UDP log
+	state := h.tracker.TrackServer(name, info.Port, info.RCONPassword)
+
 	h.render(w, "server.html", map[string]any{
-		"Title":  info.Name,
-		"Server": info,
-		"Status": status,
+		"Title":      info.Name,
+		"Server":     info,
+		"Status":     status,
+		"Scoreboard": state.GetScoreboard(),
+		"Killfeed":   state.GetKillfeed(20),
 	})
 }
 
@@ -270,9 +287,13 @@ func (h *Handler) PlayersPartial(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Merge RCON player list with tracker K/D/A stats
+	players := mergePlayerData(name, status, h.tracker)
+
 	h.render(w, "player_list.html", map[string]any{
-		"Server": info,
-		"Status": status,
+		"Server":  info,
+		"Status":  status,
+		"Players": players,
 	})
 }
 
@@ -311,18 +332,125 @@ func (h *Handler) RCONCommand(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) ScoreboardPartial(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	state := h.tracker.GetState(name)
+	var scoreboard []gametracker.PlayerStats
+	if state != nil {
+		scoreboard = state.GetScoreboard()
+	}
+	h.render(w, "scoreboard.html", map[string]any{
+		"Scoreboard": scoreboard,
+	})
+}
+
+func (h *Handler) KillfeedPartial(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	state := h.tracker.GetState(name)
+	var killfeed []gametracker.Kill
+	if state != nil {
+		killfeed = state.GetKillfeed(20)
+	}
+	h.render(w, "killfeed.html", map[string]any{
+		"Killfeed": killfeed,
+	})
+}
+
 func (h *Handler) StopServer(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+
+	h.tracker.StopTracking(name)
 
 	err := h.docker.StopServer(r.Context(), name)
 	if err != nil {
 		log.Printf("stop server %s: %v", name, err)
 	}
 
-	// If htmx request, return empty to remove the row
+	// Always redirect to dashboard
 	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", "/")
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// CombinedPlayer merges RCON status info with tracker K/D/A.
+type CombinedPlayer struct {
+	Name     string
+	IsBot    bool
+	Ping     int
+	Duration string
+	Address  string
+	Kills    int
+	Deaths   int
+	Assists  int
+	Score    int
+	Online   bool // true if currently connected
+}
+
+func mergePlayerData(serverName string, status *rcon.StatusInfo, tracker *gametracker.Manager) []CombinedPlayer {
+	// Build stats map from tracker
+	statsMap := make(map[string]*gametracker.PlayerStats)
+	state := tracker.GetState(serverName)
+	if state != nil {
+		for _, ps := range state.GetScoreboard() {
+			ps := ps
+			statsMap[ps.Name] = &ps
+		}
+	}
+
+	seen := make(map[string]bool)
+	var players []CombinedPlayer
+
+	// First: online players from RCON status
+	if status != nil {
+		for _, p := range status.Players {
+			cp := CombinedPlayer{
+				Name:     p.Name,
+				IsBot:    p.IsBot,
+				Ping:     p.Ping,
+				Duration: p.Duration,
+				Address:  p.Address,
+				Online:   true,
+			}
+			if s, ok := statsMap[p.Name]; ok {
+				cp.Kills = s.Kills
+				cp.Deaths = s.Deaths
+				cp.Assists = s.Assists
+				cp.Score = s.Score()
+			}
+			players = append(players, cp)
+			seen[p.Name] = true
+		}
+	}
+
+	// Second: offline players who have stats (disconnected but played)
+	if state != nil {
+		for _, ps := range state.GetScoreboard() {
+			if !seen[ps.Name] {
+				players = append(players, CombinedPlayer{
+					Name:    ps.Name,
+					Kills:   ps.Kills,
+					Deaths:  ps.Deaths,
+					Assists: ps.Assists,
+					Score:   ps.Score(),
+					Online:  false,
+				})
+			}
+		}
+	}
+
+	// Sort: online first, then by score desc, then alphabetical
+	sort.Slice(players, func(i, j int) bool {
+		if players[i].Online != players[j].Online {
+			return players[i].Online
+		}
+		if players[i].Score != players[j].Score {
+			return players[i].Score > players[j].Score
+		}
+		return players[i].Name < players[j].Name
+	})
+
+	return players
 }
