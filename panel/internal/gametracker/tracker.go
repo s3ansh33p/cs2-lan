@@ -318,6 +318,14 @@ func (s *ServerState) GetScoreboard() []PlayerStats {
 	return result
 }
 
+// appendKill adds a kill to the ring buffer. Caller must hold s.mu.
+func (s *ServerState) appendKill(k Kill) {
+	s.kills = append(s.kills, k)
+	if len(s.kills) > s.maxKills {
+		s.kills = s.kills[len(s.kills)-s.maxKills:]
+	}
+}
+
 func (s *ServerState) ensurePlayer(name string) *PlayerStats {
 	if _, ok := s.stats[name]; !ok {
 		s.stats[name] = &PlayerStats{Name: name, Weapons: make(map[string]bool), Online: true, Alive: true}
@@ -332,10 +340,7 @@ func (s *ServerState) recordKill(killer, killerTeam, victim, victimTeam, weapon 
 		Victim: victim, VictimTeam: victimTeam,
 		Weapon: weapon, Headshot: headshot, Wallbang: wallbang,
 	}
-	s.kills = append(s.kills, k)
-	if len(s.kills) > s.maxKills {
-		s.kills = s.kills[len(s.kills)-s.maxKills:]
-	}
+	s.appendKill(k)
 	if killer != "" {
 		p := s.ensurePlayer(killer)
 		p.Kills++
@@ -361,10 +366,7 @@ func (s *ServerState) recordSuicide(name, team, weapon string) {
 		Victim: name, VictimTeam: team,
 		Weapon: weapon,
 	}
-	s.kills = append(s.kills, k)
-	if len(s.kills) > s.maxKills {
-		s.kills = s.kills[len(s.kills)-s.maxKills:]
-	}
+	s.appendKill(k)
 
 	p := s.ensurePlayer(name)
 	p.Deaths++
@@ -383,10 +385,7 @@ func (s *ServerState) recordBombKill(name, team string) {
 		Time: time.Now(), Killer: "", Victim: name, VictimTeam: team,
 		Weapon: "planted_c4",
 	}
-	s.kills = append(s.kills, k)
-	if len(s.kills) > s.maxKills {
-		s.kills = s.kills[len(s.kills)-s.maxKills:]
-	}
+	s.appendKill(k)
 	p := s.ensurePlayer(name)
 	p.Deaths++
 	p.Alive = false
@@ -670,12 +669,7 @@ func (s *ServerState) parseRoundStats(lines []string) {
 
 func (s *ServerState) addSystemMessage(msg string) {
 	s.mu.Lock()
-	s.kills = append(s.kills, Kill{
-		Time: time.Now(), IsSystem: true, Message: msg,
-	})
-	if len(s.kills) > s.maxKills {
-		s.kills = s.kills[len(s.kills)-s.maxKills:]
-	}
+	s.appendKill(Kill{Time: time.Now(), IsSystem: true, Message: msg})
 	s.mu.Unlock()
 	s.notify()
 }
@@ -688,14 +682,7 @@ func (s *ServerState) resetWithMessage(reason string) {
 	s.tScore = 0
 	s.rounds = nil
 	s.halfRound = 0
-	s.kills = append(s.kills, Kill{
-		Time:     time.Now(),
-		IsSystem: true,
-		Message:  reason,
-	})
-	if len(s.kills) > s.maxKills {
-		s.kills = s.kills[len(s.kills)-s.maxKills:]
-	}
+	s.appendKill(Kill{Time: time.Now(), IsSystem: true, Message: reason})
 	s.mu.Unlock()
 	s.notify()
 }
@@ -972,6 +959,11 @@ func parseLine(line string, state *ServerState) {
 		state.mu.Lock()
 		state.jsonBuf = append(state.jsonBuf, line)
 		state.mu.Unlock()
+		return
+	}
+
+	// Early bailout: all game events we parse contain a quoted string
+	if !strings.Contains(line, `"`) {
 		return
 	}
 

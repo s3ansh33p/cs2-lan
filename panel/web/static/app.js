@@ -177,7 +177,7 @@ function renderDashboard(servers) {
         var s = servers[i];
         var statusText = s.status === 'running'
             ? '<span class="text-green-400 text-xs">Running</span>'
-            : '<span class="text-slate-400 text-xs">' + esc(s.status) + '</span>';
+            : '<span class="text-slate-400 text-xs">' + s.status + '</span>';
 
         var mapName = s.map || '-';
         var scoreHtml = '';
@@ -193,10 +193,10 @@ function renderDashboard(servers) {
         var modeLabel = s.mode ? s.mode.charAt(0).toUpperCase() + s.mode.slice(1) : '-';
 
         // Card layout (works on all screen sizes)
-        html += '<a href="/server/' + esc(s.name) + '" class="block bg-slate-800 border border-slate-700 rounded-lg p-4 hover:bg-slate-700/50 transition-colors">' +
+        html += '<a href="/server/' + s.name + '" class="block bg-slate-800 border border-slate-700 rounded-lg p-4 hover:bg-slate-700/50 transition-colors">' +
             '<div class="flex items-center justify-between mb-2">' +
                 '<div class="flex items-center gap-2">' +
-                    '<span class="text-orange-400 font-medium">' + esc(s.alias || s.name) + '</span>' +
+                    '<span class="text-orange-400 font-medium">' + (s.alias || s.name) + '</span>' +
                     '<span class="text-slate-500 text-xs">:' + s.port + '</span>' +
                 '</div>' +
                 '<div class="flex items-center gap-3">' +
@@ -205,8 +205,8 @@ function renderDashboard(servers) {
             '</div>' +
             '<div class="flex items-center justify-between">' +
                 '<div class="flex items-center gap-3 text-xs text-slate-300">' +
-                    '<span>' + esc(modeLabel) + '</span>' +
-                    '<span class="flex items-center gap-1"><img src="/static/icons/map/' + esc(mapName) + '.svg" class="h-4 w-4 opacity-60 rounded" onerror="this.style.display=\'none\'">' + esc(mapName) + '</span>' +
+                    '<span>' + modeLabel + '</span>' +
+                    '<span class="flex items-center gap-1"><img src="/static/icons/map/' + mapName + '.svg" class="h-4 w-4 opacity-60 rounded" onerror="this.style.display=\'none\'">' + mapName + '</span>' +
                     '<span>' + s.playerCount + '/' + s.maxPlayers + ' players</span>' +
                 '</div>' +
                 scoreHtml +
@@ -321,7 +321,7 @@ function playerEquipIcons(p) {
     }
     if (p.grenades) {
         for (var g = 0; g < p.grenades.length; g++) {
-            html += '<img src="/static/icons/equipment/' + esc(p.grenades[g]) + '.svg" class="h-4 opacity-60" title="' + esc(p.grenades[g]) + '" onerror="this.style.display=\'none\'">';
+            html += '<img src="/static/icons/equipment/' + p.grenades[g] + '.svg" class="h-4 opacity-60" title="' + p.grenades[g] + '" onerror="this.style.display=\'none\'">';
         }
     }
     return html;
@@ -359,7 +359,7 @@ function renderPlayers(players) {
         var isDead = showAlive && p.online && !p.alive;
         var opacity = !p.online ? ' opacity-50' : (isDead ? ' opacity-40' : '');
         var teamBadge = playerTeamBadge(p.team);
-        var name = esc(p.name);
+        var name = p.name;
         if (p.bot) name = '<span class="text-slate-400">(BOT)</span> ' + name;
         if (!p.online) name += ' <span class="text-slate-500 text-xs">(offline)</span>';
         if (isDead) name += ' <img src="/static/icons/ui/kill.svg" class="h-3.5 inline-block opacity-50" title="Dead">';
@@ -426,7 +426,7 @@ var _weaponAliases = {'c4': 'planted_c4', 'weapon_c4': 'planted_c4'};
 function weaponIcon(weapon) {
     if (!weapon) return '';
     var file = _weaponAliases[weapon] || weapon;
-    return '<img src="/static/icons/equipment/' + esc(file) + '.svg" alt="' + esc(weapon) + '" class="h-4 inline-block opacity-80" onerror="this.style.display=\'none\'">';
+    return '<img src="/static/icons/equipment/' + file + '.svg" alt="' + weapon + '" class="h-4 inline-block opacity-80" onerror="this.style.display=\'none\'">';
 }
 
 function teamColor(team) {
@@ -439,31 +439,31 @@ function renderKillEntry(k) {
     if (k.sys) {
         return '<div class="flex items-center gap-2 py-1">' +
             '<span class="flex-1 border-t border-slate-600"></span>' +
-            '<span class="text-orange-400 text-xs font-medium">' + esc(k.msg) + '</span>' +
+            '<span class="text-orange-400 text-xs font-medium">' + k.msg + '</span>' +
             '<span class="flex-1 border-t border-slate-600"></span>' +
-            '<span class="text-slate-600 text-xs">' + esc(k.time) + '</span>' +
+            '<span class="text-slate-600 text-xs">' + k.time + '</span>' +
             '</div>';
     }
     if (k.killer && k.killer === k.victim) {
         var tc = teamColor(k.vt);
         return '<div class="flex items-center gap-2">' +
-            '<span class="' + tc + ' text-xs">' + esc(k.victim) + '</span>' +
+            '<span class="' + tc + ' text-xs">' + k.victim + '</span>' +
             '<img src="/static/icons/deathnotice/icon_suicide.svg" class="h-4 inline-block opacity-80" alt="suicide">' +
             '<span class="flex items-center gap-1">' + weaponIcon(k.weapon) + '</span>' +
-            '<span class="text-slate-600 text-xs ml-auto">' + esc(k.time) + '</span>' +
+            '<span class="text-slate-600 text-xs ml-auto">' + k.time + '</span>' +
             '</div>';
     }
     var hsIcon = k.hs ? ' <img src="/static/icons/deathnotice/icon_headshot.svg" class="h-3.5 inline-block opacity-80" alt="HS">' : '';
     var wbIcon = k.wb ? ' <img src="/static/icons/deathnotice/penetrate.svg" class="h-3.5 inline-block opacity-80" alt="Wallbang">' : '';
-    var killerSide = '<span class="' + teamColor(k.kt) + ' text-xs">' + esc(k.killer) + '</span>';
+    var killerSide = '<span class="' + teamColor(k.kt) + ' text-xs">' + k.killer + '</span>';
     if (k.assist) {
-        killerSide += '<span class="text-slate-500 text-xs"> + </span><span class="' + teamColor(k.at) + ' text-xs">' + esc(k.assist) + '</span>';
+        killerSide += '<span class="text-slate-500 text-xs"> + </span><span class="' + teamColor(k.at) + ' text-xs">' + k.assist + '</span>';
     }
     return '<div class="flex items-center gap-2">' +
         '<span class="flex items-center gap-1">' + killerSide + '</span>' +
         '<span class="flex items-center gap-1">' + weaponIcon(k.weapon) + hsIcon + wbIcon + '</span>' +
-        '<span class="' + teamColor(k.vt) + ' text-xs">' + esc(k.victim) + '</span>' +
-        '<span class="text-slate-600 text-xs ml-auto">' + esc(k.time) + '</span>' +
+        '<span class="' + teamColor(k.vt) + ' text-xs">' + k.victim + '</span>' +
+        '<span class="text-slate-600 text-xs ml-auto">' + k.time + '</span>' +
         '</div>';
 }
 
@@ -490,12 +490,6 @@ function appendKills(kills) {
     }
 }
 
-function esc(s) {
-    if (!s) return '';
-    var d = document.createElement('div');
-    d.textContent = s;
-    return d.innerHTML;
-}
 
 // RCON autocomplete
 var _rconCommands = [

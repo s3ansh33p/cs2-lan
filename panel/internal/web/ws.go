@@ -2,6 +2,8 @@ package web
 
 import (
 	"context"
+	"encoding/json"
+	"html"
 	"log"
 	"net/http"
 	"strings"
@@ -226,12 +228,12 @@ func shortTeam(t string) string {
 
 func killToJSON(k gametracker.Kill) killJSON {
 	return killJSON{
-		Killer: k.Killer, KillerTeam: shortTeam(k.KillerTeam),
-		Victim: k.Victim, VictimTeam: shortTeam(k.VictimTeam),
+		Killer: html.EscapeString(k.Killer), KillerTeam: shortTeam(k.KillerTeam),
+		Victim: html.EscapeString(k.Victim), VictimTeam: shortTeam(k.VictimTeam),
 		Weapon:   k.Weapon,
 		Headshot: k.Headshot, Wallbang: k.Wallbang,
-		Assister: k.Assister, AssisterTeam: shortTeam(k.AssisterTeam),
-		System: k.IsSystem, Message: k.Message,
+		Assister: html.EscapeString(k.Assister), AssisterTeam: shortTeam(k.AssisterTeam),
+		System: k.IsSystem, Message: html.EscapeString(k.Message),
 		Time: k.Time.Format("15:04:05"),
 	}
 }
@@ -287,20 +289,14 @@ func buildPlayerList(serverName string, tracker *gametracker.Manager) []gamePlay
 	players := make([]gamePlayerJSON, 0, len(scoreboard))
 
 	for _, ps := range scoreboard {
-		team := ""
-		switch ps.Team {
-		case "CT":
-			team = "CT"
-		case "TERRORIST":
-			team = "T"
-		}
+		team := shortTeam(ps.Team)
 
 		// Send raw weapon names — client renders as SVG icons
 		weapons := ps.WeaponList()
 		grenades := ps.GrenadeList()
 
 		players = append(players, gamePlayerJSON{
-			Name: ps.Name, Team: team, IsBot: ps.IsBot, Online: ps.Online,
+			Name: html.EscapeString(ps.Name), Team: team, IsBot: ps.IsBot, Online: ps.Online,
 			Kills: ps.Kills, Deaths: ps.Deaths, Assists: ps.Assists,
 			Ping: ps.Ping, Duration: ps.Duration, Money: ps.Money,
 			Weapons: weapons, Grenades: grenades,
@@ -344,7 +340,7 @@ func (h *Handler) sendKillfeedNew(conn *websocket.Conn, newKills []gametracker.K
 	return conn.WriteJSON(msg)
 }
 
-// DashboardWebSocket pushes server list with scores every 5 seconds.
+// DashboardWebSocket subscribes to the shared dashboard broadcaster.
 func (h *Handler) DashboardWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, done, err := setupWSConn(w, r)
 	if err != nil {
@@ -353,14 +349,17 @@ func (h *Handler) DashboardWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
+	updates, unsub := h.subscribeDashboard()
+	defer unsub()
+
 	pingTicker := time.NewTicker(pingInterval)
 	defer pingTicker.Stop()
 
-	updateTicker := time.NewTicker(5 * time.Second)
-	defer updateTicker.Stop()
-
 	// Send initial state
-	h.sendDashboard(conn)
+	if data := h.getDashboardData(); data != nil {
+		conn.SetWriteDeadline(time.Now().Add(writeWait))
+		conn.WriteMessage(websocket.TextMessage, data)
+	}
 
 	for {
 		select {
@@ -371,8 +370,13 @@ func (h *Handler) DashboardWebSocket(w http.ResponseWriter, r *http.Request) {
 			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
-		case <-updateTicker.C:
-			if err := h.sendDashboard(conn); err != nil {
+		case <-updates:
+			data := h.getDashboardData()
+			if data == nil {
+				continue
+			}
+			conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 				return
 			}
 		}
@@ -391,7 +395,8 @@ type dashServerJSON struct {
 	Score       *scoreJSON `json:"score,omitempty"`
 }
 
-func (h *Handler) sendDashboard(conn *websocket.Conn) error {
+// buildDashboardJSON computes dashboard state and returns the JSON bytes.
+func (h *Handler) buildDashboardJSON() []byte {
 	servers, err := h.docker.ListServers(context.Background())
 	if err != nil {
 		servers = nil
@@ -401,7 +406,7 @@ func (h *Handler) sendDashboard(conn *websocket.Conn) error {
 	for _, s := range servers {
 		ds := dashServerJSON{
 			Name:       s.Name,
-			Alias:      h.aliases.Get(s.Name),
+			Alias:      html.EscapeString(h.aliases.Get(s.Name)),
 			Status:     s.Status,
 			Port:       s.Port,
 			GameMode:   s.GameMode,
@@ -437,8 +442,8 @@ func (h *Handler) sendDashboard(conn *websocket.Conn) error {
 		Servers []dashServerJSON `json:"servers"`
 	}{Type: "dashboard", Servers: result}
 
-	conn.SetWriteDeadline(time.Now().Add(writeWait))
-	return conn.WriteJSON(msg)
+	data, _ := json.Marshal(msg)
+	return data
 }
 
 // isGameEventLine returns true for log lines that are game events

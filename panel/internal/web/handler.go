@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -8,6 +9,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"cs2-panel/internal/docker"
 	"cs2-panel/internal/gametracker"
@@ -23,6 +26,11 @@ type Handler struct {
 	composeFile string
 	defaultRCON string
 	pages       map[string]*template.Template
+
+	// Dashboard broadcast: compute once, send to all WS clients
+	dashMu   sync.RWMutex
+	dashData []byte // cached JSON message
+	dashSubs []chan struct{}
 }
 
 func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, composeFile, defaultRCON string) (*Handler, error) {
@@ -74,7 +82,7 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, co
 	pages["scoreboard.html"] = base
 	pages["killfeed.html"] = base
 
-	return &Handler{
+	h := &Handler{
 		docker:      dc,
 		rcon:        rm,
 		tracker:     tm,
@@ -82,7 +90,9 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, co
 		composeFile: composeFile,
 		defaultRCON: defaultRCON,
 		pages:       pages,
-	}, nil
+	}
+	go h.dashboardBroadcaster()
+	return h, nil
 }
 
 func (h *Handler) render(w http.ResponseWriter, name string, data any) {
@@ -114,22 +124,20 @@ func (h *Handler) LoginPage(w http.ResponseWriter, r *http.Request) {
 	h.render(w, "login.html", data)
 }
 
-func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
-	servers, err := h.docker.ListServers(r.Context())
+type serverWithStatus struct {
+	docker.ServerInfo
+	PlayerCount int
+	CurrentMap  string
+	RCONOk      bool
+}
+
+func (h *Handler) enrichServers(ctx context.Context) []serverWithStatus {
+	servers, err := h.docker.ListServers(ctx)
 	if err != nil {
 		log.Printf("list servers: %v", err)
-		servers = nil
+		return nil
 	}
-
-	// Best-effort RCON status for player counts
-	type serverWithStatus struct {
-		docker.ServerInfo
-		PlayerCount int
-		CurrentMap  string
-		RCONOk      bool
-	}
-
-	var enriched []serverWithStatus
+	var result []serverWithStatus
 	for _, s := range servers {
 		ss := serverWithStatus{ServerInfo: s}
 		if s.Status == "running" && s.Port > 0 && s.RCONPassword != "" {
@@ -142,47 +150,66 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 				ss.RCONOk = true
 			}
 		}
-		enriched = append(enriched, ss)
+		result = append(result, ss)
 	}
+	return result
+}
 
+// dashboardBroadcaster computes dashboard state every 5s and caches it.
+func (h *Handler) dashboardBroadcaster() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		data := h.buildDashboardJSON()
+		h.dashMu.Lock()
+		h.dashData = data
+		subs := make([]chan struct{}, len(h.dashSubs))
+		copy(subs, h.dashSubs)
+		h.dashMu.Unlock()
+		for _, ch := range subs {
+			select {
+			case ch <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
+func (h *Handler) subscribeDashboard() (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	h.dashMu.Lock()
+	h.dashSubs = append(h.dashSubs, ch)
+	h.dashMu.Unlock()
+	return ch, func() {
+		h.dashMu.Lock()
+		defer h.dashMu.Unlock()
+		for i, c := range h.dashSubs {
+			if c == ch {
+				h.dashSubs = append(h.dashSubs[:i], h.dashSubs[i+1:]...)
+				break
+			}
+		}
+	}
+}
+
+func (h *Handler) getDashboardData() []byte {
+	h.dashMu.RLock()
+	defer h.dashMu.RUnlock()
+	return h.dashData
+}
+
+func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
+	// Just check if servers exist — WS fills in live data immediately
+	servers, _ := h.docker.ListServers(r.Context())
 	h.render(w, "dashboard.html", map[string]any{
-		"Servers": enriched,
+		"Servers": servers,
 		"Title":   "Dashboard",
 	})
 }
 
 func (h *Handler) ServersPartial(w http.ResponseWriter, r *http.Request) {
-	servers, err := h.docker.ListServers(r.Context())
-	if err != nil {
-		log.Printf("list servers: %v", err)
-		servers = nil
-	}
-
-	type serverWithStatus struct {
-		docker.ServerInfo
-		PlayerCount int
-		CurrentMap  string
-		RCONOk      bool
-	}
-
-	var enriched []serverWithStatus
-	for _, s := range servers {
-		ss := serverWithStatus{ServerInfo: s}
-		if s.Status == "running" && s.Port > 0 && s.RCONPassword != "" {
-			addr := fmt.Sprintf("localhost:%d", s.Port)
-			resp, err := h.rcon.Execute(addr, s.RCONPassword, "status")
-			if err == nil {
-				status := rcon.ParseStatus(resp)
-				ss.PlayerCount = status.Humans + status.Bots
-				ss.CurrentMap = status.Map
-				ss.RCONOk = true
-			}
-		}
-		enriched = append(enriched, ss)
-	}
-
 	h.render(w, "server_rows.html", map[string]any{
-		"Servers": enriched,
+		"Servers": h.enrichServers(r.Context()),
 	})
 }
 
@@ -279,12 +306,7 @@ func (h *Handler) PlayersPartial(w http.ResponseWriter, r *http.Request) {
 				Kills: ps.Kills, Deaths: ps.Deaths, Assists: ps.Assists,
 				Score: ps.Score(), Ping: ps.Ping, Duration: ps.Duration,
 			}
-			switch ps.Team {
-			case "CT":
-				cp.Team = "CT"
-			case "TERRORIST":
-				cp.Team = "T"
-			}
+			cp.Team = shortTeam(ps.Team)
 			for _, w := range ps.WeaponList() {
 				cp.Weapons = append(cp.Weapons, gametracker.DisplayName(w))
 			}
