@@ -1,0 +1,38 @@
+volumes:
+  cs2-base:  # Shared game files (~35GB, downloaded once)
+
+services:
+  # Download/update game files: docker compose --profile update run --rm cs2-updater
+  cs2-updater:
+    image: joedwards32/cs2
+    user: "1000:1000"
+    volumes:
+      - cs2-base:/home/steam/cs2-dedicated
+    environment:
+      - STEAMAPPVALIDATE=1
+    entrypoint:
+      - bash
+      - -c
+      - |
+        /home/steam/steamcmd/steamcmd.sh \
+          +force_install_dir /home/steam/cs2-dedicated \
+          +login anonymous \
+          +app_update 730 validate \
+          +quit \
+        && cp -a /home/steam/cs2-dedicated/game/csgo/cfg /home/steam/cs2-dedicated/game/csgo/cfg-base \
+        && echo "Update complete. cfg-base snapshot created."
+    profiles: ["update"]
+
+  # Template service - use cs2-launch.sh to spin up instances
+  cs2:
+    image: joedwards32/cs2
+    volumes:
+      - cs2-base:/home/steam/cs2-dedicated
+      - ./entry-lan.sh:/home/steam/entry-lan.sh:ro
+    tmpfs:
+      - /home/steam/cs2-dedicated/game/csgo/cfg:uid=1000,gid=1000
+    entrypoint: ["bash", "/home/steam/entry-lan.sh"]
+    environment:
+      - CS2_LAN=1
+    stdin_open: true
+    tty: true
