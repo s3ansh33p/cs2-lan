@@ -218,6 +218,8 @@ function renderDashboard(servers) {
 
 var _currentGameMode = '';
 var _inWarmup = true;
+var _statMode = 0; // 0 = K/D/A/MVP, 1 = HS%/KDR/ADR/EF/UD
+var _statModeLabels = ['Kills Deaths Assists MVPs', 'HS% KDR ADR UD EF'];
 
 // Game state WebSocket (players + killfeed) - renders from JSON client-side
 function connectGameWS(serverName) {
@@ -229,8 +231,8 @@ function connectGameWS(serverName) {
             var data = JSON.parse(e.data);
             switch (data.type) {
                 case 'players':
-                    renderPlayers(data.players);
                     if (data.score) renderScore(data.score);
+                    renderPlayers(data.players);
                     break;
                 case 'killfeed':
                     // Full killfeed replace (initial load)
@@ -331,15 +333,20 @@ function playerEquipIcons(p) {
 }
 
 function renderPlayers(players) {
+    _lastPlayers = players;
     var el = document.getElementById('player-list');
     if (!el) return;
 
-    // Update player count in header
+    // Update player count and stat toggle visibility
     var countEl = document.getElementById('player-count');
     if (countEl) {
         var online = 0;
         for (var c = 0; c < players.length; c++) { if (players[c].online) online++; }
         countEl.textContent = '(' + online + ')';
+    }
+    var toggleEl = document.getElementById('stat-toggle');
+    if (toggleEl) {
+        toggleEl.style.display = (_currentGameMode === 'armsrace') ? 'none' : '';
     }
 
     if (!players.length) {
@@ -356,26 +363,92 @@ function renderPlayers(players) {
     }
 
     var showAlive = !_inWarmup && _currentGameMode && _currentGameMode !== 'deathmatch' && _currentGameMode !== 'armsrace';
-    var tableHeader = '<colgroup>' +
-        '<col style="width:25%">' +
-        '<col style="width:40px">' +
-        '<col style="width:40px">' +
-        '<col style="width:40px">' +
-        '<col style="width:60px">' +
-        '<col style="width:80px">' +
-        '<col>' +
-        '<col style="width:60px">' +
-        '</colgroup>' +
+
+    var isArmsRace = _currentGameMode === 'armsrace';
+
+    if (isArmsRace) {
+        // Sort by level descending, then kills descending
+        players.sort(function(a, b) {
+            function arLvl(p) { return Math.max(0, Math.floor((p.k - (p.knifek || 0)) / 2) + (p.knifek || 0) - (p.knifed || 0)); }
+            var la = arLvl(a), lb = arLvl(b);
+            if (la !== lb) return lb - la;
+            return b.k - a.k;
+        });
+    }
+    var statHeaders, statCols, extraHeaders, extraCols;
+
+    if (isArmsRace) {
+        // Arms race: K D A KDR HS% ZeusK KnifeK Lvl — no money or equipment
+        statHeaders = '<th class="px-4 py-2 font-medium text-center" title="Kills">K</th>' +
+            '<th class="px-4 py-2 font-medium text-center" title="Deaths">D</th>' +
+            '<th class="px-4 py-2 font-medium text-center" title="Assists">A</th>' +
+            '<th class="px-4 py-2 font-medium text-center" title="Kill/Death Ratio">KDR</th>' +
+            '<th class="px-4 py-2 font-medium text-center" title="Headshot Percentage">HS%</th>' +
+            '<th class="px-4 py-2 font-medium text-center" title="Zeus Kills">Zeus</th>' +
+            '<th class="px-4 py-2 font-medium text-center" title="Knife Kills">Knife</th>' +
+            '<th class="px-4 py-2 font-medium text-center" title="Level (every 2 kills)">Lvl</th>';
+        statCols = '<col style="width:50px"><col style="width:50px"><col style="width:50px"><col style="width:60px"><col style="width:65px"><col style="width:55px"><col style="width:55px"><col style="width:50px">';
+        extraHeaders = '';
+        extraCols = '';
+    } else if (_statMode === 0) {
+        statHeaders = '<th class="px-4 py-2 font-medium text-center" title="Kills">K</th>' +
+            '<th class="px-4 py-2 font-medium text-center" title="Deaths">D</th>' +
+            '<th class="px-4 py-2 font-medium text-center" title="Assists">A</th>' +
+            '<th class="px-4 py-2 font-medium text-center" title="Most Valuable Player">MVPs</th>';
+        statCols = '<col style="width:50px"><col style="width:50px"><col style="width:50px"><col style="width:50px">';
+        extraHeaders = '<th class="px-4 py-2 font-medium text-right">Money</th><th class="px-4 py-2 font-medium">Equipment</th>';
+        extraCols = '<col style="width:80px"><col>';
+    } else {
+        statHeaders = '<th class="px-4 py-2 font-medium text-center" title="Headshot Percentage">HS%</th>' +
+            '<th class="px-4 py-2 font-medium text-center" title="Kill/Death Ratio">KDR</th>' +
+            '<th class="px-4 py-2 font-medium text-center" title="Average Damage per Round">ADR</th>' +
+            '<th class="px-4 py-2 font-medium text-center" title="Enemies Flashed">EF</th>' +
+            '<th class="px-4 py-2 font-medium text-center" title="Utility Damage">UD</th>';
+        statCols = '<col style="width:75px"><col style="width:60px"><col style="width:60px"><col style="width:50px"><col style="width:50px">';
+        extraHeaders = '<th class="px-4 py-2 font-medium text-right">Money</th><th class="px-4 py-2 font-medium">Equipment</th>';
+        extraCols = '<col style="width:80px"><col>';
+    }
+
+    var tableHeader = '<colgroup><col>' + statCols + extraCols +
+        '<col style="width:60px"></colgroup>' +
         '<tr class="border-b border-slate-700 text-slate-400 text-left">' +
         '<th class="px-4 py-2 font-medium">Name</th>' +
-        '<th class="px-4 py-2 font-medium text-center">K</th>' +
-        '<th class="px-4 py-2 font-medium text-center">D</th>' +
-        '<th class="px-4 py-2 font-medium text-center">A</th>' +
-        '<th class="px-4 py-2 font-medium text-center">K/D</th>' +
-        '<th class="px-4 py-2 font-medium text-right">Money</th>' +
-        '<th class="px-4 py-2 font-medium">Equipment</th>' +
+        statHeaders + extraHeaders +
         '<th class="px-4 py-2 font-medium">Ping</th>' +
         '</tr>';
+
+    function statCells(p) {
+        if (isArmsRace) {
+            var lvl = Math.max(0, Math.floor((p.k - (p.knifek || 0)) / 2) + (p.knifek || 0) - (p.knifed || 0));
+            return '<td class="px-4 py-2 text-green-400 text-center">' + p.k + '</td>' +
+                '<td class="px-4 py-2 text-red-400 text-center">' + p.d + '</td>' +
+                '<td class="px-4 py-2 text-yellow-400 text-center">' + p.a + '</td>' +
+                '<td class="px-4 py-2 text-slate-300 text-center">' + (p.kdr ? p.kdr.toFixed(2) : '-') + '</td>' +
+                '<td class="px-4 py-2 text-slate-300 text-center">' + (p.hsp ? p.hsp.toFixed(1) + '%' : '-') + '</td>' +
+                '<td class="px-4 py-2 text-slate-300 text-center">' + (p.zeusk || 0) + '</td>' +
+                '<td class="px-4 py-2 text-slate-300 text-center">' + (p.knifek || 0) + '</td>' +
+                '<td class="px-4 py-2 text-orange-400 text-center font-medium">' + lvl + '</td>';
+        }
+        if (_statMode === 0) {
+            return '<td class="px-4 py-2 text-green-400 text-center">' + p.k + '</td>' +
+                '<td class="px-4 py-2 text-red-400 text-center">' + p.d + '</td>' +
+                '<td class="px-4 py-2 text-yellow-400 text-center">' + p.a + '</td>' +
+                '<td class="px-4 py-2 text-slate-300 text-center">' + (p.mvp || 0) + '</td>';
+        }
+        return '<td class="px-4 py-2 text-slate-300 text-center">' + (p.hsp ? p.hsp.toFixed(1) + '%' : '-') + '</td>' +
+            '<td class="px-4 py-2 text-slate-300 text-center">' + (p.kdr ? p.kdr.toFixed(2) : '-') + '</td>' +
+            '<td class="px-4 py-2 text-slate-300 text-center">' + (p.adr ? p.adr.toFixed(0) : '-') + '</td>' +
+            '<td class="px-4 py-2 text-slate-300 text-center">' + (p.ef || 0) + '</td>' +
+            '<td class="px-4 py-2 text-slate-300 text-center">' + (p.ud ? p.ud.toFixed(0) : '0') + '</td>';
+    }
+
+    function extraCells(p) {
+        if (isArmsRace) return '';
+        var money = p.money ? '$' + p.money.toLocaleString() : '';
+        var equip = playerEquipIcons(p);
+        return '<td class="px-4 py-2 text-green-300 text-right font-mono text-xs">' + money + '</td>' +
+            '<td class="px-4 py-2"><div class="flex flex-wrap items-center gap-1.5">' + equip + '</div></td>';
+    }
 
     function playerRow(p) {
         var isDead = showAlive && p.online && !p.alive;
@@ -384,18 +457,12 @@ function renderPlayers(players) {
         if (p.bot) name = '<span class="text-slate-400">(BOT)</span> ' + name;
         if (!p.online) name += ' <span class="text-slate-500 text-xs">(offline)</span>';
         if (isDead) name += ' <img src="/static/icons/ui/kill.svg" class="h-3.5 inline-block opacity-50" title="Dead">';
-        var kd = p.d === 0 ? '-' : (p.k / p.d).toFixed(1);
-        var money = p.money ? '$' + p.money.toLocaleString() : '';
         var ping = !p.online ? '-' : (p.bot ? '-' : p.ping + 'ms');
-        var equip = playerEquipIcons(p);
-        return '<tr class="border-b border-slate-700/50' + opacity + '">' +
-            '<td class="px-4 py-2 text-white">' + name + '</td>' +
-            '<td class="px-4 py-2 text-green-400 text-center">' + p.k + '</td>' +
-            '<td class="px-4 py-2 text-red-400 text-center">' + p.d + '</td>' +
-            '<td class="px-4 py-2 text-yellow-400 text-center">' + p.a + '</td>' +
-            '<td class="px-4 py-2 text-slate-300 text-center">' + kd + '</td>' +
-            '<td class="px-4 py-2 text-green-300 text-right font-mono text-xs">' + money + '</td>' +
-            '<td class="px-4 py-2"><div class="flex flex-wrap items-center gap-1.5">' + equip + '</div></td>' +
+        var rowClasses = isArmsRace ? '' : 'border-b border-slate-700/50';
+        var nameColor = isArmsRace ? teamColor(p.team) : 'text-white';
+        return '<tr class="' + rowClasses + opacity + '">' +
+            '<td class="px-4 py-2 ' + nameColor + '">' + name + '</td>' +
+            statCells(p) + extraCells(p) +
             '<td class="px-4 py-2 text-slate-300">' + ping + '</td>' +
             '</tr>';
     }
@@ -407,59 +474,89 @@ function renderPlayers(players) {
         if (p.bot) name = '<span class="text-slate-400">(BOT)</span> ' + name;
         if (!p.online) name += ' <span class="text-slate-500 text-xs">(offline)</span>';
         if (isDead) name += ' <img src="/static/icons/ui/kill.svg" class="h-3.5 inline-block opacity-50" title="Dead">';
-        var kd = p.d === 0 ? '-' : (p.k / p.d).toFixed(1);
-        var money = p.money ? '$' + p.money.toLocaleString() : '';
+        var money = !isArmsRace && p.money ? '$' + p.money.toLocaleString() : '';
         var ping = !p.online ? '-' : (p.bot ? '-' : p.ping + 'ms');
-        var equip = playerEquipIcons(p);
-        var borderColor = p.team === 'CT' ? ' border-l-2 border-blue-400' : (p.team === 'T' ? ' border-l-2 border-yellow-400' : '');
+        var equip = isArmsRace ? '' : playerEquipIcons(p);
+        var borderColor = isArmsRace ? '' : (p.team === 'CT' ? ' border-l-2 border-blue-400' : (p.team === 'T' ? ' border-l-2 border-yellow-400' : ''));
+        var cardNameColor = isArmsRace ? teamColor(p.team) : 'text-white';
+
+        var statsHtml;
+        if (isArmsRace) {
+            statsHtml = '<span class="text-green-400">K: ' + p.k + '</span>' +
+                '<span class="text-red-400">D: ' + p.d + '</span>' +
+                '<span class="text-yellow-400">A: ' + p.a + '</span>' +
+                '<span class="text-slate-300">KDR: ' + (p.kdr ? p.kdr.toFixed(2) : '-') + '</span>' +
+                '<span class="text-slate-300">HS: ' + (p.hsp ? p.hsp.toFixed(1) + '%' : '-') + '</span>' +
+                '<span class="text-slate-300">Zeus: ' + (p.zeusk || 0) + '</span>' +
+                '<span class="text-slate-300">Knife: ' + (p.knifek || 0) + '</span>' +
+                '<span class="text-orange-400">Lvl: ' + Math.max(0, Math.floor((p.k - (p.knifek || 0)) / 2) + (p.knifek || 0) - (p.knifed || 0)) + '</span>';
+        } else if (_statMode === 0) {
+            statsHtml = '<span class="text-green-400">K: ' + p.k + '</span>' +
+                '<span class="text-red-400">D: ' + p.d + '</span>' +
+                '<span class="text-yellow-400">A: ' + p.a + '</span>' +
+                '<span class="text-slate-300">MVP: ' + (p.mvp || 0) + '</span>';
+        } else {
+            statsHtml = '<span class="text-slate-300">HS: ' + (p.hsp ? p.hsp.toFixed(1) + '%' : '-') + '</span>' +
+                '<span class="text-slate-300">KDR: ' + (p.kdr ? p.kdr.toFixed(2) : '-') + '</span>' +
+                '<span class="text-slate-300">ADR: ' + (p.adr ? p.adr.toFixed(0) : '-') + '</span>' +
+                '<span class="text-slate-300">EF: ' + (p.ef || 0) + '</span>' +
+                '<span class="text-slate-300">UD: ' + (p.ud ? p.ud.toFixed(0) : '0') + '</span>';
+        }
+
         return '<div class="bg-slate-700/30 rounded-lg p-3' + opacity + borderColor + '">' +
             '<div class="flex items-center gap-2 mb-1.5">' +
-                '<span class="text-white text-sm font-medium flex-1">' + name + '</span>' +
+                '<span class="' + cardNameColor + ' text-sm font-medium flex-1">' + name + '</span>' +
                 (money ? '<span class="text-green-300 font-mono text-xs">' + money + '</span>' : '') +
                 '<span class="text-slate-400 text-xs">' + ping + '</span>' +
             '</div>' +
-            '<div class="flex items-center gap-3 mb-2 text-xs">' +
-                '<span class="text-green-400">K: ' + p.k + '</span>' +
-                '<span class="text-red-400">D: ' + p.d + '</span>' +
-                '<span class="text-yellow-400">A: ' + p.a + '</span>' +
-                '<span class="text-slate-400">KD: ' + kd + '</span>' +
-            '</div>' +
-            '<div class="flex flex-wrap items-center gap-1.5">' + equip + '</div>' +
+            '<div class="flex items-center gap-3 mb-2 text-xs">' + statsHtml + '</div>' +
+            (equip ? '<div class="flex flex-wrap items-center gap-1.5">' + equip + '</div>' : '') +
             '</div>';
     }
 
-    // Desktop: single table with team divider rows
+    // Desktop: single table
     var html = '<table class="w-full text-sm hidden sm:table" style="table-layout:fixed">' + tableHeader + '<tbody>';
 
-    if (ctPlayers.length) {
-        html += '<tr><td colspan="8" class="px-4 py-1.5 text-xs font-bold text-blue-400 bg-blue-500/5 border-l-2 border-blue-400">Counter-Terrorists</td></tr>';
-        for (var i = 0; i < ctPlayers.length; i++) html += playerRow(ctPlayers[i]);
-    }
+    var totalCols = isArmsRace ? 10 : (_statMode === 0 ? 8 : 9);
 
-    if (tPlayers.length) {
-        html += '<tr><td colspan="8" class="px-4 py-1.5 text-xs font-bold text-yellow-400 bg-yellow-500/5 border-l-2 border-yellow-400">Terrorists</td></tr>';
-        for (var i = 0; i < tPlayers.length; i++) html += playerRow(tPlayers[i]);
-    }
+    if (isArmsRace) {
+        // Flat list sorted by score, team indicated by left border on each row
+        for (var i = 0; i < players.length; i++) html += playerRow(players[i]);
+    } else {
+        if (ctPlayers.length) {
+            html += '<tr><td colspan="' + totalCols + '" class="px-4 py-1.5 text-xs font-bold text-blue-400 bg-blue-500/5 border-l-2 border-blue-400">Counter-Terrorists</td></tr>';
+            for (var i = 0; i < ctPlayers.length; i++) html += playerRow(ctPlayers[i]);
+        }
 
-    if (otherPlayers.length) {
-        for (var i = 0; i < otherPlayers.length; i++) html += playerRow(otherPlayers[i]);
+        if (tPlayers.length) {
+            html += '<tr><td colspan="' + totalCols + '" class="px-4 py-1.5 text-xs font-bold text-yellow-400 bg-yellow-500/5 border-l-2 border-yellow-400">Terrorists</td></tr>';
+            for (var i = 0; i < tPlayers.length; i++) html += playerRow(tPlayers[i]);
+        }
+
+        if (otherPlayers.length) {
+            for (var i = 0; i < otherPlayers.length; i++) html += playerRow(otherPlayers[i]);
+        }
     }
 
     html += '</tbody></table>';
 
     // Mobile cards
     html += '<div class="sm:hidden space-y-2 p-3">';
-    if (ctPlayers.length) {
-        html += '<div class="text-xs font-bold text-blue-400 px-1 pb-1">Counter-Terrorists</div>';
-        for (var i = 0; i < ctPlayers.length; i++) html += playerCard(ctPlayers[i]);
-    }
-    if (tPlayers.length) {
-        if (ctPlayers.length) html += '<div class="border-t border-slate-700 my-2"></div>';
-        html += '<div class="text-xs font-bold text-yellow-400 px-1 pb-1">Terrorists</div>';
-        for (var i = 0; i < tPlayers.length; i++) html += playerCard(tPlayers[i]);
-    }
-    if (otherPlayers.length) {
-        for (var i = 0; i < otherPlayers.length; i++) html += playerCard(otherPlayers[i]);
+    if (isArmsRace) {
+        for (var i = 0; i < players.length; i++) html += playerCard(players[i]);
+    } else {
+        if (ctPlayers.length) {
+            html += '<div class="text-xs font-bold text-blue-400 px-1 pb-1">Counter-Terrorists</div>';
+            for (var i = 0; i < ctPlayers.length; i++) html += playerCard(ctPlayers[i]);
+        }
+        if (tPlayers.length) {
+            if (ctPlayers.length) html += '<div class="border-t border-slate-700 my-2"></div>';
+            html += '<div class="text-xs font-bold text-yellow-400 px-1 pb-1">Terrorists</div>';
+            for (var i = 0; i < tPlayers.length; i++) html += playerCard(tPlayers[i]);
+        }
+        if (otherPlayers.length) {
+            for (var i = 0; i < otherPlayers.length; i++) html += playerCard(otherPlayers[i]);
+        }
     }
     html += '</div>';
 
@@ -572,14 +669,24 @@ function appendKills(kills) {
 }
 
 
+// Map pools by game mode
+var _mapPools = {
+    competitive: ['de_ancient', 'de_anubis', 'de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_overpass', 'de_vertigo'],
+    casual: ['de_ancient', 'de_anubis', 'de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_overpass', 'de_vertigo', 'cs_italy', 'cs_office'],
+    deathmatch: ['de_ancient', 'de_anubis', 'de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_overpass', 'de_vertigo'],
+    armsrace: ['ar_baggage', 'ar_pool_day', 'ar_shoots'],
+    demolition: ['ar_baggage', 'ar_pool_day', 'ar_shoots'],
+    wingman: ['de_ancient', 'de_anubis', 'de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_overpass', 'de_vertigo']
+};
+var _allMaps = ['de_ancient', 'de_anubis', 'de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_overpass', 'de_vertigo',
+    'cs_alpine', 'cs_italy', 'cs_office', 'ar_baggage', 'ar_pool_day', 'ar_shoots',
+    'de_ancient_night', 'ar_shoots_night', 'de_poseidon', 'de_sanctum', 'de_stronghold', 'de_warden'];
+
 // RCON autocomplete
 var _rconCommands = [
     // Server management
     'status', 'stats', 'quit', 'restart', 'mp_restartgame 1',
     // Map
-    'changelevel de_dust2', 'changelevel de_inferno', 'changelevel de_mirage',
-    'changelevel de_nuke', 'changelevel de_overpass', 'changelevel de_ancient',
-    'changelevel de_anubis', 'changelevel de_vertigo', 'changelevel de_train',
     'changelevel', 'maps *',
     // Players
     'kick', 'kickid', 'banid', 'users',
@@ -617,6 +724,9 @@ var _rconCommands = [
     // Exec
     'exec', 'exec gamemode_competitive', 'exec gamemode_casual', 'exec gamemode_deathmatch',
 ];
+// Add changelevel for all maps
+for (var mi = 0; mi < _allMaps.length; mi++) _rconCommands.push('changelevel ' + _allMaps[mi]);
+
 var _rconHistory = [];
 var _rconSelectedIdx = -1;
 
@@ -746,6 +856,15 @@ document.addEventListener('htmx:afterRequest', function(e) {
         document.getElementById('rcon-suggestions').classList.add('hidden');
     }
 });
+
+var _lastPlayers = [];
+
+function cycleStatMode() {
+    _statMode = (_statMode + 1) % _statModeLabels.length;
+    var btn = document.getElementById('stat-toggle');
+    if (btn) btn.textContent = _statModeLabels[_statMode];
+    if (_lastPlayers.length) renderPlayers(_lastPlayers);
+}
 
 function renameServer(name) {
     var current = document.getElementById('server-title').textContent;

@@ -119,7 +119,7 @@ func (h *Handler) GameStateWebSocket(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Server not found", http.StatusNotFound)
 			return
 		}
-		state = h.tracker.TrackServer(name, info.Port, info.RCONPassword, info.GameMode)
+		state = h.tracker.TrackServer(name, info.Port, info.RCONPassword, info.GameMode, info.Map)
 	}
 
 	conn, done, err := setupWSConn(w, r)
@@ -202,6 +202,15 @@ type gamePlayerJSON struct {
 	HasDefuser bool     `json:"defuser,omitempty"`
 	HasBomb    bool     `json:"bomb,omitempty"`
 	Alive      bool     `json:"alive"`
+	HSPercent  float64  `json:"hsp"`
+	KDR        float64  `json:"kdr"`
+	ADR        float64  `json:"adr"`
+	MVPs       int      `json:"mvp"`
+	EF         int      `json:"ef"`
+	UD         float64  `json:"ud"`
+	KnifeKills  int     `json:"knifek,omitempty"`
+	KnifeDeaths int     `json:"knifed,omitempty"`
+	ZeusKills   int     `json:"zeusk,omitempty"`
 }
 
 type killJSON struct {
@@ -308,6 +317,8 @@ func buildPlayerList(serverName string, tracker *gametracker.Manager) []gamePlay
 			Ping: ps.Ping, Duration: ps.Duration, Money: ps.Money,
 			Weapons: weapons, Grenades: grenades,
 			HasArmor: ps.HasArmor, HasHelmet: ps.HasHelmet, HasDefuser: ps.HasDefuser, HasBomb: ps.HasBomb, Alive: ps.Alive,
+			HSPercent: ps.HSPercent, KDR: ps.KDR, ADR: ps.ADR, MVPs: ps.MVPs, EF: ps.EF, UD: ps.UD,
+			KnifeKills: ps.KnifeKills, KnifeDeaths: ps.KnifeDeaths, ZeusKills: ps.ZeusKills,
 		})
 	}
 
@@ -427,7 +438,7 @@ func (h *Handler) buildDashboardJSON() []byte {
 
 		// Start tracking if not already (so dashboard shows live data)
 		if s.Status == "running" && s.Port > 0 && s.RCONPassword != "" {
-			h.tracker.TrackServer(s.Name, s.Port, s.RCONPassword, s.GameMode)
+			h.tracker.TrackServer(s.Name, s.Port, s.RCONPassword, s.GameMode, s.Map)
 		}
 
 		// Get player count and score from tracker
@@ -467,7 +478,8 @@ func isGameEventLine(line string) bool {
 	}
 	// Also filter JSON round_stats blocks and MatchStatus
 	if strings.Contains(line, "JSON_BEGIN{") || strings.Contains(line, "}}JSON_END") ||
-		strings.HasPrefix(trimmed, "MatchStatus:") || strings.HasPrefix(trimmed, "Started map") {
+		strings.HasPrefix(trimmed, "MatchStatus:") || strings.HasPrefix(trimmed, "Started map") ||
+		strings.HasPrefix(trimmed, "GMR_") {
 		return true
 	}
 	return false

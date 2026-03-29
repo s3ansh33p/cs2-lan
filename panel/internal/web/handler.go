@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -282,15 +283,30 @@ func (h *Handler) ServerDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Start tracking this server for killfeed/scoreboard via UDP log
-	state := h.tracker.TrackServer(name, info.Port, info.RCONPassword, info.GameMode)
+	state := h.tracker.TrackServer(name, info.Port, info.RCONPassword, info.GameMode, info.Map)
+
+	// Build initial JSON for immediate client-side render
+	initialPlayers := buildPlayerList(name, h.tracker)
+	var initialScore *scoreJSON
+	sc := state.GetScore()
+	var rounds []roundJSON
+	for _, r := range sc.Rounds {
+		rounds = append(rounds, roundJSON{Round: r.Round, Winner: r.Winner, Reason: r.Reason})
+	}
+	initialScore = &scoreJSON{Round: sc.Round, CT: sc.CT, T: sc.T, GameMode: sc.GameMode, Map: sc.CurrentMap, Rounds: rounds, HalfRound: sc.HalfRound, Warmup: sc.InWarmup}
+
+	playersJSON, _ := json.Marshal(initialPlayers)
+	scoreJSON, _ := json.Marshal(initialScore)
 
 	h.render(w, "server.html", map[string]any{
-		"Title":      h.aliases.Get(info.Name),
-		"Alias":      h.aliases.Get(info.Name),
-		"Server":     info,
-		"Status":     status,
-		"Scoreboard": state.GetScoreboard(),
-		"Killfeed":   state.GetKillfeed(20),
+		"Title":        h.aliases.Get(info.Name),
+		"Alias":        h.aliases.Get(info.Name),
+		"Server":       info,
+		"Status":       status,
+		"Scoreboard":   state.GetScoreboard(),
+		"Killfeed":     state.GetKillfeed(20),
+		"InitPlayers":  template.JS(playersJSON),
+		"InitScore":    template.JS(scoreJSON),
 	})
 }
 

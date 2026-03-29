@@ -24,19 +24,21 @@
         </div>
         <div>
             <label class="block text-sm text-slate-400 mb-1">Game Mode</label>
-            <select name="mode"
+            <select name="mode" id="launch-mode" onchange="updateMapOptions()"
                 class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm">
                 <option value="competitive" {{if and .Form (eq .Form.Mode "competitive")}}selected{{end}}>Competitive</option>
                 <option value="casual" {{if and .Form (eq .Form.Mode "casual")}}selected{{end}}>Casual</option>
                 <option value="deathmatch" {{if and .Form (eq .Form.Mode "deathmatch")}}selected{{end}}>Deathmatch</option>
                 <option value="armsrace" {{if and .Form (eq .Form.Mode "armsrace")}}selected{{end}}>Arms Race</option>
                 <option value="demolition" {{if and .Form (eq .Form.Mode "demolition")}}selected{{end}}>Demolition</option>
+                <option value="wingman" {{if and .Form (eq .Form.Mode "wingman")}}selected{{end}}>Wingman</option>
             </select>
         </div>
         <div>
             <label class="block text-sm text-slate-400 mb-1">Starting Map</label>
-            <input type="text" name="map" placeholder="de_inferno" value="{{if .Form}}{{.Form.Map}}{{end}}"
+            <select name="map" id="launch-map"
                 class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm">
+            </select>
         </div>
         <div>
             <label class="block text-sm text-slate-400 mb-1">Max Players</label>
@@ -72,4 +74,22 @@
         </a>
     </div>
 </form>
+
+<script>
+function updateMapOptions() {
+    var mode = document.getElementById('launch-mode').value;
+    var mapSelect = document.getElementById('launch-map');
+    var maps = (typeof _mapPools !== 'undefined' && _mapPools[mode]) || _allMaps || [];
+    var current = mapSelect.value;
+    mapSelect.innerHTML = '';
+    for (var i = 0; i < maps.length; i++) {
+        var opt = document.createElement('option');
+        opt.value = maps[i];
+        opt.textContent = maps[i];
+        if (maps[i] === current) opt.selected = true;
+        mapSelect.appendChild(opt);
+    }
+}
+document.addEventListener('DOMContentLoaded', updateMapOptions);
+</script>
 {{end}}

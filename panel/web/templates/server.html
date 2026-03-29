@@ -49,7 +49,27 @@
     <div id="round-history" class="hidden mt-3 flex items-center justify-center gap-1 flex-wrap px-2 pb-2"></div>
 </div>
 
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+<!-- Players -->
+<div class="bg-slate-800 border border-slate-700 rounded-lg">
+    <div class="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
+        <span class="text-sm font-medium text-slate-300">Players <span id="player-count" class="text-slate-500"></span></span>
+        <button id="stat-toggle" onclick="cycleStatMode()" class="text-xs bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1">K/D/A</button>
+    </div>
+    <div id="player-list"></div>
+</div>
+
+<!-- Killfeed -->
+<div class="mt-4">
+    <div class="bg-slate-800 border border-slate-700 rounded-lg" style="max-height: 400px;">
+        <div class="px-4 py-3 border-b border-slate-700 text-sm font-medium text-slate-300">Killfeed</div>
+        <div id="killfeed" class="overflow-y-auto" style="max-height: 350px;">
+            {{template "killfeed.html" .}}
+        </div>
+    </div>
+</div>
+
+<!-- RCON & Logs -->
+<div class="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
     <!-- RCON Console -->
     <div class="bg-slate-800 border border-slate-700 rounded-lg flex flex-col" style="height: 500px;">
         <div class="px-4 py-3 border-b border-slate-700 text-sm font-medium text-slate-300">RCON Console</div>
@@ -59,7 +79,7 @@
         <form id="rcon-form" hx-post="/server/{{.Server.Name}}/rcon" hx-target="#rcon-output" hx-swap="beforeend"
             class="border-t border-slate-700 p-2 flex gap-2 relative">
             <span class="text-orange-400 py-2 pl-2">&gt;</span>
-            <div class="flex-1 relative">
+            <div class="flex-1 relative content-center">
                 <input type="text" name="command" id="rcon-input" autocomplete="off" placeholder="Enter RCON command..."
                     class="w-full bg-transparent border-none text-white focus:outline-none text-sm">
                 <div id="rcon-suggestions" class="hidden absolute bottom-full left-0 w-full bg-slate-700 border border-slate-600 rounded-t max-h-48 overflow-y-auto"></div>
@@ -85,28 +105,14 @@
     </div>
 </div>
 
-<!-- Players -->
-<div class="mt-4 bg-slate-800 border border-slate-700 rounded-lg">
-    <div class="px-4 py-3 border-b border-slate-700 text-sm font-medium text-slate-300">
-        Players <span id="player-count" class="text-slate-500"></span>
-    </div>
-    <div id="player-list">
-        {{template "player_list.html" .}}
-    </div>
-</div>
-
-<div class="mt-6">
-    <!-- Killfeed -->
-    <div class="bg-slate-800 border border-slate-700 rounded-lg" style="max-height: 400px;">
-        <div class="px-4 py-3 border-b border-slate-700 text-sm font-medium text-slate-300">Killfeed</div>
-        <div id="killfeed" class="overflow-y-auto" style="max-height: 350px;">
-            {{template "killfeed.html" .}}
-        </div>
-    </div>
-</div>
-
 <script>
+    var _initGameMode = '{{.Server.GameMode}}';
+    var _initScore = {{.InitScore}};
+    var _initPlayers = {{.InitPlayers}};
     document.addEventListener('DOMContentLoaded', function() {
+        _currentGameMode = _initGameMode;
+        if (_initScore) renderScore(_initScore);
+        if (_initPlayers) renderPlayers(_initPlayers);
         connectLogWS('{{.Server.Name}}');
         connectGameWS('{{.Server.Name}}');
     });

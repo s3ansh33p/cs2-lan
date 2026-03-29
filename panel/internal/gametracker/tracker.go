@@ -47,6 +47,16 @@ type PlayerStats struct {
 	Address   string          // from RCON polling
 	Money     int             // from round_stats JSON
 	AccountID string          // Steam account ID for JSON mapping
+	Damage    float64         // total damage dealt
+	HSPercent float64         // headshot percentage
+	KDR       float64         // kill/death ratio
+	ADR       float64         // average damage per round
+	MVPs      int
+	EF        int             // enemies flashed
+	UD        float64         // utility damage
+	KnifeKills  int
+	KnifeDeaths int // times killed by knife (lose a level in arms race)
+	ZeusKills   int
 	HasArmor  bool
 	HasHelmet bool
 	HasDefuser bool
@@ -342,12 +352,20 @@ func (s *ServerState) recordKill(killer, killerTeam, victim, victimTeam, weapon 
 		if killerTeam != "" {
 			p.Team = killerTeam
 		}
+		if weapon == "taser" {
+			p.ZeusKills++
+		} else if strings.HasPrefix(weapon, "knife") || weapon == "bayonet" {
+			p.KnifeKills++
+		}
 	}
 	p := s.ensurePlayer(victim)
 	p.Deaths++
 	p.Alive = false
 	if victimTeam != "" {
 		p.Team = victimTeam
+	}
+	if strings.HasPrefix(weapon, "knife") || weapon == "bayonet" {
+		p.KnifeDeaths++
 	}
 	p.Weapons = make(map[string]bool)
 	s.mu.Unlock()
@@ -659,6 +677,17 @@ func (s *ServerState) parseRoundStats(lines []string) {
 			if team != "" {
 				p.Team = team
 			}
+			// fields: accountid(0), team(1), money(2), kills(3), deaths(4), assists(5),
+			//         dmg(6), hsp(7), kdr(8), adr(9), mvp(10), ef(11), ud(12), ...
+			if len(parts) > 12 {
+				fmt.Sscanf(strings.TrimSpace(parts[6]), "%f", &p.Damage)
+				fmt.Sscanf(strings.TrimSpace(parts[7]), "%f", &p.HSPercent)
+				fmt.Sscanf(strings.TrimSpace(parts[8]), "%f", &p.KDR)
+				fmt.Sscanf(strings.TrimSpace(parts[9]), "%f", &p.ADR)
+				fmt.Sscanf(strings.TrimSpace(parts[10]), "%d", &p.MVPs)
+				fmt.Sscanf(strings.TrimSpace(parts[11]), "%d", &p.EF)
+				fmt.Sscanf(strings.TrimSpace(parts[12]), "%f", &p.UD)
+			}
 		}
 	}
 }
@@ -707,7 +736,7 @@ func NewManager(streamFn LogStreamFunc, rconFn RCONFunc) *Manager {
 	}
 }
 
-func (m *Manager) TrackServer(name string, gamePort int, rconPassword, gameMode string) *ServerState {
+func (m *Manager) TrackServer(name string, gamePort int, rconPassword, gameMode, initialMap string) *ServerState {
 	m.mu.Lock()
 	if s, ok := m.servers[name]; ok {
 		m.mu.Unlock()
@@ -716,6 +745,7 @@ func (m *Manager) TrackServer(name string, gamePort int, rconPassword, gameMode 
 
 	s := newServerState()
 	s.gameMode = gameMode
+	s.currentMap = initialMap
 	m.servers[name] = s
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancels[name] = cancel
@@ -947,7 +977,13 @@ func parseLine(line string, state *ServerState) {
 		return
 	}
 
-	// Early bailout: all game events we parse contain a quoted string
+	// Arms race reset (no quotes in this line, must check before bailout)
+	if state.gameMode == "armsrace" && strings.Contains(line, "GMR_ResetMatch") {
+		state.resetWithMessage("Match Reset")
+		return
+	}
+
+	// Early bailout: all remaining game events contain a quoted string
 	if !strings.Contains(line, `"`) {
 		return
 	}
