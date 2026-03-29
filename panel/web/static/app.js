@@ -188,6 +188,31 @@ function renderScore(score) {
     bar.classList.remove('hidden');
 }
 
+function playerTeamBadge(team) {
+    if (team === 'CT') return '<span class="inline-block px-1.5 py-0.5 rounded text-xs font-bold bg-blue-500/20 text-blue-400">CT</span>';
+    if (team === 'T') return '<span class="inline-block px-1.5 py-0.5 rounded text-xs font-bold bg-yellow-500/20 text-yellow-400">T</span>';
+    return '<span class="text-slate-600 text-xs">-</span>';
+}
+
+function playerEquipIcons(p) {
+    var html = '';
+    if (p.bomb) html += '<img src="/static/icons/equipment/planted_c4.svg" class="h-5 opacity-80" title="C4">';
+    if (p.helmet) html += '<img src="/static/icons/equipment/helmet.svg" class="h-5 opacity-80" title="Helmet">';
+    if (p.armor) html += '<img src="/static/icons/equipment/kevlar.svg" class="h-5 opacity-80" title="Kevlar">';
+    if (p.defuser) html += '<img src="/static/icons/equipment/defuser.svg" class="h-5 opacity-80" title="Defuse Kit">';
+    if (p.weapons) {
+        for (var w = 0; w < p.weapons.length; w++) {
+            html += weaponIcon(p.weapons[w]);
+        }
+    }
+    if (p.grenades) {
+        for (var g = 0; g < p.grenades.length; g++) {
+            html += '<img src="/static/icons/equipment/' + esc(p.grenades[g]) + '.svg" class="h-4 opacity-60" title="' + esc(p.grenades[g]) + '" onerror="var s=document.createElement(\'span\');s.className=\'text-xs text-emerald-400\';s.textContent=\'' + esc(p.grenades[g]) + '\';this.replaceWith(s)">';
+        }
+    }
+    return html;
+}
+
 function renderPlayers(players) {
     var el = document.getElementById('player-list');
     if (!el) return;
@@ -197,7 +222,8 @@ function renderPlayers(players) {
         return;
     }
 
-    var html = '<table class="w-full text-sm"><thead><tr class="border-b border-slate-700 text-slate-400 text-left">' +
+    // Desktop table
+    var table = '<table class="w-full text-sm hidden sm:table"><thead><tr class="border-b border-slate-700 text-slate-400 text-left">' +
         '<th class="px-4 py-2 font-medium w-8">Team</th>' +
         '<th class="px-4 py-2 font-medium">Name</th>' +
         '<th class="px-4 py-2 font-medium text-center">K</th>' +
@@ -209,43 +235,23 @@ function renderPlayers(players) {
         '<th class="px-4 py-2 font-medium">Ping</th>' +
         '</tr></thead><tbody>';
 
+    // Mobile cards
+    var cards = '<div class="sm:hidden space-y-2 p-3">';
+
     for (var i = 0; i < players.length; i++) {
         var p = players[i];
         var opacity = p.online ? '' : ' opacity-50';
-        var teamBadge = p.team === 'CT'
-            ? '<span class="inline-block px-1.5 py-0.5 rounded text-xs font-bold bg-blue-500/20 text-blue-400">CT</span>'
-            : p.team === 'T'
-            ? '<span class="inline-block px-1.5 py-0.5 rounded text-xs font-bold bg-yellow-500/20 text-yellow-400">T</span>'
-            : '<span class="text-slate-600 text-xs">-</span>';
-
+        var teamBadge = playerTeamBadge(p.team);
         var name = esc(p.name);
         if (p.bot) name = '<span class="text-slate-400">(BOT)</span> ' + name;
         if (!p.online) name += ' <span class="text-slate-500 text-xs">(offline)</span>';
-
         var kd = p.d === 0 ? '-' : (p.k / p.d).toFixed(1);
-
-        // Money
-        var money = p.money ? '$' + p.money.toLocaleString() : '-';
-
-        // Equipment: armor/helmet/defuser indicators + weapons + grenades
-        var equip = '';
-        if (p.bomb) equip += '<span class="inline-block px-1 py-0.5 rounded text-xs bg-red-900/50 text-red-400 font-bold" title="C4">C4</span> ';
-        if (p.armor) equip += '<span class="inline-block px-1 py-0.5 rounded text-xs bg-sky-900/50 text-sky-400" title="Kevlar">' + (p.helmet ? 'K+H' : 'K') + '</span> ';
-        if (p.defuser) equip += '<span class="inline-block px-1 py-0.5 rounded text-xs bg-purple-900/50 text-purple-400" title="Defuse Kit">D</span> ';
-        if (p.weapons) {
-            for (var w = 0; w < p.weapons.length; w++) {
-                equip += '<span class="inline-block px-1.5 py-0.5 rounded text-xs bg-slate-700 text-slate-300">' + esc(p.weapons[w]) + '</span> ';
-            }
-        }
-        if (p.grenades) {
-            for (var g = 0; g < p.grenades.length; g++) {
-                equip += '<span class="inline-block px-1.5 py-0.5 rounded text-xs bg-emerald-900/50 text-emerald-400">' + esc(p.grenades[g]) + '</span> ';
-            }
-        }
-
+        var money = p.money ? '$' + p.money.toLocaleString() : '';
         var ping = !p.online ? '-' : (p.bot ? '-' : p.ping + 'ms');
+        var equip = playerEquipIcons(p);
 
-        html += '<tr class="border-b border-slate-700/50' + opacity + '">' +
+        // Desktop row
+        table += '<tr class="border-b border-slate-700/50' + opacity + '">' +
             '<td class="px-4 py-2">' + teamBadge + '</td>' +
             '<td class="px-4 py-2 text-white">' + name + '</td>' +
             '<td class="px-4 py-2 text-green-400 text-center">' + p.k + '</td>' +
@@ -253,12 +259,31 @@ function renderPlayers(players) {
             '<td class="px-4 py-2 text-yellow-400 text-center">' + p.a + '</td>' +
             '<td class="px-4 py-2 text-slate-300 text-center">' + kd + '</td>' +
             '<td class="px-4 py-2 text-green-300 text-right font-mono text-xs">' + money + '</td>' +
-            '<td class="px-4 py-2"><div class="flex flex-wrap gap-1">' + equip + '</div></td>' +
+            '<td class="px-4 py-2"><div class="flex flex-wrap items-center gap-1.5">' + equip + '</div></td>' +
             '<td class="px-4 py-2 text-slate-300">' + ping + '</td>' +
             '</tr>';
+
+        // Mobile card
+        cards += '<div class="bg-slate-700/30 rounded-lg p-3' + opacity + '">' +
+            '<div class="flex items-center gap-2 mb-1.5">' +
+                teamBadge +
+                '<span class="text-white text-sm font-medium flex-1">' + name + '</span>' +
+                (money ? '<span class="text-green-300 font-mono text-xs">' + money + '</span>' : '') +
+                '<span class="text-slate-400 text-xs">' + ping + '</span>' +
+            '</div>' +
+            '<div class="flex items-center gap-3 mb-2 text-xs">' +
+                '<span class="text-green-400">K: ' + p.k + '</span>' +
+                '<span class="text-red-400">D: ' + p.d + '</span>' +
+                '<span class="text-yellow-400">A: ' + p.a + '</span>' +
+                '<span class="text-slate-400">KD: ' + kd + '</span>' +
+            '</div>' +
+            '<div class="flex flex-wrap items-center gap-1.5">' + equip + '</div>' +
+            '</div>';
     }
-    html += '</tbody></table>';
-    el.innerHTML = html;
+
+    table += '</tbody></table>';
+    cards += '</div>';
+    el.innerHTML = table + cards;
 }
 
 function renderKillfeed(killfeed) {
@@ -280,7 +305,7 @@ function renderKillfeed(killfeed) {
 
 function weaponIcon(weapon) {
     if (!weapon) return '';
-    return '<img src="/static/icons/weapons/' + esc(weapon) + '.svg" alt="' + esc(weapon) + '" class="h-4 inline-block opacity-80" onerror="var s=document.createElement(\'span\');s.className=\'text-xs text-slate-500\';s.textContent=\'' + esc(weapon) + '\';this.replaceWith(s)">';
+    return '<img src="/static/icons/equipment/' + esc(weapon) + '.svg" alt="' + esc(weapon) + '" class="h-4 inline-block opacity-80" onerror="var s=document.createElement(\'span\');s.className=\'text-xs text-slate-500\';s.textContent=\'' + esc(weapon) + '\';this.replaceWith(s)">';
 }
 
 function teamColor(team) {

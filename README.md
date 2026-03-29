@@ -129,3 +129,7 @@ Stop all running servers first, then update:
 docker stop $(docker ps -q --filter "name=cs2-")
 docker compose --profile update run --rm cs2-updater
 ```
+
+## Dev Notes
+
+Use s2v.app against `pak01_dir.vpk` in the `panorama/images/icons` and `panorama/images/hud/deathnotice/` folders for svg icons.

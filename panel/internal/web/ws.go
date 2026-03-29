@@ -276,16 +276,9 @@ func buildPlayerList(serverName string, tracker *gametracker.Manager) []gamePlay
 			team = "T"
 		}
 
-		var weapons []string
-		for _, w := range ps.WeaponList() {
-			weapons = append(weapons, gametracker.DisplayName(w))
-		}
-		var grenades []string
-		for _, g := range ps.GrenadeList() {
-			if short, ok := gametracker.GrenadeShort[g]; ok {
-				grenades = append(grenades, short)
-			}
-		}
+		// Send raw weapon names — client renders as SVG icons
+		weapons := ps.WeaponList()
+		grenades := ps.GrenadeList()
 
 		players = append(players, gamePlayerJSON{
 			Name: ps.Name, Team: team, IsBot: ps.IsBot, Online: ps.Online,
