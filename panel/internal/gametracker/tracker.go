@@ -54,9 +54,10 @@ type PlayerStats struct {
 	MVPs      int
 	EF        int             // enemies flashed
 	UD        float64         // utility damage
-	KnifeKills  int
-	KnifeDeaths int // times killed by knife (lose a level in arms race)
-	ZeusKills   int
+	KnifeKills int
+	ZeusKills  int
+	Level      int // arms race level (state-tracked)
+	LevelKills int // kills at current level (resets on level up)
 	HasArmor  bool
 	HasHelmet bool
 	HasDefuser bool
@@ -346,6 +347,7 @@ func (s *ServerState) recordKill(killer, killerTeam, victim, victimTeam, weapon 
 		InAir: mods.InAir, ThroughSmoke: mods.ThroughSmoke,
 	}
 	s.appendKill(k)
+	isKnife := strings.HasPrefix(weapon, "knife") || weapon == "bayonet"
 	if killer != "" {
 		p := s.ensurePlayer(killer)
 		p.Kills++
@@ -354,8 +356,21 @@ func (s *ServerState) recordKill(killer, killerTeam, victim, victimTeam, weapon 
 		}
 		if weapon == "taser" {
 			p.ZeusKills++
-		} else if strings.HasPrefix(weapon, "knife") || weapon == "bayonet" {
+		} else if isKnife {
 			p.KnifeKills++
+		}
+		// Arms race level tracking
+		if s.gameMode == "armsrace" {
+			if isKnife {
+				p.Level++
+				p.LevelKills = 0
+			} else {
+				p.LevelKills++
+				if p.LevelKills >= 2 {
+					p.Level++
+					p.LevelKills = 0
+				}
+			}
 		}
 	}
 	p := s.ensurePlayer(victim)
@@ -364,8 +379,10 @@ func (s *ServerState) recordKill(killer, killerTeam, victim, victimTeam, weapon 
 	if victimTeam != "" {
 		p.Team = victimTeam
 	}
-	if strings.HasPrefix(weapon, "knife") || weapon == "bayonet" {
-		p.KnifeDeaths++
+	// Arms race: victim loses a level on knife death
+	if s.gameMode == "armsrace" && isKnife && p.Level > 0 {
+		p.Level--
+		p.LevelKills = 0
 	}
 	p.Weapons = make(map[string]bool)
 	s.mu.Unlock()

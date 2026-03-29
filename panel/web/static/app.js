@@ -369,8 +369,7 @@ function renderPlayers(players) {
     if (isArmsRace) {
         // Sort by level descending, then kills descending
         players.sort(function(a, b) {
-            function arLvl(p) { return Math.max(0, Math.floor((p.k - (p.knifek || 0)) / 2) + (p.knifek || 0) - (p.knifed || 0)); }
-            var la = arLvl(a), lb = arLvl(b);
+            var la = a.level || 0, lb = b.level || 0;
             if (la !== lb) return lb - la;
             return b.k - a.k;
         });
@@ -419,7 +418,7 @@ function renderPlayers(players) {
 
     function statCells(p) {
         if (isArmsRace) {
-            var lvl = Math.max(0, Math.floor((p.k - (p.knifek || 0)) / 2) + (p.knifek || 0) - (p.knifed || 0));
+            var lvl = p.level || 0;
             return '<td class="px-4 py-2 text-green-400 text-center">' + p.k + '</td>' +
                 '<td class="px-4 py-2 text-red-400 text-center">' + p.d + '</td>' +
                 '<td class="px-4 py-2 text-yellow-400 text-center">' + p.a + '</td>' +
@@ -489,7 +488,7 @@ function renderPlayers(players) {
                 '<span class="text-slate-300">HS: ' + (p.hsp ? p.hsp.toFixed(1) + '%' : '-') + '</span>' +
                 '<span class="text-slate-300">Zeus: ' + (p.zeusk || 0) + '</span>' +
                 '<span class="text-slate-300">Knife: ' + (p.knifek || 0) + '</span>' +
-                '<span class="text-orange-400">Lvl: ' + Math.max(0, Math.floor((p.k - (p.knifek || 0)) / 2) + (p.knifek || 0) - (p.knifed || 0)) + '</span>';
+                '<span class="text-orange-400">Lvl: ' + (p.level || 0) + '</span>';
         } else if (_statMode === 0) {
             statsHtml = '<span class="text-green-400">K: ' + p.k + '</span>' +
                 '<span class="text-red-400">D: ' + p.d + '</span>' +

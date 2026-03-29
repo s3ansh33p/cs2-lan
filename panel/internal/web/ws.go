@@ -208,9 +208,9 @@ type gamePlayerJSON struct {
 	MVPs       int      `json:"mvp"`
 	EF         int      `json:"ef"`
 	UD         float64  `json:"ud"`
-	KnifeKills  int     `json:"knifek,omitempty"`
-	KnifeDeaths int     `json:"knifed,omitempty"`
-	ZeusKills   int     `json:"zeusk,omitempty"`
+	KnifeKills int      `json:"knifek,omitempty"`
+	ZeusKills  int      `json:"zeusk,omitempty"`
+	Level      int      `json:"level,omitempty"`
 }
 
 type killJSON struct {
@@ -318,7 +318,7 @@ func buildPlayerList(serverName string, tracker *gametracker.Manager) []gamePlay
 			Weapons: weapons, Grenades: grenades,
 			HasArmor: ps.HasArmor, HasHelmet: ps.HasHelmet, HasDefuser: ps.HasDefuser, HasBomb: ps.HasBomb, Alive: ps.Alive,
 			HSPercent: ps.HSPercent, KDR: ps.KDR, ADR: ps.ADR, MVPs: ps.MVPs, EF: ps.EF, UD: ps.UD,
-			KnifeKills: ps.KnifeKills, KnifeDeaths: ps.KnifeDeaths, ZeusKills: ps.ZeusKills,
+			KnifeKills: ps.KnifeKills, ZeusKills: ps.ZeusKills, Level: ps.Level,
 		})
 	}
 
