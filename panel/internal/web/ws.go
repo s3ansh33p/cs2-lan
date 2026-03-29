@@ -190,7 +190,7 @@ type gamePlayerJSON struct {
 	Kills      int      `json:"k"`
 	Deaths     int      `json:"d"`
 	Assists    int      `json:"a"`
-	Ping       int      `json:"ping,omitempty"`
+	Ping       int      `json:"ping"`
 	Duration   string   `json:"dur,omitempty"`
 	Money      int      `json:"money,omitempty"`
 	Weapons    []string `json:"weapons,omitempty"`
@@ -198,6 +198,7 @@ type gamePlayerJSON struct {
 	HasArmor   bool     `json:"armor,omitempty"`
 	HasHelmet  bool     `json:"helmet,omitempty"`
 	HasDefuser bool     `json:"defuser,omitempty"`
+	HasBomb    bool     `json:"bomb,omitempty"`
 }
 
 type killJSON struct {
@@ -280,7 +281,7 @@ func buildPlayerList(serverName string, tracker *gametracker.Manager) []gamePlay
 			Kills: ps.Kills, Deaths: ps.Deaths, Assists: ps.Assists,
 			Ping: ps.Ping, Duration: ps.Duration, Money: ps.Money,
 			Weapons: weapons, Grenades: grenades,
-			HasArmor: ps.HasArmor, HasHelmet: ps.HasHelmet, HasDefuser: ps.HasDefuser,
+			HasArmor: ps.HasArmor, HasHelmet: ps.HasHelmet, HasDefuser: ps.HasDefuser, HasBomb: ps.HasBomb,
 		})
 	}
 

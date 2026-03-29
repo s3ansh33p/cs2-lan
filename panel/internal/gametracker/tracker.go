@@ -40,6 +40,7 @@ type PlayerStats struct {
 	HasArmor  bool
 	HasHelmet bool
 	HasDefuser bool
+	HasBomb    bool
 }
 
 func (p PlayerStats) Score() int {
@@ -50,7 +51,7 @@ func (p PlayerStats) Score() int {
 func (p PlayerStats) WeaponList() []string {
 	var out []string
 	for w := range p.Weapons {
-		if !IsGrenade(w) && !IsEquipment(w) {
+		if !IsGrenade(w) && !IsEquipment(w) && w != "c4" {
 			out = append(out, w)
 		}
 	}
@@ -327,6 +328,27 @@ func (s *ServerState) recordKill(killer, killerTeam, victim, victimTeam, weapon 
 	s.notify()
 }
 
+func (s *ServerState) recordSuicide(name, team, weapon string) {
+	s.mu.Lock()
+	k := Kill{
+		Time: time.Now(), Killer: name, Victim: name,
+		Weapon: weapon, IsSystem: false,
+	}
+	s.kills = append(s.kills, k)
+	if len(s.kills) > s.maxKills {
+		s.kills = s.kills[len(s.kills)-s.maxKills:]
+	}
+
+	p := s.ensurePlayer(name)
+	p.Deaths++
+	if team != "" {
+		p.Team = team
+	}
+	p.Weapons = make(map[string]bool)
+	s.mu.Unlock()
+	s.notify()
+}
+
 func (s *ServerState) recordAssist(assister, team string) {
 	s.mu.Lock()
 	p := s.ensurePlayer(assister)
@@ -378,6 +400,7 @@ func (s *ServerState) recordBuyzone(name, team, items string) {
 	p.HasArmor = false
 	p.HasHelmet = false
 	p.HasDefuser = false
+	p.HasBomb = false
 
 	for _, item := range strings.Fields(items) {
 		item = strings.TrimPrefix(item, "weapon_")
@@ -391,6 +414,10 @@ func (s *ServerState) recordBuyzone(name, team, items string) {
 		}
 		if item == "defuser" {
 			p.HasDefuser = true
+			continue
+		}
+		if item == "c4" {
+			p.HasBomb = true
 			continue
 		}
 		// Skip knives
@@ -468,6 +495,7 @@ func (s *ServerState) clearWeaponsOnRound() {
 	s.mu.Lock()
 	for _, p := range s.stats {
 		p.Weapons = make(map[string]bool)
+		p.HasBomb = false
 	}
 	s.mu.Unlock()
 	s.notify()
@@ -802,6 +830,15 @@ var (
 	// Left buyzone: "player<id><steamid><TEAM>" left buyzone with [ items... ]
 	buyzoneRe = regexp.MustCompile(`"(.+?)<(\d+)><(.+?)><(CT|TERRORIST)>" left buyzone with \[\s*(.+?)\s*\]`)
 
+	// Suicide: "player<id><steamid><TEAM>" committed suicide with "weapon"
+	suicideRe = regexp.MustCompile(`"(.+?)<(\d+)><(.+?)><(CT|TERRORIST|Unassigned)?>" .* committed suicide with "(.+?)"`)
+
+	// Killed by world/bomb: "player<id><steamid><TEAM>" was killed by ...  (less common)
+	// Also handles: triggered "Killed_A_Hostage", blinded by, etc.
+
+	// Player triggered: Got_The_Bomb, Dropped_The_Bomb, Planted_The_Bomb, Defused_The_Bomb
+	bombActionRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)>" triggered "(Got_The_Bomb|Dropped_The_Bomb|Planted_The_Bomb|Defused_The_Bomb)"`)
+
 	// Threw grenade
 	threwRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)>" threw\s+(\w+)`)
 
@@ -941,6 +978,14 @@ func parseLine(line string, state *ServerState) {
 		return
 	}
 
+	// Suicide
+	if m := suicideRe.FindStringSubmatch(line); m != nil {
+		name, slot, steamID, team, weapon := m[1], m[2], m[3], m[4], m[5]
+		mapPlayerIDs(state, name, slot, steamID)
+		state.recordSuicide(name, team, weapon)
+		return
+	}
+
 	// Assist
 	if m := assistRe.FindStringSubmatch(line); m != nil {
 		state.recordAssist(m[1], m[2])
@@ -963,6 +1008,29 @@ func parseLine(line string, state *ServerState) {
 	// Threw grenade
 	if m := threwRe.FindStringSubmatch(line); m != nil {
 		state.recordThrow(m[1], m[2], m[3])
+		return
+	}
+
+	// Bomb actions
+	if m := bombActionRe.FindStringSubmatch(line); m != nil {
+		name, team, action := m[1], m[2], m[3]
+		state.mu.Lock()
+		p := state.ensurePlayer(name)
+		if team != "" {
+			p.Team = team
+		}
+		switch action {
+		case "Got_The_Bomb":
+			p.HasBomb = true
+		case "Dropped_The_Bomb":
+			p.HasBomb = false
+		case "Planted_The_Bomb":
+			p.HasBomb = false
+		case "Defused_The_Bomb":
+			// nothing to update on inventory
+		}
+		state.mu.Unlock()
+		state.notify()
 		return
 	}
 

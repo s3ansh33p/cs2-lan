@@ -229,6 +229,7 @@ function renderPlayers(players) {
 
         // Equipment: armor/helmet/defuser indicators + weapons + grenades
         var equip = '';
+        if (p.bomb) equip += '<span class="inline-block px-1 py-0.5 rounded text-xs bg-red-900/50 text-red-400 font-bold" title="C4">C4</span> ';
         if (p.armor) equip += '<span class="inline-block px-1 py-0.5 rounded text-xs bg-sky-900/50 text-sky-400" title="Kevlar">' + (p.helmet ? 'K+H' : 'K') + '</span> ';
         if (p.defuser) equip += '<span class="inline-block px-1 py-0.5 rounded text-xs bg-purple-900/50 text-purple-400" title="Defuse Kit">D</span> ';
         if (p.weapons) {
@@ -279,6 +280,13 @@ function renderKillfeed(killfeed) {
                 '<span class="flex-1 border-t border-slate-600"></span>' +
                 '<span class="text-slate-600 text-xs">' + esc(k.time) + '</span>' +
                 '</div>';
+        } else if (k.killer && k.killer === k.victim) {
+            // Suicide
+            html += '<div class="flex items-center gap-2">' +
+                '<span class="text-red-400">' + esc(k.victim) + '</span>' +
+                '<span class="text-slate-500 text-xs">suicided (' + esc(k.weapon) + ')</span>' +
+                '<span class="text-slate-600 text-xs ml-auto">' + esc(k.time) + '</span>' +
+                '</div>';
         } else {
             html += '<div class="flex items-center gap-2">' +
                 '<span class="text-white">' + esc(k.killer) + '</span>' +
@@ -313,6 +321,11 @@ function appendKills(kills) {
                 '<span class="text-orange-400 text-xs font-medium">' + esc(k.msg) + '</span>' +
                 '<span class="flex-1 border-t border-slate-600"></span>' +
                 '<span class="text-slate-600 text-xs">' + esc(k.time) + '</span>';
+        } else if (k.killer && k.killer === k.victim) {
+            div.className = 'flex items-center gap-2';
+            div.innerHTML = '<span class="text-red-400">' + esc(k.victim) + '</span>' +
+                '<span class="text-slate-500 text-xs">suicided (' + esc(k.weapon) + ')</span>' +
+                '<span class="text-slate-600 text-xs ml-auto">' + esc(k.time) + '</span>';
         } else {
             div.className = 'flex items-center gap-2';
             div.innerHTML = '<span class="text-white">' + esc(k.killer) + '</span>' +
