@@ -4,9 +4,11 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"cs2-panel/internal/docker"
+	"cs2-panel/internal/gametracker"
 
 	"github.com/gorilla/websocket"
 )
@@ -21,22 +23,41 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-func (h *Handler) LogsWebSocket(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-
+// setupWSConn upgrades and configures a WebSocket connection.
+func setupWSConn(w http.ResponseWriter, r *http.Request) (*websocket.Conn, chan struct{}, error) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("ws upgrade: %v", err)
-		return
+		return nil, nil, err
 	}
-	defer conn.Close()
 
-	// Configure pong handler to extend read deadline
 	conn.SetReadDeadline(time.Now().Add(pongWait))
 	conn.SetPongHandler(func(string) error {
 		conn.SetReadDeadline(time.Now().Add(pongWait))
 		return nil
 	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	return conn, done, nil
+}
+
+func (h *Handler) LogsWebSocket(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	conn, done, err := setupWSConn(w, r)
+	if err != nil {
+		log.Printf("ws upgrade: %v", err)
+		return
+	}
+	defer conn.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -48,19 +69,6 @@ func (h *Handler) LogsWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer reader.Close()
 
-	done := make(chan struct{})
-
-	// Read from client (detect disconnect)
-	go func() {
-		defer close(done)
-		for {
-			if _, _, err := conn.ReadMessage(); err != nil {
-				return
-			}
-		}
-	}()
-
-	// Ping ticker to keep connection alive
 	pingTicker := time.NewTicker(pingInterval)
 	defer pingTicker.Stop()
 
@@ -77,13 +85,15 @@ func (h *Handler) LogsWebSocket(w http.ResponseWriter, r *http.Request) {
 		case <-pingTicker.C:
 			conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				log.Printf("ws ping %s: %v", name, err)
 				return
 			}
 		case line, ok := <-lines:
 			if !ok {
-				log.Printf("ws log stream ended for %s", name)
 				return
+			}
+			// Skip game event lines — already shown in killfeed/players
+			if isGameEventLine(line) {
+				continue
 			}
 			conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := conn.WriteMessage(websocket.TextMessage, []byte(line)); err != nil {
@@ -91,4 +101,238 @@ func (h *Handler) LogsWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// GameStateWebSocket pushes game state as JSON.
+// Players table: debounced (200ms) to batch rapid changes like buy phase.
+// Killfeed: pushed immediately as individual events for instant display.
+func (h *Handler) GameStateWebSocket(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	state := h.tracker.GetState(name)
+	if state == nil {
+		info, err := h.docker.InspectServer(r.Context(), "cs2-"+name)
+		if err != nil {
+			http.Error(w, "Server not found", http.StatusNotFound)
+			return
+		}
+		state = h.tracker.TrackServer(name, info.Port, info.RCONPassword)
+	}
+
+	conn, done, err := setupWSConn(w, r)
+	if err != nil {
+		log.Printf("ws game upgrade: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	changes, unsub := state.Subscribe()
+	defer unsub()
+
+	pingTicker := time.NewTicker(pingInterval)
+	defer pingTicker.Stop()
+
+	var debounceTimer *time.Timer
+	playersCh := make(chan struct{}, 1)
+
+	lastKillIdx := state.KillCount()
+
+	// Send initial full state
+	h.sendPlayers(conn, name)
+	h.sendKillfeedFull(conn, name)
+
+	for {
+		select {
+		case <-done:
+			if debounceTimer != nil {
+				debounceTimer.Stop()
+			}
+			return
+		case <-pingTicker.C:
+			conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		case <-changes:
+			// Push new killfeed entries immediately
+			newKills := state.GetKillsSince(lastKillIdx)
+			if len(newKills) > 0 {
+				lastKillIdx = state.KillCount()
+				if err := h.sendKillfeedNew(conn, newKills); err != nil {
+					return
+				}
+			}
+
+			// Debounce players update
+			if debounceTimer != nil {
+				debounceTimer.Stop()
+			}
+			debounceTimer = time.AfterFunc(200*time.Millisecond, func() {
+				select {
+				case playersCh <- struct{}{}:
+				default:
+				}
+			})
+		case <-playersCh:
+			if err := h.sendPlayers(conn, name); err != nil {
+				return
+			}
+		}
+	}
+}
+
+type gamePlayerJSON struct {
+	Name     string   `json:"name"`
+	Team     string   `json:"team"`
+	IsBot    bool     `json:"bot,omitempty"`
+	Online   bool     `json:"online"`
+	Kills    int      `json:"k"`
+	Deaths   int      `json:"d"`
+	Assists  int      `json:"a"`
+	Ping     int      `json:"ping,omitempty"`
+	Duration string   `json:"dur,omitempty"`
+	Weapons  []string `json:"weapons,omitempty"`
+	Grenades []string `json:"grenades,omitempty"`
+}
+
+type killJSON struct {
+	Killer   string `json:"killer,omitempty"`
+	Victim   string `json:"victim,omitempty"`
+	Weapon   string `json:"weapon,omitempty"`
+	Headshot bool   `json:"hs,omitempty"`
+	System   bool   `json:"sys,omitempty"`
+	Message  string `json:"msg,omitempty"`
+	Time     string `json:"time"`
+}
+
+func killToJSON(k gametracker.Kill) killJSON {
+	return killJSON{
+		Killer: k.Killer, Victim: k.Victim, Weapon: k.Weapon,
+		Headshot: k.Headshot, System: k.IsSystem, Message: k.Message,
+		Time: k.Time.Format("15:04:05"),
+	}
+}
+
+type scoreJSON struct {
+	Round int `json:"round"`
+	CT    int `json:"ct"`
+	T     int `json:"t"`
+}
+
+// sendPlayers sends a "players" message from tracker state (no RCON calls).
+func (h *Handler) sendPlayers(conn *websocket.Conn, name string) error {
+	players := buildPlayerList(name, h.tracker)
+
+	var score *scoreJSON
+	if state := h.tracker.GetState(name); state != nil {
+		s := state.GetScore()
+		score = &scoreJSON{Round: s.Round, CT: s.CT, T: s.T}
+	}
+
+	msg := struct {
+		Type    string           `json:"type"`
+		Players []gamePlayerJSON `json:"players"`
+		Score   *scoreJSON       `json:"score,omitempty"`
+	}{Type: "players", Players: players, Score: score}
+
+	conn.SetWriteDeadline(time.Now().Add(writeWait))
+	return conn.WriteJSON(msg)
+}
+
+// buildPlayerList reads player data entirely from the tracker.
+func buildPlayerList(serverName string, tracker *gametracker.Manager) []gamePlayerJSON {
+	state := tracker.GetState(serverName)
+	if state == nil {
+		return nil
+	}
+
+	scoreboard := state.GetScoreboard()
+	players := make([]gamePlayerJSON, 0, len(scoreboard))
+
+	for _, ps := range scoreboard {
+		team := ""
+		switch ps.Team {
+		case "CT":
+			team = "CT"
+		case "TERRORIST":
+			team = "T"
+		}
+
+		var weapons []string
+		for _, w := range ps.WeaponList() {
+			weapons = append(weapons, gametracker.DisplayName(w))
+		}
+		var grenades []string
+		for _, g := range ps.GrenadeList() {
+			if short, ok := gametracker.GrenadeShort[g]; ok {
+				grenades = append(grenades, short)
+			}
+		}
+
+		players = append(players, gamePlayerJSON{
+			Name: ps.Name, Team: team, IsBot: ps.IsBot, Online: ps.Online,
+			Kills: ps.Kills, Deaths: ps.Deaths, Assists: ps.Assists,
+			Ping: ps.Ping, Duration: ps.Duration,
+			Weapons: weapons, Grenades: grenades,
+		})
+	}
+
+	return players
+}
+
+// sendKillfeedFull sends the full killfeed (initial load).
+func (h *Handler) sendKillfeedFull(conn *websocket.Conn, name string) error {
+	state := h.tracker.GetState(name)
+	var kills []killJSON
+	if state != nil {
+		for _, k := range state.GetKillfeed(20) {
+			kills = append(kills, killToJSON(k))
+		}
+	}
+	msg := struct {
+		Type     string     `json:"type"`
+		Killfeed []killJSON `json:"killfeed"`
+	}{Type: "killfeed", Killfeed: kills}
+
+	conn.SetWriteDeadline(time.Now().Add(writeWait))
+	return conn.WriteJSON(msg)
+}
+
+// sendKillfeedNew sends only new kill events (incremental).
+func (h *Handler) sendKillfeedNew(conn *websocket.Conn, newKills []gametracker.Kill) error {
+	kills := make([]killJSON, len(newKills))
+	for i, k := range newKills {
+		kills[i] = killToJSON(k)
+	}
+	msg := struct {
+		Type  string     `json:"type"`
+		Kills []killJSON `json:"kills"`
+	}{Type: "kill", Kills: kills}
+
+	conn.SetWriteDeadline(time.Now().Add(writeWait))
+	return conn.WriteJSON(msg)
+}
+
+// isGameEventLine returns true for log lines that are game events
+// already displayed in the killfeed/players panel.
+func isGameEventLine(line string) bool {
+	for _, kw := range []string{
+		"\" killed \"",
+		"\" assisted killing \"",
+		"\" purchased \"",
+		"\" dropped \"",
+		"\" picked up \"",
+		"\" threw ",
+		"\" entered the game",
+		"\" disconnected",
+		"\" switched from team ",
+		"World triggered \"",
+		"\" triggered \"",
+		"Started map \"",
+	} {
+		if strings.Contains(line, kw) {
+			return true
+		}
+	}
+	return false
 }

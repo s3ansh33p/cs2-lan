@@ -5,10 +5,16 @@
     </div>
     <div class="flex items-center justify-between">
         <h1 class="text-2xl font-bold">{{.Server.Name}}</h1>
-        <button hx-post="/server/{{.Server.Name}}/stop" hx-confirm="Stop server {{.Server.Name}}?"
-            class="bg-red-600 hover:bg-red-700 text-white font-medium rounded px-4 py-2 text-sm transition-colors">
-            Stop Server
-        </button>
+        <div class="flex gap-2">
+            <button hx-post="/server/{{.Server.Name}}/restart" hx-confirm="Restart server {{.Server.Name}}?"
+                class="bg-orange-600 hover:bg-orange-700 text-white font-medium rounded px-4 py-2 text-sm transition-colors">
+                Restart
+            </button>
+            <button hx-post="/server/{{.Server.Name}}/stop" hx-confirm="Stop server {{.Server.Name}}?"
+                class="bg-red-600 hover:bg-red-700 text-white font-medium rounded px-4 py-2 text-sm transition-colors">
+                Stop Server
+            </button>
+        </div>
     </div>
 </div>
 
@@ -70,10 +76,27 @@
     </div>
 </div>
 
-<!-- Players & Scoreboard -->
-<div class="mt-6 bg-slate-800 border border-slate-700 rounded-lg">
+<!-- Score & Players -->
+<div id="score-bar" class="mt-6 bg-slate-800 border border-slate-700 rounded-lg p-4 hidden">
+    <div class="flex items-center justify-center gap-6 text-center">
+        <div>
+            <div class="text-xs text-blue-400 font-medium">CT</div>
+            <div id="score-ct" class="text-3xl font-bold text-blue-400">0</div>
+        </div>
+        <div>
+            <div class="text-xs text-slate-500">Round</div>
+            <div id="score-round" class="text-lg text-slate-400">0</div>
+        </div>
+        <div>
+            <div class="text-xs text-yellow-400 font-medium">T</div>
+            <div id="score-t" class="text-3xl font-bold text-yellow-400">0</div>
+        </div>
+    </div>
+</div>
+
+<div class="mt-4 bg-slate-800 border border-slate-700 rounded-lg">
     <div class="px-4 py-3 border-b border-slate-700 text-sm font-medium text-slate-300">Players</div>
-    <div id="player-list" hx-get="/server/{{.Server.Name}}/players" hx-trigger="every 5s" hx-swap="innerHTML">
+    <div id="player-list">
         {{template "player_list.html" .}}
     </div>
 </div>
@@ -82,7 +105,7 @@
     <!-- Killfeed -->
     <div class="bg-slate-800 border border-slate-700 rounded-lg" style="max-height: 400px;">
         <div class="px-4 py-3 border-b border-slate-700 text-sm font-medium text-slate-300">Killfeed</div>
-        <div id="killfeed" hx-get="/server/{{.Server.Name}}/killfeed" hx-trigger="every 3s" hx-swap="innerHTML" class="overflow-y-auto" style="max-height: 350px;">
+        <div id="killfeed" class="overflow-y-auto" style="max-height: 350px;">
             {{template "killfeed.html" .}}
         </div>
     </div>
@@ -91,6 +114,7 @@
 <script>
     document.addEventListener('DOMContentLoaded', function() {
         connectLogWS('{{.Server.Name}}');
+        connectGameWS('{{.Server.Name}}');
     });
 </script>
 {{end}}

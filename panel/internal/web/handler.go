@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -268,31 +267,34 @@ func (h *Handler) ServerDetail(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) PlayersPartial(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	info, err := h.docker.InspectServer(r.Context(), "cs2-"+name)
-	if err != nil {
-		http.Error(w, "Server not found", http.StatusNotFound)
-		return
-	}
-
-	var status *rcon.StatusInfo
-	if info.Status == "running" && info.Port > 0 && info.RCONPassword != "" {
-		addr := fmt.Sprintf("localhost:%d", info.Port)
-		resp, err := h.rcon.Execute(addr, info.RCONPassword, "status")
-		if err == nil {
-			log.Printf("RCON status for %s:\n%s", name, resp)
-			s := rcon.ParseStatus(resp)
-			status = &s
-		} else {
-			log.Printf("RCON status error for %s: %v", name, err)
+	state := h.tracker.GetState(name)
+	var players []CombinedPlayer
+	if state != nil {
+		for _, ps := range state.GetScoreboard() {
+			cp := CombinedPlayer{
+				Name: ps.Name, IsBot: ps.IsBot, Online: ps.Online,
+				Kills: ps.Kills, Deaths: ps.Deaths, Assists: ps.Assists,
+				Score: ps.Score(), Ping: ps.Ping, Duration: ps.Duration,
+			}
+			switch ps.Team {
+			case "CT":
+				cp.Team = "CT"
+			case "TERRORIST":
+				cp.Team = "T"
+			}
+			for _, w := range ps.WeaponList() {
+				cp.Weapons = append(cp.Weapons, gametracker.DisplayName(w))
+			}
+			for _, g := range ps.GrenadeList() {
+				if short, ok := gametracker.GrenadeShort[g]; ok {
+					cp.Grenades = append(cp.Grenades, short)
+				}
+			}
+			players = append(players, cp)
 		}
 	}
 
-	// Merge RCON player list with tracker K/D/A stats
-	players := mergePlayerData(name, status, h.tracker)
-
 	h.render(w, "player_list.html", map[string]any{
-		"Server":  info,
-		"Status":  status,
 		"Players": players,
 	})
 }
@@ -356,6 +358,53 @@ func (h *Handler) KillfeedPartial(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) RestartServer(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	// Capture current server config before stopping
+	info, err := h.docker.InspectServer(r.Context(), "cs2-"+name)
+	if err != nil {
+		log.Printf("restart %s: inspect failed: %v", name, err)
+		http.Error(w, "Server not found", http.StatusNotFound)
+		return
+	}
+
+	// Stop and remove
+	h.tracker.StopTracking(name)
+	if err := h.docker.StopServer(r.Context(), name); err != nil {
+		log.Printf("restart %s: stop failed: %v", name, err)
+	}
+
+	// Relaunch with same settings
+	tvEnabled := "0"
+	if info.TVEnabled {
+		tvEnabled = "1"
+	}
+	req := docker.LaunchRequest{
+		Name:     info.Name,
+		Port:     info.Port,
+		Mode:     info.GameMode,
+		Map:      info.Map,
+		Players:  info.MaxPlayers,
+		Password: info.Password,
+		RCON:     info.RCONPassword,
+		TV:       tvEnabled == "1",
+	}
+
+	if err := h.docker.Launch(r.Context(), req, h.composeFile); err != nil {
+		log.Printf("restart %s: launch failed: %v", name, err)
+	}
+
+	// Redirect back to server page
+	redirect := "/server/" + name
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", redirect)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, redirect, http.StatusSeeOther)
+}
+
 func (h *Handler) StopServer(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
@@ -382,75 +431,13 @@ type CombinedPlayer struct {
 	Ping     int
 	Duration string
 	Address  string
+	Team     string   // "CT", "T", or ""
 	Kills    int
 	Deaths   int
 	Assists  int
 	Score    int
-	Online   bool // true if currently connected
+	Weapons  []string // display names of non-grenade weapons
+	Grenades []string // short grenade abbreviations
+	Online   bool
 }
 
-func mergePlayerData(serverName string, status *rcon.StatusInfo, tracker *gametracker.Manager) []CombinedPlayer {
-	// Build stats map from tracker
-	statsMap := make(map[string]*gametracker.PlayerStats)
-	state := tracker.GetState(serverName)
-	if state != nil {
-		for _, ps := range state.GetScoreboard() {
-			ps := ps
-			statsMap[ps.Name] = &ps
-		}
-	}
-
-	seen := make(map[string]bool)
-	var players []CombinedPlayer
-
-	// First: online players from RCON status
-	if status != nil {
-		for _, p := range status.Players {
-			cp := CombinedPlayer{
-				Name:     p.Name,
-				IsBot:    p.IsBot,
-				Ping:     p.Ping,
-				Duration: p.Duration,
-				Address:  p.Address,
-				Online:   true,
-			}
-			if s, ok := statsMap[p.Name]; ok {
-				cp.Kills = s.Kills
-				cp.Deaths = s.Deaths
-				cp.Assists = s.Assists
-				cp.Score = s.Score()
-			}
-			players = append(players, cp)
-			seen[p.Name] = true
-		}
-	}
-
-	// Second: offline players who have stats (disconnected but played)
-	if state != nil {
-		for _, ps := range state.GetScoreboard() {
-			if !seen[ps.Name] {
-				players = append(players, CombinedPlayer{
-					Name:    ps.Name,
-					Kills:   ps.Kills,
-					Deaths:  ps.Deaths,
-					Assists: ps.Assists,
-					Score:   ps.Score(),
-					Online:  false,
-				})
-			}
-		}
-	}
-
-	// Sort: online first, then by score desc, then alphabetical
-	sort.Slice(players, func(i, j int) bool {
-		if players[i].Online != players[j].Online {
-			return players[i].Online
-		}
-		if players[i].Score != players[j].Score {
-			return players[i].Score > players[j].Score
-		}
-		return players[i].Name < players[j].Name
-	})
-
-	return players
-}

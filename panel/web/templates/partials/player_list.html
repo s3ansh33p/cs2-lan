@@ -3,18 +3,24 @@
 <table class="w-full text-sm">
     <thead>
         <tr class="border-b border-slate-700 text-slate-400 text-left">
+            <th class="px-4 py-2 font-medium w-8">Team</th>
             <th class="px-4 py-2 font-medium">Name</th>
             <th class="px-4 py-2 font-medium text-center">K</th>
             <th class="px-4 py-2 font-medium text-center">D</th>
             <th class="px-4 py-2 font-medium text-center">A</th>
             <th class="px-4 py-2 font-medium text-center">K/D</th>
+            <th class="px-4 py-2 font-medium">Equipment</th>
             <th class="px-4 py-2 font-medium">Ping</th>
-            <th class="px-4 py-2 font-medium">Time</th>
         </tr>
     </thead>
     <tbody>
         {{range .Players}}
         <tr class="border-b border-slate-700/50{{if not .Online}} opacity-50{{end}}">
+            <td class="px-4 py-2">
+                {{if eq .Team "CT"}}<span class="inline-block px-1.5 py-0.5 rounded text-xs font-bold bg-blue-500/20 text-blue-400">CT</span>
+                {{else if eq .Team "T"}}<span class="inline-block px-1.5 py-0.5 rounded text-xs font-bold bg-yellow-500/20 text-yellow-400">T</span>
+                {{else}}<span class="text-slate-600 text-xs">-</span>{{end}}
+            </td>
             <td class="px-4 py-2 text-white">
                 {{if .IsBot}}<span class="text-slate-400">(BOT)</span> {{end}}{{.Name}}{{if not .Online}} <span class="text-slate-500 text-xs">(offline)</span>{{end}}
             </td>
@@ -24,8 +30,13 @@
             <td class="px-4 py-2 text-slate-300 text-center">
                 {{if eq .Deaths 0}}-{{else}}{{printf "%.1f" (divf .Kills .Deaths)}}{{end}}
             </td>
+            <td class="px-4 py-2">
+                <div class="flex flex-wrap gap-1">
+                    {{range .Weapons}}<span class="inline-block px-1.5 py-0.5 rounded text-xs bg-slate-700 text-slate-300">{{.}}</span>{{end}}
+                    {{range .Grenades}}<span class="inline-block px-1.5 py-0.5 rounded text-xs bg-emerald-900/50 text-emerald-400">{{.}}</span>{{end}}
+                </div>
+            </td>
             <td class="px-4 py-2 text-slate-300">{{if .Online}}{{if .IsBot}}-{{else}}{{.Ping}}ms{{end}}{{else}}-{{end}}</td>
-            <td class="px-4 py-2 text-slate-300">{{if .Online}}{{.Duration}}{{else}}-{{end}}</td>
         </tr>
         {{end}}
     </tbody>

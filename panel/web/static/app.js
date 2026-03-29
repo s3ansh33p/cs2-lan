@@ -123,6 +123,188 @@ function reconnectLogs() {
     }
 }
 
+// Game state WebSocket (players + killfeed) - renders from JSON client-side
+function connectGameWS(serverName) {
+    var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var ws = new WebSocket(protocol + '//' + location.host + '/server/' + serverName + '/game/ws');
+
+    ws.onmessage = function(e) {
+        try {
+            var data = JSON.parse(e.data);
+            switch (data.type) {
+                case 'players':
+                    renderPlayers(data.players);
+                    if (data.score) renderScore(data.score);
+                    break;
+                case 'killfeed':
+                    // Full killfeed replace (initial load)
+                    renderKillfeed(data.killfeed);
+                    break;
+                case 'kill':
+                    // Incremental: append new kills
+                    appendKills(data.kills);
+                    break;
+            }
+        } catch(err) {}
+    };
+
+    ws.onclose = function() {
+        setTimeout(function() { connectGameWS(serverName); }, 3000);
+    };
+}
+
+function renderScore(score) {
+    var bar = document.getElementById('score-bar');
+    if (!bar) return;
+    if (score.round > 0 || score.ct > 0 || score.t > 0) {
+        bar.classList.remove('hidden');
+        document.getElementById('score-ct').textContent = score.ct;
+        document.getElementById('score-t').textContent = score.t;
+        document.getElementById('score-round').textContent = score.round;
+    }
+}
+
+function renderPlayers(players) {
+    var el = document.getElementById('player-list');
+    if (!el) return;
+
+    if (!players.length) {
+        el.innerHTML = '<div class="px-4 py-8 text-center text-slate-500 text-sm">No players connected</div>';
+        return;
+    }
+
+    var html = '<table class="w-full text-sm"><thead><tr class="border-b border-slate-700 text-slate-400 text-left">' +
+        '<th class="px-4 py-2 font-medium w-8">Team</th>' +
+        '<th class="px-4 py-2 font-medium">Name</th>' +
+        '<th class="px-4 py-2 font-medium text-center">K</th>' +
+        '<th class="px-4 py-2 font-medium text-center">D</th>' +
+        '<th class="px-4 py-2 font-medium text-center">A</th>' +
+        '<th class="px-4 py-2 font-medium text-center">K/D</th>' +
+        '<th class="px-4 py-2 font-medium">Equipment</th>' +
+        '<th class="px-4 py-2 font-medium">Ping</th>' +
+        '</tr></thead><tbody>';
+
+    for (var i = 0; i < players.length; i++) {
+        var p = players[i];
+        var opacity = p.online ? '' : ' opacity-50';
+        var teamBadge = p.team === 'CT'
+            ? '<span class="inline-block px-1.5 py-0.5 rounded text-xs font-bold bg-blue-500/20 text-blue-400">CT</span>'
+            : p.team === 'T'
+            ? '<span class="inline-block px-1.5 py-0.5 rounded text-xs font-bold bg-yellow-500/20 text-yellow-400">T</span>'
+            : '<span class="text-slate-600 text-xs">-</span>';
+
+        var name = esc(p.name);
+        if (p.bot) name = '<span class="text-slate-400">(BOT)</span> ' + name;
+        if (!p.online) name += ' <span class="text-slate-500 text-xs">(offline)</span>';
+
+        var kd = p.d === 0 ? '-' : (p.k / p.d).toFixed(1);
+
+        var equip = '';
+        if (p.weapons) {
+            for (var w = 0; w < p.weapons.length; w++) {
+                equip += '<span class="inline-block px-1.5 py-0.5 rounded text-xs bg-slate-700 text-slate-300">' + esc(p.weapons[w]) + '</span> ';
+            }
+        }
+        if (p.grenades) {
+            for (var g = 0; g < p.grenades.length; g++) {
+                equip += '<span class="inline-block px-1.5 py-0.5 rounded text-xs bg-emerald-900/50 text-emerald-400">' + esc(p.grenades[g]) + '</span> ';
+            }
+        }
+
+        var ping = !p.online ? '-' : (p.bot ? '-' : p.ping + 'ms');
+
+        html += '<tr class="border-b border-slate-700/50' + opacity + '">' +
+            '<td class="px-4 py-2">' + teamBadge + '</td>' +
+            '<td class="px-4 py-2 text-white">' + name + '</td>' +
+            '<td class="px-4 py-2 text-green-400 text-center">' + p.k + '</td>' +
+            '<td class="px-4 py-2 text-red-400 text-center">' + p.d + '</td>' +
+            '<td class="px-4 py-2 text-yellow-400 text-center">' + p.a + '</td>' +
+            '<td class="px-4 py-2 text-slate-300 text-center">' + kd + '</td>' +
+            '<td class="px-4 py-2"><div class="flex flex-wrap gap-1">' + equip + '</div></td>' +
+            '<td class="px-4 py-2 text-slate-300">' + ping + '</td>' +
+            '</tr>';
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}
+
+function renderKillfeed(killfeed) {
+    var el = document.getElementById('killfeed');
+    if (!el) return;
+
+    if (!killfeed.length) {
+        el.innerHTML = '<div class="px-4 py-8 text-center text-slate-500 text-sm">No kills yet</div>';
+        return;
+    }
+
+    var html = '<div class="space-y-1 p-4 text-sm killfeed-inner">';
+    for (var i = 0; i < killfeed.length; i++) {
+        var k = killfeed[i];
+        if (k.sys) {
+            html += '<div class="flex items-center gap-2 py-1">' +
+                '<span class="flex-1 border-t border-slate-600"></span>' +
+                '<span class="text-orange-400 text-xs font-medium">' + esc(k.msg) + '</span>' +
+                '<span class="flex-1 border-t border-slate-600"></span>' +
+                '<span class="text-slate-600 text-xs">' + esc(k.time) + '</span>' +
+                '</div>';
+        } else {
+            html += '<div class="flex items-center gap-2">' +
+                '<span class="text-white">' + esc(k.killer) + '</span>' +
+                '<span class="text-slate-500 text-xs">' + esc(k.weapon) + (k.hs ? ' HS' : '') + '</span>' +
+                '<span class="text-red-400">' + esc(k.victim) + '</span>' +
+                '<span class="text-slate-600 text-xs ml-auto">' + esc(k.time) + '</span>' +
+                '</div>';
+        }
+    }
+    html += '</div>';
+    el.innerHTML = html;
+}
+
+function appendKills(kills) {
+    var el = document.getElementById('killfeed');
+    if (!el) return;
+
+    // Find or create the inner container
+    var container = el.querySelector('.killfeed-inner');
+    if (!container) {
+        // First kill — replace "No kills yet" placeholder
+        el.innerHTML = '<div class="space-y-1 p-4 text-sm killfeed-inner"></div>';
+        container = el.querySelector('.killfeed-inner');
+    }
+
+    for (var i = 0; i < kills.length; i++) {
+        var k = kills[i];
+        var div = document.createElement('div');
+        if (k.sys) {
+            div.className = 'flex items-center gap-2 py-1';
+            div.innerHTML = '<span class="flex-1 border-t border-slate-600"></span>' +
+                '<span class="text-orange-400 text-xs font-medium">' + esc(k.msg) + '</span>' +
+                '<span class="flex-1 border-t border-slate-600"></span>' +
+                '<span class="text-slate-600 text-xs">' + esc(k.time) + '</span>';
+        } else {
+            div.className = 'flex items-center gap-2';
+            div.innerHTML = '<span class="text-white">' + esc(k.killer) + '</span>' +
+                '<span class="text-slate-500 text-xs">' + esc(k.weapon) + (k.hs ? ' HS' : '') + '</span>' +
+                '<span class="text-red-400">' + esc(k.victim) + '</span>' +
+                '<span class="text-slate-600 text-xs ml-auto">' + esc(k.time) + '</span>';
+        }
+        // Insert at top (newest first)
+        container.insertBefore(div, container.firstChild);
+    }
+
+    // Cap at 20 entries
+    while (container.children.length > 20) {
+        container.removeChild(container.lastChild);
+    }
+}
+
+function esc(s) {
+    if (!s) return '';
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+
 // RCON autocomplete
 var _rconCommands = [
     // Server management

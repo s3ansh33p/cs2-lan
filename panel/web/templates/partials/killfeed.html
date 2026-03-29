@@ -2,12 +2,21 @@
 {{if .Killfeed}}
 <div class="space-y-1 p-4 text-sm">
     {{range .Killfeed}}
+    {{if .IsSystem}}
+    <div class="flex items-center gap-2 py-1">
+        <span class="flex-1 border-t border-slate-600"></span>
+        <span class="text-orange-400 text-xs font-medium">{{.Message}}</span>
+        <span class="flex-1 border-t border-slate-600"></span>
+        <span class="text-slate-600 text-xs">{{.Time.Format "15:04:05"}}</span>
+    </div>
+    {{else}}
     <div class="flex items-center gap-2">
         <span class="text-white">{{.Killer}}</span>
         <span class="text-slate-500 text-xs">{{.Weapon}}{{if .Headshot}} HS{{end}}</span>
         <span class="text-red-400">{{.Victim}}</span>
         <span class="text-slate-600 text-xs ml-auto">{{.Time.Format "15:04:05"}}</span>
     </div>
+    {{end}}
     {{end}}
 </div>
 {{else}}
