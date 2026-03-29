@@ -253,7 +253,7 @@ func (h *Handler) ServerDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Start tracking this server for killfeed/scoreboard via UDP log
-	state := h.tracker.TrackServer(name, info.Port, info.RCONPassword)
+	state := h.tracker.TrackServer(name, info.Port, info.RCONPassword, info.GameMode)
 
 	h.render(w, "server.html", map[string]any{
 		"Title":      info.Name,

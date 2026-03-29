@@ -91,12 +91,13 @@ func (h *Handler) LogsWebSocket(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			// Skip game event lines — already shown in killfeed/players
+			// Tag game event lines so the client can filter them
+			prefix := ""
 			if isGameEventLine(line) {
-				continue
+				prefix = "E:"
 			}
 			conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := conn.WriteMessage(websocket.TextMessage, []byte(line)); err != nil {
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(prefix+line)); err != nil {
 				return
 			}
 		}
@@ -116,7 +117,7 @@ func (h *Handler) GameStateWebSocket(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Server not found", http.StatusNotFound)
 			return
 		}
-		state = h.tracker.TrackServer(name, info.Port, info.RCONPassword)
+		state = h.tracker.TrackServer(name, info.Port, info.RCONPassword, info.GameMode)
 	}
 
 	conn, done, err := setupWSConn(w, r)
@@ -182,17 +183,21 @@ func (h *Handler) GameStateWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 type gamePlayerJSON struct {
-	Name     string   `json:"name"`
-	Team     string   `json:"team"`
-	IsBot    bool     `json:"bot,omitempty"`
-	Online   bool     `json:"online"`
-	Kills    int      `json:"k"`
-	Deaths   int      `json:"d"`
-	Assists  int      `json:"a"`
-	Ping     int      `json:"ping,omitempty"`
-	Duration string   `json:"dur,omitempty"`
-	Weapons  []string `json:"weapons,omitempty"`
-	Grenades []string `json:"grenades,omitempty"`
+	Name       string   `json:"name"`
+	Team       string   `json:"team"`
+	IsBot      bool     `json:"bot,omitempty"`
+	Online     bool     `json:"online"`
+	Kills      int      `json:"k"`
+	Deaths     int      `json:"d"`
+	Assists    int      `json:"a"`
+	Ping       int      `json:"ping,omitempty"`
+	Duration   string   `json:"dur,omitempty"`
+	Money      int      `json:"money,omitempty"`
+	Weapons    []string `json:"weapons,omitempty"`
+	Grenades   []string `json:"grenades,omitempty"`
+	HasArmor   bool     `json:"armor,omitempty"`
+	HasHelmet  bool     `json:"helmet,omitempty"`
+	HasDefuser bool     `json:"defuser,omitempty"`
 }
 
 type killJSON struct {
@@ -214,9 +219,10 @@ func killToJSON(k gametracker.Kill) killJSON {
 }
 
 type scoreJSON struct {
-	Round int `json:"round"`
-	CT    int `json:"ct"`
-	T     int `json:"t"`
+	Round    int    `json:"round"`
+	CT       int    `json:"ct"`
+	T        int    `json:"t"`
+	GameMode string `json:"mode,omitempty"`
 }
 
 // sendPlayers sends a "players" message from tracker state (no RCON calls).
@@ -226,7 +232,7 @@ func (h *Handler) sendPlayers(conn *websocket.Conn, name string) error {
 	var score *scoreJSON
 	if state := h.tracker.GetState(name); state != nil {
 		s := state.GetScore()
-		score = &scoreJSON{Round: s.Round, CT: s.CT, T: s.T}
+		score = &scoreJSON{Round: s.Round, CT: s.CT, T: s.T, GameMode: s.GameMode}
 	}
 
 	msg := struct {
@@ -272,8 +278,9 @@ func buildPlayerList(serverName string, tracker *gametracker.Manager) []gamePlay
 		players = append(players, gamePlayerJSON{
 			Name: ps.Name, Team: team, IsBot: ps.IsBot, Online: ps.Online,
 			Kills: ps.Kills, Deaths: ps.Deaths, Assists: ps.Assists,
-			Ping: ps.Ping, Duration: ps.Duration,
+			Ping: ps.Ping, Duration: ps.Duration, Money: ps.Money,
 			Weapons: weapons, Grenades: grenades,
+			HasArmor: ps.HasArmor, HasHelmet: ps.HasHelmet, HasDefuser: ps.HasDefuser,
 		})
 	}
 
@@ -315,24 +322,16 @@ func (h *Handler) sendKillfeedNew(conn *websocket.Conn, newKills []gametracker.K
 
 // isGameEventLine returns true for log lines that are game events
 // already displayed in the killfeed/players panel.
+// All CS2 game event lines start with "L MM/DD/YYYY".
 func isGameEventLine(line string) bool {
-	for _, kw := range []string{
-		"\" killed \"",
-		"\" assisted killing \"",
-		"\" purchased \"",
-		"\" dropped \"",
-		"\" picked up \"",
-		"\" threw ",
-		"\" entered the game",
-		"\" disconnected",
-		"\" switched from team ",
-		"World triggered \"",
-		"\" triggered \"",
-		"Started map \"",
-	} {
-		if strings.Contains(line, kw) {
-			return true
-		}
+	trimmed := strings.TrimSpace(line)
+	if len(trimmed) > 2 && trimmed[0] == 'L' && trimmed[1] == ' ' {
+		return true
+	}
+	// Also filter JSON round_stats blocks and MatchStatus
+	if strings.Contains(line, "JSON_BEGIN{") || strings.Contains(line, "}}JSON_END") ||
+		strings.HasPrefix(trimmed, "MatchStatus:") || strings.HasPrefix(trimmed, "Started map") {
+		return true
 	}
 	return false
 }

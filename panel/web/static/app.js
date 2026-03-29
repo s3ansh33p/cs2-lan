@@ -2,6 +2,7 @@
 var _logServerName = null;
 var _logPaused = false;
 var _logBuffer = []; // buffer lines while paused
+var _logShowEvents = false; // show game event lines in log viewer
 
 function connectLogWS(serverName) {
     _logServerName = serverName;
@@ -58,10 +59,19 @@ function appendLogLine(text) {
     var output = document.getElementById('log-output');
     if (!output) return;
 
+    // Check for game event prefix
+    var isEvent = false;
+    if (text.substring(0, 2) === 'E:') {
+        isEvent = true;
+        text = text.substring(2);
+    }
+
+    // Hide game events unless toggled on
+    if (isEvent && !_logShowEvents) return;
+
     // Deduplicate consecutive identical lines
     if (_lastLogLine && _lastLogLine._logText === text) {
         _lastLogLine._logCount = (_lastLogLine._logCount || 1) + 1;
-        // Update the counter badge
         var badge = _lastLogLine.querySelector('.log-count');
         if (!badge) {
             badge = document.createElement('span');
@@ -77,6 +87,7 @@ function appendLogLine(text) {
     line.textContent = text;
     line._logText = text;
     line._logCount = 1;
+    if (isEvent) line.className = 'text-slate-500';
     output.appendChild(line);
     _lastLogLine = line;
 
@@ -84,6 +95,17 @@ function appendLogLine(text) {
         output.removeChild(output.firstChild);
     }
     output.scrollTop = output.scrollHeight;
+}
+
+function toggleLogEvents() {
+    _logShowEvents = !_logShowEvents;
+    var btn = document.getElementById('log-events');
+    if (btn) {
+        btn.textContent = _logShowEvents ? 'Hide Events' : 'Raw';
+        btn.className = _logShowEvents
+            ? 'text-xs bg-orange-600 hover:bg-orange-500 text-white rounded px-2 py-1'
+            : 'text-xs bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1';
+    }
 }
 
 function toggleLogPause() {
@@ -156,12 +178,14 @@ function connectGameWS(serverName) {
 function renderScore(score) {
     var bar = document.getElementById('score-bar');
     if (!bar) return;
-    if (score.round > 0 || score.ct > 0 || score.t > 0) {
-        bar.classList.remove('hidden');
-        document.getElementById('score-ct').textContent = score.ct;
-        document.getElementById('score-t').textContent = score.t;
-        document.getElementById('score-round').textContent = score.round;
+    document.getElementById('score-ct').textContent = score.ct;
+    document.getElementById('score-t').textContent = score.t;
+    document.getElementById('score-round').textContent = score.round;
+    var modeEl = document.getElementById('score-mode');
+    if (modeEl && score.mode) {
+        modeEl.textContent = score.mode.charAt(0).toUpperCase() + score.mode.slice(1);
     }
+    bar.classList.remove('hidden');
 }
 
 function renderPlayers(players) {
@@ -180,6 +204,7 @@ function renderPlayers(players) {
         '<th class="px-4 py-2 font-medium text-center">D</th>' +
         '<th class="px-4 py-2 font-medium text-center">A</th>' +
         '<th class="px-4 py-2 font-medium text-center">K/D</th>' +
+        '<th class="px-4 py-2 font-medium text-right">Money</th>' +
         '<th class="px-4 py-2 font-medium">Equipment</th>' +
         '<th class="px-4 py-2 font-medium">Ping</th>' +
         '</tr></thead><tbody>';
@@ -199,7 +224,13 @@ function renderPlayers(players) {
 
         var kd = p.d === 0 ? '-' : (p.k / p.d).toFixed(1);
 
+        // Money
+        var money = p.money ? '$' + p.money.toLocaleString() : '-';
+
+        // Equipment: armor/helmet/defuser indicators + weapons + grenades
         var equip = '';
+        if (p.armor) equip += '<span class="inline-block px-1 py-0.5 rounded text-xs bg-sky-900/50 text-sky-400" title="Kevlar">' + (p.helmet ? 'K+H' : 'K') + '</span> ';
+        if (p.defuser) equip += '<span class="inline-block px-1 py-0.5 rounded text-xs bg-purple-900/50 text-purple-400" title="Defuse Kit">D</span> ';
         if (p.weapons) {
             for (var w = 0; w < p.weapons.length; w++) {
                 equip += '<span class="inline-block px-1.5 py-0.5 rounded text-xs bg-slate-700 text-slate-300">' + esc(p.weapons[w]) + '</span> ';
@@ -220,6 +251,7 @@ function renderPlayers(players) {
             '<td class="px-4 py-2 text-red-400 text-center">' + p.d + '</td>' +
             '<td class="px-4 py-2 text-yellow-400 text-center">' + p.a + '</td>' +
             '<td class="px-4 py-2 text-slate-300 text-center">' + kd + '</td>' +
+            '<td class="px-4 py-2 text-green-300 text-right font-mono text-xs">' + money + '</td>' +
             '<td class="px-4 py-2"><div class="flex flex-wrap gap-1">' + equip + '</div></td>' +
             '<td class="px-4 py-2 text-slate-300">' + ping + '</td>' +
             '</tr>';

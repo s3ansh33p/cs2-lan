@@ -24,17 +24,22 @@ type Kill struct {
 
 // PlayerStats tracks per-player game state.
 type PlayerStats struct {
-	Name     string
-	Team     string          // "CT", "TERRORIST", or ""
-	Kills    int
-	Deaths   int
-	Assists  int
-	Weapons  map[string]bool // current loadout
-	Online   bool            // connected to server
-	IsBot    bool
-	Ping     int             // from RCON polling
-	Duration string          // from RCON polling
-	Address  string          // from RCON polling
+	Name      string
+	Team      string          // "CT", "TERRORIST", or ""
+	Kills     int
+	Deaths    int
+	Assists   int
+	Weapons   map[string]bool // current loadout
+	Online    bool            // connected to server
+	IsBot     bool
+	Ping      int             // from RCON polling
+	Duration  string          // from RCON polling
+	Address   string          // from RCON polling
+	Money     int             // from round_stats JSON
+	AccountID string          // Steam account ID for JSON mapping
+	HasArmor  bool
+	HasHelmet bool
+	HasDefuser bool
 }
 
 func (p PlayerStats) Score() int {
@@ -97,6 +102,29 @@ var WeaponDisplayName = map[string]string{
 	"taser": "Zeus",
 }
 
+// WeaponPrice maps weapon names to their buy cost in CS2.
+var WeaponPrice = map[string]int{
+	// Pistols
+	"glock": 200, "usp_silencer": 200, "hkp2000": 200, "p250": 300,
+	"fiveseven": 500, "tec9": 500, "cz75a": 500, "deagle": 700,
+	"elite": 300, "revolver": 600,
+	// SMGs
+	"mac10": 1050, "mp9": 1250, "mp7": 1500, "mp5sd": 1500,
+	"ump45": 1200, "p90": 2350, "bizon": 1400,
+	// Rifles
+	"famas": 2050, "galilar": 1800, "ak47": 2700, "m4a1": 3100,
+	"m4a1_silencer": 2900, "aug": 3300, "sg556": 3000,
+	"ssg08": 1700, "awp": 4750, "scar20": 5000, "g3sg1": 5000,
+	// Heavy
+	"nova": 1050, "xm1014": 2000, "mag7": 1300, "sawedoff": 1100,
+	"m249": 5200, "negev": 1700,
+	// Gear
+	"kevlar": 650, "assaultsuit": 1000, "defuser": 400, "taser": 200,
+	// Grenades
+	"hegrenade": 300, "flashbang": 200, "smokegrenade": 300,
+	"molotov": 400, "incgrenade": 600, "decoy": 50,
+}
+
 func DisplayName(w string) string {
 	if n, ok := WeaponDisplayName[w]; ok {
 		return n
@@ -116,9 +144,19 @@ type ServerState struct {
 	kills    []Kill
 	stats    map[string]*PlayerStats
 	maxKills int
-	round    int // current round number
+	round    int
 	ctScore  int
 	tScore   int
+	gameMode string // "competitive", "casual", "deathmatch", etc.
+	customStartMoney int // from mp_startmoney cvar, 0 = use mode default
+
+	// JSON block accumulator for round_stats
+	jsonBuf    []string
+	inJSON     bool
+
+	// Player mappings for JSON round_stats
+	accountMap map[string]string // accountID -> name (for human players)
+	slotMap    map[int]string    // player slot ID -> name (for all players including bots)
 
 	// Change notification
 	subMu   sync.Mutex
@@ -127,20 +165,39 @@ type ServerState struct {
 
 // ScoreInfo returns the current round scores.
 type ScoreInfo struct {
-	Round   int
-	CT      int
-	T       int
+	Round    int
+	CT       int
+	T        int
+	GameMode string
 }
 
 func (s *ServerState) GetScore() ScoreInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return ScoreInfo{Round: s.round, CT: s.ctScore, T: s.tScore}
+	return ScoreInfo{Round: s.round, CT: s.ctScore, T: s.tScore, GameMode: s.gameMode}
+}
+
+func (s *ServerState) startingMoney() int {
+	if s.customStartMoney > 0 {
+		return s.customStartMoney
+	}
+	switch s.gameMode {
+	case "casual":
+		return 1000
+	case "deathmatch":
+		return 16000
+	case "armsrace", "demolition":
+		return 0
+	default: // competitive, wingman, etc.
+		return 800
+	}
 }
 
 func newServerState() *ServerState {
 	return &ServerState{
-		stats:    make(map[string]*PlayerStats),
+		stats:      make(map[string]*PlayerStats),
+		accountMap: make(map[string]string),
+		slotMap:    make(map[int]string),
 		maxKills: 100,
 	}
 }
@@ -287,15 +344,60 @@ func (s *ServerState) recordPurchase(name, team, weapon string) {
 	if team != "" {
 		p.Team = team
 	}
-	p.Weapons[weapon] = true
+	// Deduct cost from money
+	if price, ok := WeaponPrice[weapon]; ok && p.Money >= price {
+		p.Money -= price
+	}
+	// Add weapon/equipment to loadout
+	switch {
+	case weapon == "kevlar":
+		p.HasArmor = true
+	case weapon == "assaultsuit":
+		p.HasArmor = true
+		p.HasHelmet = true
+	case weapon == "defuser":
+		p.HasDefuser = true
+	case strings.HasPrefix(weapon, "knife"):
+		// skip knives
+	default:
+		p.Weapons[weapon] = true
+	}
 	s.mu.Unlock()
 	s.notify()
 }
 
-func (s *ServerState) recordDrop(name, weapon string) {
+// recordBuyzone sets a player's full loadout from "left buyzone" log line.
+// items is the bracket content, e.g. "weapon_knife weapon_hkp2000 defuser kevlar(100) helmet"
+func (s *ServerState) recordBuyzone(name, team, items string) {
 	s.mu.Lock()
-	if p, ok := s.stats[name]; ok {
-		delete(p.Weapons, weapon)
+	p := s.ensurePlayer(name)
+	if team != "" {
+		p.Team = team
+	}
+	p.Weapons = make(map[string]bool)
+	p.HasArmor = false
+	p.HasHelmet = false
+	p.HasDefuser = false
+
+	for _, item := range strings.Fields(items) {
+		item = strings.TrimPrefix(item, "weapon_")
+		if strings.HasPrefix(item, "kevlar") {
+			p.HasArmor = true
+			continue
+		}
+		if item == "helmet" {
+			p.HasHelmet = true
+			continue
+		}
+		if item == "defuser" {
+			p.HasDefuser = true
+			continue
+		}
+		// Skip knives
+		if strings.HasPrefix(item, "knife") {
+			continue
+		}
+		p.Weapons[item] = true
 	}
 	s.mu.Unlock()
 	s.notify()
@@ -343,11 +445,12 @@ func (s *ServerState) recordDisconnect(name string) {
 func (s *ServerState) SyncRCON(rconPlayers map[string]RCONPlayerInfo) {
 	s.mu.Lock()
 	for name, info := range rconPlayers {
-		if p, ok := s.stats[name]; ok {
-			p.Ping = info.Ping
-			p.Duration = info.Duration
-			p.Address = info.Address
-		}
+		p := s.ensurePlayer(name)
+		p.Ping = info.Ping
+		p.Duration = info.Duration
+		p.Address = info.Address
+		p.IsBot = info.IsBot
+		p.Online = true
 	}
 	s.mu.Unlock()
 	s.notify()
@@ -368,6 +471,101 @@ func (s *ServerState) clearWeaponsOnRound() {
 	}
 	s.mu.Unlock()
 	s.notify()
+}
+
+// parseRoundStats processes the accumulated JSON round_stats block.
+// Updates money for each player and cross-checks scores.
+func (s *ServerState) parseRoundStats(lines []string) {
+	// Join all lines, strip log prefixes
+	var fields string
+	playerLines := make(map[string]string)
+	roundNum, scoreT, scoreCT := 0, 0, 0
+
+	for _, line := range lines {
+		// Strip "L MM/DD/YYYY - HH:MM:SS: " prefix
+		if idx := strings.Index(line, ": "); idx >= 0 {
+			line = strings.TrimSpace(line[idx+2:])
+		}
+		// Remove surrounding quotes for key-value lines
+		if strings.HasPrefix(line, "\"round_number\"") {
+			fmt.Sscanf(line, `"round_number" : "%d"`, &roundNum)
+		} else if strings.HasPrefix(line, "\"score_t\"") {
+			fmt.Sscanf(line, `"score_t" : "%d"`, &scoreT)
+		} else if strings.HasPrefix(line, "\"score_ct\"") {
+			fmt.Sscanf(line, `"score_ct" : "%d"`, &scoreCT)
+		} else if strings.HasPrefix(line, "\"fields\"") {
+			// Extract field names
+			if idx := strings.Index(line, ":"); idx >= 0 {
+				fields = strings.Trim(strings.TrimSpace(line[idx+1:]), "\"")
+			}
+		} else if strings.HasPrefix(line, "\"player_") {
+			// "player_0" : "  914801619, 2, 1000, ..."
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				key := strings.Trim(strings.TrimSpace(parts[0]), "\"")
+				val := strings.Trim(strings.TrimSpace(parts[1]), "\"")
+				playerLines[key] = val
+			}
+		}
+	}
+
+	_ = fields // fields header tells us column order, but it's always the same
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if roundNum > 0 {
+		s.round = roundNum
+	}
+	s.ctScore = scoreCT
+	s.tScore = scoreT
+
+	// Parse each player line: accountid, team, money, kills, deaths, assists, ...
+	// "player_N" maps to slot ID N in the slotMap
+	for key, val := range playerLines {
+		parts := strings.Split(val, ",")
+		if len(parts) < 6 {
+			continue
+		}
+		accountID := strings.TrimSpace(parts[0])
+		teamNum := strings.TrimSpace(parts[1])
+		money := 0
+		fmt.Sscanf(strings.TrimSpace(parts[2]), "%d", &money)
+
+		team := ""
+		switch teamNum {
+		case "2":
+			team = "TERRORIST"
+		case "3":
+			team = "CT"
+		}
+
+		// Resolve player name: try slot ID first (works for bots), then account ID
+		var playerName string
+
+		// Extract slot from "player_N"
+		slotID := -1
+		fmt.Sscanf(key, "player_%d", &slotID)
+		if slotID >= 0 {
+			playerName = s.slotMap[slotID]
+		}
+
+		// Fall back to account ID for human players
+		if playerName == "" && accountID != "0" {
+			playerName = s.accountMap[accountID]
+		}
+
+		if playerName == "" {
+			continue
+		}
+
+		if p, ok := s.stats[playerName]; ok {
+			p.Money = money
+			if team != "" {
+				p.Team = team
+			}
+		}
+	}
 }
 
 func (s *ServerState) addSystemMessage(msg string) {
@@ -424,7 +622,7 @@ func NewManager(streamFn LogStreamFunc, rconFn RCONFunc) *Manager {
 	}
 }
 
-func (m *Manager) TrackServer(name string, gamePort int, rconPassword string) *ServerState {
+func (m *Manager) TrackServer(name string, gamePort int, rconPassword, gameMode string) *ServerState {
 	m.mu.Lock()
 	if s, ok := m.servers[name]; ok {
 		m.mu.Unlock()
@@ -432,6 +630,7 @@ func (m *Manager) TrackServer(name string, gamePort int, rconPassword string) *S
 	}
 
 	s := newServerState()
+	s.gameMode = gameMode
 	m.servers[name] = s
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancels[name] = cancel
@@ -477,7 +676,19 @@ func (m *Manager) setupAndTrack(ctx context.Context, name string, gamePort int, 
 			log.Printf("gametracker %s: rcon %q -> %s", name, cmd, resp)
 		}
 	}
-	log.Printf("gametracker %s: logging enabled, starting log stream", name)
+	// Query mp_startmoney for custom start money
+	if resp, err := m.rconFn(addr, rconPassword, "mp_startmoney"); err == nil {
+		// Response format: "mp_startmoney" = "800" ( def. "800" )
+		var val int
+		if _, err := fmt.Sscanf(resp, `"mp_startmoney" = "%d"`, &val); err == nil && val > 0 {
+			state.mu.Lock()
+			state.customStartMoney = val
+			state.mu.Unlock()
+			log.Printf("gametracker %s: mp_startmoney = %d", name, val)
+		}
+	}
+
+	log.Printf("gametracker %s: mode=%s, logging enabled, starting log stream", name, state.gameMode)
 
 	// Start RCON poller for ping/duration (single goroutine per server)
 	go m.rconPoller(ctx, name, addr, rconPassword, state)
@@ -577,33 +788,30 @@ func parseRCONStatus(raw string) map[string]RCONPlayerInfo {
 
 var rconPlayerRe = regexp.MustCompile(`^\s*(\d+)\s+(\S+)\s+(\d+)\s+(\d+)\s+(\w+)\s+(\d+)\s+(?:(\S+)\s+)?'(.+?)'`)
 
-// Log line patterns
+// Log line patterns — all game event lines start with "L MM/DD/YYYY"
 var (
 	// Kill: "killer<id><steamid><TEAM>" ... killed "victim<id><steamid><TEAM>" ... with "weapon" (headshot)?
-	killRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST|Unassigned)?>".*killed "(.+?)<\d+><.+?><(CT|TERRORIST|Unassigned)?>".*with "(.+?)"(.*)`)
+	killRe = regexp.MustCompile(`"(.+?)<(\d+)><(.+?)><(CT|TERRORIST|Unassigned)?>".*killed "(.+?)<(\d+)><(.+?)><(CT|TERRORIST|Unassigned)?>".*with "(.+?)"(.*)`)
 
-	// Assist: "player<id><steamid><TEAM>" assisted killing "victim<id><steamid><TEAM>"
+	// Assist
 	assistRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)?>" assisted killing`)
 
 	// Purchase: "player<id><steamid><TEAM>" purchased "weapon"
 	purchaseRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)>" purchased "(.+?)"`)
 
-	// Dropped: "player<id><steamid><TEAM>" dropped "weapon"
-	dropRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)>" dropped "(.+?)"`)
+	// Left buyzone: "player<id><steamid><TEAM>" left buyzone with [ items... ]
+	buyzoneRe = regexp.MustCompile(`"(.+?)<(\d+)><(.+?)><(CT|TERRORIST)>" left buyzone with \[\s*(.+?)\s*\]`)
 
-	// Threw: "player<id><steamid><TEAM>" threw flashbang/smokegrenade/etc
+	// Threw grenade
 	threwRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)>" threw\s+(\w+)`)
 
-	// Picked up: "player<id><steamid><TEAM>" picked up "weapon"
-	pickupRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)>" picked up "(.+?)"`)
-
-	// Team switch: "player<id><steamid><TEAM>" switched from team <old> to <new>
+	// Team switch
 	teamSwitchRe = regexp.MustCompile(`"(.+?)<\d+><.+?><.+?>" switched from team \S+ to (CT|TERRORIST)`)
 
-	// Player entered: "player<id><steamid><>" entered the game
-	enteredRe = regexp.MustCompile(`"(.+?)<\d+><(BOT|.+?)><.*?>" entered the game`)
+	// Player entered
+	enteredRe = regexp.MustCompile(`"(.+?)<(\d+)><(BOT|.+?)><.*?>" entered the game`)
 
-	// Player disconnected: "player<id><steamid><TEAM>" disconnected
+	// Player disconnected
 	disconnectRe = regexp.MustCompile(`"(.+?)<\d+><.+?><.+?>" disconnected`)
 
 	// World events
@@ -617,11 +825,43 @@ var (
 
 	// Map change: Started map "de_dust2"
 	mapChangeRe = regexp.MustCompile(`Started map "(.+?)"`)
+
+	// Extract account ID from steam ID like [U:1:914801619]
+	accountIDRe = regexp.MustCompile(`\[U:\d+:(\d+)\]`)
 )
 
 func parseLine(line string, state *ServerState) {
-	// Team win: extract scores from the log line
-	// e.g. Team "CT" triggered "SFUI_Notice_CTs_Win" (CT "5") (T "3")
+	// JSON round_stats block accumulation
+	if strings.Contains(line, "JSON_BEGIN{") {
+		state.mu.Lock()
+		state.inJSON = true
+		state.jsonBuf = nil
+		state.mu.Unlock()
+		return
+	}
+	if strings.Contains(line, "}}JSON_END") {
+		state.mu.Lock()
+		lines := state.jsonBuf
+		state.inJSON = false
+		state.jsonBuf = nil
+		state.mu.Unlock()
+		if len(lines) > 0 {
+			state.parseRoundStats(lines)
+			state.notify()
+		}
+		return
+	}
+	state.mu.RLock()
+	inJSON := state.inJSON
+	state.mu.RUnlock()
+	if inJSON {
+		state.mu.Lock()
+		state.jsonBuf = append(state.jsonBuf, line)
+		state.mu.Unlock()
+		return
+	}
+
+	// Team win
 	if m := teamWinRe.FindStringSubmatch(line); m != nil {
 		ct, t := 0, 0
 		fmt.Sscanf(m[2], "%d", &ct)
@@ -653,22 +893,26 @@ func parseLine(line string, state *ServerState) {
 		return
 	}
 
-	// World events (match start, round start, etc.)
+	// World events
 	if m := worldRe.FindStringSubmatch(line); m != nil {
 		switch m[1] {
 		case "Match_Start":
 			state.resetWithMessage("Match Started - Stats Reset")
-			log.Printf("gametracker: match start, stats reset")
 		case "Game_Over":
 			state.resetWithMessage("Game Over - Stats Reset")
-			log.Printf("gametracker: game over, stats reset")
 		case "Warmup_End":
 			state.resetWithMessage("Warmup Ended - Stats Reset")
-			log.Printf("gametracker: warmup ended, stats reset")
 		case "Round_Start":
 			state.mu.Lock()
 			state.round++
 			round := state.round
+			// Set starting money on first round
+			if round == 1 {
+				startMoney := state.startingMoney()
+				for _, p := range state.stats {
+					p.Money = startMoney
+				}
+			}
 			state.mu.Unlock()
 			state.clearWeaponsOnRound()
 			state.addSystemMessage(fmt.Sprintf("Round %d", round))
@@ -679,17 +923,21 @@ func parseLine(line string, state *ServerState) {
 	// Map change
 	if m := mapChangeRe.FindStringSubmatch(line); m != nil {
 		state.resetWithMessage(fmt.Sprintf("Map Changed to %s - Stats Reset", m[1]))
-		log.Printf("gametracker: map change to %s, stats reset", m[1])
 		return
 	}
 
-	// Kill
+	// Kill — also extracts slot IDs and account IDs for JSON mapping
 	if m := killRe.FindStringSubmatch(line); m != nil {
-		killer, killerTeam := m[1], m[2]
-		victim, victimTeam := m[3], m[4]
-		weapon := m[5]
-		headshot := strings.Contains(m[6], "headshot")
-		state.recordKill(killer, killerTeam, victim, victimTeam, weapon, headshot)
+		killerName, killerSlot, killerSteamID, killerTeam := m[1], m[2], m[3], m[4]
+		victimName, victimSlot, victimSteamID, victimTeam := m[5], m[6], m[7], m[8]
+		weapon := m[9]
+		headshot := strings.Contains(m[10], "headshot")
+
+		// Map slot IDs and account IDs for JSON round_stats
+		mapPlayerIDs(state, killerName, killerSlot, killerSteamID)
+		mapPlayerIDs(state, victimName, victimSlot, victimSteamID)
+
+		state.recordKill(killerName, killerTeam, victimName, victimTeam, weapon, headshot)
 		return
 	}
 
@@ -699,21 +947,16 @@ func parseLine(line string, state *ServerState) {
 		return
 	}
 
-	// Purchase
+	// Purchase — deduct money
 	if m := purchaseRe.FindStringSubmatch(line); m != nil {
 		state.recordPurchase(m[1], m[2], m[3])
 		return
 	}
 
-	// Picked up
-	if m := pickupRe.FindStringSubmatch(line); m != nil {
-		state.recordPurchase(m[1], m[2], m[3]) // same as purchase for tracking
-		return
-	}
-
-	// Dropped
-	if m := dropRe.FindStringSubmatch(line); m != nil {
-		state.recordDrop(m[1], m[3])
+	// Left buyzone — definitive loadout
+	if m := buyzoneRe.FindStringSubmatch(line); m != nil {
+		mapPlayerIDs(state, m[1], m[2], m[3])
+		state.recordBuyzone(m[1], m[4], m[5])
 		return
 	}
 
@@ -731,7 +974,8 @@ func parseLine(line string, state *ServerState) {
 
 	// Player entered
 	if m := enteredRe.FindStringSubmatch(line); m != nil {
-		isBot := m[2] == "BOT"
+		mapPlayerIDs(state, m[1], m[2], m[3])
+		isBot := m[3] == "BOT"
 		state.recordConnect(m[1], isBot)
 		return
 	}
@@ -741,4 +985,18 @@ func parseLine(line string, state *ServerState) {
 		state.recordDisconnect(m[1])
 		return
 	}
+}
+
+// mapPlayerIDs maps slot ID and account ID to player name for JSON round_stats lookup.
+func mapPlayerIDs(state *ServerState, name, slotStr, steamID string) {
+	slotID := 0
+	fmt.Sscanf(slotStr, "%d", &slotID)
+
+	state.mu.Lock()
+	state.slotMap[slotID] = name
+	// Only map account ID for non-bots (bots all have account 0)
+	if m := accountIDRe.FindStringSubmatch(steamID); m != nil && m[1] != "0" {
+		state.accountMap[m[1]] = name
+	}
+	state.mu.Unlock()
 }
