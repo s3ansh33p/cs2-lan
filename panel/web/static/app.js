@@ -206,7 +206,7 @@ function renderDashboard(servers) {
             '<div class="flex items-center justify-between">' +
                 '<div class="flex items-center gap-3 text-xs text-slate-300">' +
                     '<span>' + esc(modeLabel) + '</span>' +
-                    '<span>' + esc(mapName) + '</span>' +
+                    '<span class="flex items-center gap-1"><img src="/static/icons/map/' + esc(mapName) + '.svg" class="h-4 w-4 opacity-60 rounded" onerror="this.style.display=\'none\'">' + esc(mapName) + '</span>' +
                     '<span>' + s.playerCount + '/' + s.maxPlayers + ' players</span>' +
                 '</div>' +
                 scoreHtml +
