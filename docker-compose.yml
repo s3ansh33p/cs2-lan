@@ -26,6 +26,7 @@ services:
   # Template service - use cs2-launch.sh to spin up instances
   cs2:
     image: joedwards32/cs2
+    network_mode: host
     volumes:
       - cs2-base:/home/steam/cs2-dedicated
       - ./entry-lan.sh:/home/steam/entry-lan.sh:ro

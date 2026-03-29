@@ -58,21 +58,20 @@ done
 TV_PORT=$((PORT + 5))
 
 echo "Starting CS2 LAN server: ${NAME}"
-echo "  Connect: <your-lan-ip>:${PORT}"
+echo "  Connect: localhost:${PORT}"
 echo "  Mode: ${MODE} | Map: ${MAP} | Players: ${PLAYERS}"
 
 docker compose run -d \
     --name "cs2-${NAME}" \
-    -p "${PORT}:27015/udp" \
-    -p "${PORT}:27015/tcp" \
-    -p "${TV_PORT}:27020/udp" \
     -e CS2_SERVERNAME="${NAME}" \
+    -e CS2_PORT="${PORT}" \
     -e CS2_GAMEALIAS="${MODE}" \
     -e CS2_STARTMAP="${MAP}" \
     -e CS2_MAXPLAYERS="${PLAYERS}" \
     -e CS2_RCONPW="${RCON}" \
     -e CS2_PW="${PASSWORD}" \
     -e TV_ENABLE="${TV}" \
+    -e TV_PORT="${TV_PORT}" \
     "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" \
     cs2
 

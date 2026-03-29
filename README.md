@@ -35,7 +35,34 @@ Examples:
 ./cs2-launch.sh casual 27017 --mode casual
 ```
 
-Players connect to `<your-lan-ip>:<port>` (e.g. `192.168.1.50:27015`).
+Players connect to `localhost:<port>` or `<your-lan-ip>:<port>`.
+
+## Server console
+
+Attach to a server's interactive console using tmux:
+
+```bash
+tmux new -s comp 'docker attach cs2-comp'
+```
+
+- Type server commands directly and see all output
+- `Ctrl+B` then `D` to detach (server keeps running)
+- `tmux attach -t comp` to reattach later
+
+### Useful server commands
+
+| Command | Description |
+|---------|-------------|
+| `mp_restartgame 1` | Restart current match |
+| `changelevel <map>` | Change map (e.g. `changelevel de_dust2`) |
+| `maps *` | List available maps |
+| `status` | Show server info and connected players |
+| `kick <player>` | Kick a player |
+| `bot_add` | Add a bot |
+| `bot_kick` | Kick all bots |
+| `mp_warmup_end` | End warmup |
+| `mp_maxrounds 30` | Set max rounds |
+| `quit` | Shut down server |
 
 ## Manage servers
 
