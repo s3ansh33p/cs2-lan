@@ -145,6 +145,77 @@ function reconnectLogs() {
     }
 }
 
+// Dashboard WebSocket
+function connectDashboardWS() {
+    var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var ws = new WebSocket(protocol + '//' + location.host + '/api/dashboard/ws');
+
+    ws.onmessage = function(e) {
+        try {
+            var data = JSON.parse(e.data);
+            if (data.type === 'dashboard') renderDashboard(data.servers);
+        } catch(err) {}
+    };
+
+    ws.onclose = function() {
+        setTimeout(connectDashboardWS, 3000);
+    };
+}
+
+function renderDashboard(servers) {
+    var el = document.getElementById('dashboard-servers');
+    if (!el) return;
+
+    if (!servers || !servers.length) {
+        el.innerHTML = '<div class="bg-slate-800 border border-slate-700 rounded-lg px-4 py-12 text-center text-slate-500">' +
+            'No servers running. <a href="/launch" class="text-orange-400 hover:underline">Launch one</a>.</div>';
+        return;
+    }
+
+    var html = '';
+    for (var i = 0; i < servers.length; i++) {
+        var s = servers[i];
+        var statusText = s.status === 'running'
+            ? '<span class="text-green-400 text-xs">Running</span>'
+            : '<span class="text-slate-400 text-xs">' + esc(s.status) + '</span>';
+
+        var mapName = s.map || '-';
+        var scoreHtml = '';
+        if (s.score && (s.score.round > 0 || s.score.ct > 0 || s.score.t > 0)) {
+            scoreHtml = '<div class="flex items-center gap-2 text-xs">' +
+                '<span class="text-blue-400 font-bold">CT ' + s.score.ct + '</span>' +
+                '<span class="text-slate-500">-</span>' +
+                '<span class="text-yellow-400 font-bold">' + s.score.t + ' T</span>' +
+                '<span class="text-slate-500">R' + s.score.round + '</span>' +
+                '</div>';
+        }
+
+        var modeLabel = s.mode ? s.mode.charAt(0).toUpperCase() + s.mode.slice(1) : '-';
+
+        // Card layout (works on all screen sizes)
+        html += '<a href="/server/' + esc(s.name) + '" class="block bg-slate-800 border border-slate-700 rounded-lg p-4 hover:bg-slate-700/50 transition-colors">' +
+            '<div class="flex items-center justify-between mb-2">' +
+                '<div class="flex items-center gap-2">' +
+                    '<span class="text-orange-400 font-medium">' + esc(s.name) + '</span>' +
+                    '<span class="text-slate-500 text-xs">:' + s.port + '</span>' +
+                '</div>' +
+                '<div class="flex items-center gap-3">' +
+                    statusText +
+                '</div>' +
+            '</div>' +
+            '<div class="flex items-center justify-between">' +
+                '<div class="flex items-center gap-3 text-xs text-slate-300">' +
+                    '<span>' + esc(modeLabel) + '</span>' +
+                    '<span>' + esc(mapName) + '</span>' +
+                    '<span>' + s.playerCount + '/' + s.maxPlayers + ' players</span>' +
+                '</div>' +
+                scoreHtml +
+            '</div>' +
+            '</a>';
+    }
+    el.innerHTML = html;
+}
+
 // Game state WebSocket (players + killfeed) - renders from JSON client-side
 function connectGameWS(serverName) {
     var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -196,7 +267,7 @@ function playerTeamBadge(team) {
 
 function playerEquipIcons(p) {
     var html = '';
-    if (p.bomb) html += '<img src="/static/icons/equipment/planted_c4.svg" class="h-5 opacity-80" title="C4">';
+    if (p.bomb) html += '<img src="/static/icons/equipment/c4.svg" class="h-5 opacity-80" title="C4">';
     if (p.helmet) html += '<img src="/static/icons/equipment/helmet.svg" class="h-5 opacity-80" title="Helmet">';
     if (p.armor) html += '<img src="/static/icons/equipment/kevlar.svg" class="h-5 opacity-80" title="Kevlar">';
     if (p.defuser) html += '<img src="/static/icons/equipment/defuser.svg" class="h-5 opacity-80" title="Defuse Kit">';

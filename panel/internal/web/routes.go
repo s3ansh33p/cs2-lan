@@ -24,6 +24,7 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	protected := http.NewServeMux()
 	protected.HandleFunc("GET /{$}", h.Dashboard)
 	protected.HandleFunc("GET /api/servers", h.ServersPartial)
+	protected.HandleFunc("GET /api/dashboard/ws", h.DashboardWebSocket)
 	protected.HandleFunc("GET /launch", h.LaunchPage)
 	protected.HandleFunc("POST /launch", h.LaunchServer)
 	protected.HandleFunc("GET /server/{name}", h.ServerDetail)

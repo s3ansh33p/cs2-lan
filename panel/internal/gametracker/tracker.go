@@ -53,7 +53,7 @@ func (p PlayerStats) Score() int {
 func (p PlayerStats) WeaponList() []string {
 	var out []string
 	for w := range p.Weapons {
-		if !IsGrenade(w) && !IsEquipment(w) && w != "c4" {
+		if !IsGrenade(w) && !IsEquipment(w) && w != "c4" && w != "weapon_c4" {
 			out = append(out, w)
 		}
 	}
@@ -80,7 +80,7 @@ var grenadeSet = map[string]bool{
 }
 
 var equipmentSet = map[string]bool{
-	"kevlar": true, "assaultsuit": true, "defuser": true, "taser": true,
+	"kevlar": true, "assaultsuit": true, "defuser": true,
 }
 
 func IsGrenade(w string) bool  { return grenadeSet[w] }
@@ -150,8 +150,9 @@ type ServerState struct {
 	round    int
 	ctScore  int
 	tScore   int
-	gameMode string // "competitive", "casual", "deathmatch", etc.
-	customStartMoney int // from mp_startmoney cvar, 0 = use mode default
+	gameMode         string // "competitive", "casual", "deathmatch", etc.
+	currentMap       string // current map name, updated on map change
+	customStartMoney int    // from mp_startmoney cvar, 0 = use mode default
 
 	// JSON block accumulator for round_stats
 	jsonBuf    []string
@@ -168,16 +169,17 @@ type ServerState struct {
 
 // ScoreInfo returns the current round scores.
 type ScoreInfo struct {
-	Round    int
-	CT       int
-	T        int
-	GameMode string
+	Round      int
+	CT         int
+	T          int
+	GameMode   string
+	CurrentMap string
 }
 
 func (s *ServerState) GetScore() ScoreInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return ScoreInfo{Round: s.round, CT: s.ctScore, T: s.tScore, GameMode: s.gameMode}
+	return ScoreInfo{Round: s.round, CT: s.ctScore, T: s.tScore, GameMode: s.gameMode, CurrentMap: s.currentMap}
 }
 
 func (s *ServerState) startingMoney() int {
@@ -374,6 +376,8 @@ func (s *ServerState) recordPurchase(name, team, weapon string) {
 	if price, ok := WeaponPrice[weapon]; ok && p.Money >= price {
 		p.Money -= price
 	}
+	// Normalize weapon name
+	weapon = strings.TrimPrefix(weapon, "weapon_")
 	// Add weapon/equipment to loadout
 	switch {
 	case weapon == "kevlar":
@@ -385,6 +389,8 @@ func (s *ServerState) recordPurchase(name, team, weapon string) {
 		p.HasDefuser = true
 	case strings.HasPrefix(weapon, "knife"):
 		// skip knives
+	case weapon == "c4":
+		p.HasBomb = true
 	default:
 		p.Weapons[weapon] = true
 	}
@@ -512,6 +518,7 @@ func (s *ServerState) parseRoundStats(lines []string) {
 	var fields string
 	playerLines := make(map[string]string)
 	roundNum, scoreT, scoreCT := 0, 0, 0
+	var mapName string
 
 	for _, line := range lines {
 		// Strip "L MM/DD/YYYY - HH:MM:SS: " prefix
@@ -525,6 +532,12 @@ func (s *ServerState) parseRoundStats(lines []string) {
 			fmt.Sscanf(line, `"score_t" : "%d"`, &scoreT)
 		} else if strings.HasPrefix(line, "\"score_ct\"") {
 			fmt.Sscanf(line, `"score_ct" : "%d"`, &scoreCT)
+		} else if strings.HasPrefix(line, "\"map\"") {
+			// "map" : "de_dust2"
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				mapName = strings.Trim(strings.TrimSpace(parts[1]), "\" ,")
+			}
 		} else if strings.HasPrefix(line, "\"fields\"") {
 			// Extract field names
 			if idx := strings.Index(line, ":"); idx >= 0 {
@@ -548,6 +561,9 @@ func (s *ServerState) parseRoundStats(lines []string) {
 
 	if roundNum > 0 {
 		s.round = roundNum
+	}
+	if mapName != "" {
+		s.currentMap = mapName
 	}
 	s.ctScore = scoreCT
 	s.tScore = scoreT
@@ -963,6 +979,9 @@ func parseLine(line string, state *ServerState) {
 
 	// Map change
 	if m := mapChangeRe.FindStringSubmatch(line); m != nil {
+		state.mu.Lock()
+		state.currentMap = m[1]
+		state.mu.Unlock()
 		state.resetWithMessage(fmt.Sprintf("Map Changed to %s - Stats Reset", m[1]))
 		return
 	}

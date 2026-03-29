@@ -325,6 +325,101 @@ func (h *Handler) sendKillfeedNew(conn *websocket.Conn, newKills []gametracker.K
 	return conn.WriteJSON(msg)
 }
 
+// DashboardWebSocket pushes server list with scores every 5 seconds.
+func (h *Handler) DashboardWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, done, err := setupWSConn(w, r)
+	if err != nil {
+		log.Printf("ws dashboard upgrade: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	pingTicker := time.NewTicker(pingInterval)
+	defer pingTicker.Stop()
+
+	updateTicker := time.NewTicker(5 * time.Second)
+	defer updateTicker.Stop()
+
+	// Send initial state
+	h.sendDashboard(conn)
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-pingTicker.C:
+			conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		case <-updateTicker.C:
+			if err := h.sendDashboard(conn); err != nil {
+				return
+			}
+		}
+	}
+}
+
+type dashServerJSON struct {
+	Name        string     `json:"name"`
+	Status      string     `json:"status"`
+	Port        int        `json:"port"`
+	GameMode    string     `json:"mode"`
+	Map         string     `json:"map"`
+	MaxPlayers  int        `json:"maxPlayers"`
+	PlayerCount int        `json:"playerCount"`
+	Score       *scoreJSON `json:"score,omitempty"`
+}
+
+func (h *Handler) sendDashboard(conn *websocket.Conn) error {
+	servers, err := h.docker.ListServers(context.Background())
+	if err != nil {
+		servers = nil
+	}
+
+	var result []dashServerJSON
+	for _, s := range servers {
+		ds := dashServerJSON{
+			Name:       s.Name,
+			Status:     s.Status,
+			Port:       s.Port,
+			GameMode:   s.GameMode,
+			Map:        s.Map,
+			MaxPlayers: s.MaxPlayers,
+		}
+
+		// Start tracking if not already (so dashboard shows live data)
+		if s.Status == "running" && s.Port > 0 && s.RCONPassword != "" {
+			h.tracker.TrackServer(s.Name, s.Port, s.RCONPassword, s.GameMode)
+		}
+
+		// Get player count and score from tracker
+		state := h.tracker.GetState(s.Name)
+		if state != nil {
+			sc := state.GetScore()
+			ds.Score = &scoreJSON{Round: sc.Round, CT: sc.CT, T: sc.T, GameMode: sc.GameMode}
+			if sc.CurrentMap != "" {
+				ds.Map = sc.CurrentMap
+			}
+			for _, ps := range state.GetScoreboard() {
+				if ps.Online {
+					ds.PlayerCount++
+				}
+			}
+		}
+
+		result = append(result, ds)
+	}
+
+	msg := struct {
+		Type    string           `json:"type"`
+		Servers []dashServerJSON `json:"servers"`
+	}{Type: "dashboard", Servers: result}
+
+	conn.SetWriteDeadline(time.Now().Add(writeWait))
+	return conn.WriteJSON(msg)
+}
+
 // isGameEventLine returns true for log lines that are game events
 // already displayed in the killfeed/players panel.
 // All CS2 game event lines start with "L MM/DD/YYYY".

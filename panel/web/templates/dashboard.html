@@ -6,27 +6,17 @@
     </a>
 </div>
 
-<div class="bg-slate-800 border border-slate-700 rounded-lg overflow-hidden">
-    <table class="w-full text-sm">
-        <thead class="bg-slate-750">
-            <tr class="border-b border-slate-700 text-slate-400 text-left">
-                <th class="px-4 py-3 font-medium">Name</th>
-                <th class="px-4 py-3 font-medium">Status</th>
-                <th class="px-4 py-3 font-medium">Port</th>
-                <th class="px-4 py-3 font-medium">Mode</th>
-                <th class="px-4 py-3 font-medium">Map</th>
-                <th class="px-4 py-3 font-medium">Players</th>
-                <th class="px-4 py-3 font-medium text-right">Actions</th>
-            </tr>
-        </thead>
-        <tbody id="server-table" hx-get="/api/servers" hx-trigger="every 10s" hx-swap="innerHTML">
-            {{template "server_rows.html" .}}
-        </tbody>
-    </table>
+<div id="dashboard-servers" class="space-y-4">
     {{if not .Servers}}
-    <div class="px-4 py-12 text-center text-slate-500">
+    <div class="bg-slate-800 border border-slate-700 rounded-lg px-4 py-12 text-center text-slate-500">
         No servers running. <a href="/launch" class="text-orange-400 hover:underline">Launch one</a>.
     </div>
     {{end}}
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    connectDashboardWS();
+});
+</script>
 {{end}}
