@@ -202,18 +202,29 @@ type gamePlayerJSON struct {
 }
 
 type killJSON struct {
-	Killer   string `json:"killer,omitempty"`
-	Victim   string `json:"victim,omitempty"`
-	Weapon   string `json:"weapon,omitempty"`
-	Headshot bool   `json:"hs,omitempty"`
-	System   bool   `json:"sys,omitempty"`
-	Message  string `json:"msg,omitempty"`
-	Time     string `json:"time"`
+	Killer     string `json:"killer,omitempty"`
+	KillerTeam string `json:"kt,omitempty"`
+	Victim     string `json:"victim,omitempty"`
+	VictimTeam string `json:"vt,omitempty"`
+	Weapon     string `json:"weapon,omitempty"`
+	Headshot   bool   `json:"hs,omitempty"`
+	System     bool   `json:"sys,omitempty"`
+	Message    string `json:"msg,omitempty"`
+	Time       string `json:"time"`
+}
+
+func shortTeam(t string) string {
+	if t == "TERRORIST" {
+		return "T"
+	}
+	return t
 }
 
 func killToJSON(k gametracker.Kill) killJSON {
 	return killJSON{
-		Killer: k.Killer, Victim: k.Victim, Weapon: k.Weapon,
+		Killer: k.Killer, KillerTeam: shortTeam(k.KillerTeam),
+		Victim: k.Victim, VictimTeam: shortTeam(k.VictimTeam),
+		Weapon: k.Weapon,
 		Headshot: k.Headshot, System: k.IsSystem, Message: k.Message,
 		Time: k.Time.Format("15:04:05"),
 	}

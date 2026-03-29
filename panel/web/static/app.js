@@ -270,71 +270,67 @@ function renderKillfeed(killfeed) {
         return;
     }
 
-    var html = '<div class="space-y-1 p-4 text-sm killfeed-inner">';
+    var html = '<div class="space-y-1.5 p-4 text-sm killfeed-inner">';
     for (var i = 0; i < killfeed.length; i++) {
-        var k = killfeed[i];
-        if (k.sys) {
-            html += '<div class="flex items-center gap-2 py-1">' +
-                '<span class="flex-1 border-t border-slate-600"></span>' +
-                '<span class="text-orange-400 text-xs font-medium">' + esc(k.msg) + '</span>' +
-                '<span class="flex-1 border-t border-slate-600"></span>' +
-                '<span class="text-slate-600 text-xs">' + esc(k.time) + '</span>' +
-                '</div>';
-        } else if (k.killer && k.killer === k.victim) {
-            // Suicide
-            html += '<div class="flex items-center gap-2">' +
-                '<span class="text-red-400">' + esc(k.victim) + '</span>' +
-                '<span class="text-slate-500 text-xs">suicided (' + esc(k.weapon) + ')</span>' +
-                '<span class="text-slate-600 text-xs ml-auto">' + esc(k.time) + '</span>' +
-                '</div>';
-        } else {
-            html += '<div class="flex items-center gap-2">' +
-                '<span class="text-white">' + esc(k.killer) + '</span>' +
-                '<span class="text-slate-500 text-xs">' + esc(k.weapon) + (k.hs ? ' HS' : '') + '</span>' +
-                '<span class="text-red-400">' + esc(k.victim) + '</span>' +
-                '<span class="text-slate-600 text-xs ml-auto">' + esc(k.time) + '</span>' +
-                '</div>';
-        }
+        html += renderKillEntry(killfeed[i]);
     }
     html += '</div>';
     el.innerHTML = html;
+}
+
+function weaponIcon(weapon) {
+    if (!weapon) return '';
+    return '<img src="/static/icons/weapons/' + esc(weapon) + '.svg" alt="' + esc(weapon) + '" class="h-4 inline-block opacity-80" onerror="var s=document.createElement(\'span\');s.className=\'text-xs text-slate-500\';s.textContent=\'' + esc(weapon) + '\';this.replaceWith(s)">';
+}
+
+function teamColor(team) {
+    if (team === 'CT') return 'text-blue-400';
+    if (team === 'T') return 'text-yellow-400';
+    return 'text-white';
+}
+
+function renderKillEntry(k) {
+    if (k.sys) {
+        return '<div class="flex items-center gap-2 py-1">' +
+            '<span class="flex-1 border-t border-slate-600"></span>' +
+            '<span class="text-orange-400 text-xs font-medium">' + esc(k.msg) + '</span>' +
+            '<span class="flex-1 border-t border-slate-600"></span>' +
+            '<span class="text-slate-600 text-xs">' + esc(k.time) + '</span>' +
+            '</div>';
+    }
+    if (k.killer && k.killer === k.victim) {
+        var tc = teamColor(k.vt);
+        return '<div class="flex items-center gap-2">' +
+            '<span class="' + tc + ' text-xs">' + esc(k.victim) + '</span>' +
+            '<img src="/static/icons/deathnotice/icon_suicide.svg" class="h-4 inline-block opacity-80" alt="suicide">' +
+            '<span class="flex items-center gap-1">' + weaponIcon(k.weapon) + '</span>' +
+            '<span class="text-slate-600 text-xs ml-auto">' + esc(k.time) + '</span>' +
+            '</div>';
+    }
+    var hsIcon = k.hs ? ' <img src="/static/icons/deathnotice/icon_headshot.svg" class="h-3.5 inline-block opacity-80" alt="HS">' : '';
+    return '<div class="flex items-center gap-2">' +
+        '<span class="' + teamColor(k.kt) + ' text-xs">' + esc(k.killer) + '</span>' +
+        '<span class="flex items-center gap-1">' + weaponIcon(k.weapon) + hsIcon + '</span>' +
+        '<span class="' + teamColor(k.vt) + ' text-xs">' + esc(k.victim) + '</span>' +
+        '<span class="text-slate-600 text-xs ml-auto">' + esc(k.time) + '</span>' +
+        '</div>';
 }
 
 function appendKills(kills) {
     var el = document.getElementById('killfeed');
     if (!el) return;
 
-    // Find or create the inner container
     var container = el.querySelector('.killfeed-inner');
     if (!container) {
-        // First kill — replace "No kills yet" placeholder
-        el.innerHTML = '<div class="space-y-1 p-4 text-sm killfeed-inner"></div>';
+        el.innerHTML = '<div class="space-y-1.5 p-4 text-sm killfeed-inner"></div>';
         container = el.querySelector('.killfeed-inner');
     }
 
     for (var i = 0; i < kills.length; i++) {
-        var k = kills[i];
-        var div = document.createElement('div');
-        if (k.sys) {
-            div.className = 'flex items-center gap-2 py-1';
-            div.innerHTML = '<span class="flex-1 border-t border-slate-600"></span>' +
-                '<span class="text-orange-400 text-xs font-medium">' + esc(k.msg) + '</span>' +
-                '<span class="flex-1 border-t border-slate-600"></span>' +
-                '<span class="text-slate-600 text-xs">' + esc(k.time) + '</span>';
-        } else if (k.killer && k.killer === k.victim) {
-            div.className = 'flex items-center gap-2';
-            div.innerHTML = '<span class="text-red-400">' + esc(k.victim) + '</span>' +
-                '<span class="text-slate-500 text-xs">suicided (' + esc(k.weapon) + ')</span>' +
-                '<span class="text-slate-600 text-xs ml-auto">' + esc(k.time) + '</span>';
-        } else {
-            div.className = 'flex items-center gap-2';
-            div.innerHTML = '<span class="text-white">' + esc(k.killer) + '</span>' +
-                '<span class="text-slate-500 text-xs">' + esc(k.weapon) + (k.hs ? ' HS' : '') + '</span>' +
-                '<span class="text-red-400">' + esc(k.victim) + '</span>' +
-                '<span class="text-slate-600 text-xs ml-auto">' + esc(k.time) + '</span>';
-        }
-        // Insert at top (newest first)
-        container.insertBefore(div, container.firstChild);
+        var wrapper = document.createElement('div');
+        wrapper.innerHTML = renderKillEntry(kills[i]);
+        var entry = wrapper.firstChild;
+        container.insertBefore(entry, container.firstChild);
     }
 
     // Cap at 20 entries

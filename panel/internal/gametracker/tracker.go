@@ -13,13 +13,15 @@ import (
 
 // Kill represents a kill event or a system message in the killfeed.
 type Kill struct {
-	Time     time.Time
-	Killer   string
-	Victim   string
-	Weapon   string
-	Headshot bool
-	IsSystem bool   // true for system messages like "Stats Reset"
-	Message  string // system message text
+	Time       time.Time
+	Killer     string
+	KillerTeam string // "CT", "TERRORIST"
+	Victim     string
+	VictimTeam string // "CT", "TERRORIST"
+	Weapon     string
+	Headshot   bool
+	IsSystem   bool
+	Message    string
 }
 
 // PlayerStats tracks per-player game state.
@@ -304,7 +306,8 @@ func (s *ServerState) ensurePlayer(name string) *PlayerStats {
 func (s *ServerState) recordKill(killer, killerTeam, victim, victimTeam, weapon string, headshot bool) {
 	s.mu.Lock()
 	k := Kill{
-		Time: time.Now(), Killer: killer, Victim: victim,
+		Time: time.Now(), Killer: killer, KillerTeam: killerTeam,
+		Victim: victim, VictimTeam: victimTeam,
 		Weapon: weapon, Headshot: headshot,
 	}
 	s.kills = append(s.kills, k)
@@ -331,8 +334,9 @@ func (s *ServerState) recordKill(killer, killerTeam, victim, victimTeam, weapon 
 func (s *ServerState) recordSuicide(name, team, weapon string) {
 	s.mu.Lock()
 	k := Kill{
-		Time: time.Now(), Killer: name, Victim: name,
-		Weapon: weapon, IsSystem: false,
+		Time: time.Now(), Killer: name, KillerTeam: team,
+		Victim: name, VictimTeam: team,
+		Weapon: weapon,
 	}
 	s.kills = append(s.kills, k)
 	if len(s.kills) > s.maxKills {
