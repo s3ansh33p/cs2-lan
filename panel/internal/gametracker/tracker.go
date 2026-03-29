@@ -20,8 +20,11 @@ type Kill struct {
 	VictimTeam string // "CT", "TERRORIST"
 	Weapon     string
 	Headshot   bool
-	IsSystem   bool
-	Message    string
+	Wallbang     bool
+	Assister     string
+	AssisterTeam string
+	IsSystem     bool
+	Message      string
 }
 
 // PlayerStats tracks per-player game state.
@@ -43,6 +46,7 @@ type PlayerStats struct {
 	HasHelmet bool
 	HasDefuser bool
 	HasBomb    bool
+	Alive      bool
 }
 
 func (p PlayerStats) Score() int {
@@ -141,6 +145,13 @@ var GrenadeShort = map[string]string{
 	"molotov": "ML", "incgrenade": "IN", "decoy": "DC",
 }
 
+// RoundResult records the outcome of a single round.
+type RoundResult struct {
+	Round  int    // round number
+	Winner string // "CT" or "T"
+	Reason string // "elimination", "bomb", "defuse", "time"
+}
+
 // ServerState holds the parsed game state for one server.
 type ServerState struct {
 	mu       sync.RWMutex
@@ -150,9 +161,12 @@ type ServerState struct {
 	round    int
 	ctScore  int
 	tScore   int
-	gameMode         string // "competitive", "casual", "deathmatch", etc.
-	currentMap       string // current map name, updated on map change
-	customStartMoney int    // from mp_startmoney cvar, 0 = use mode default
+	rounds   []RoundResult // round history
+	gameMode         string
+	currentMap       string
+	customStartMoney int
+	halfRound        int // round number where half-time occurred
+	inWarmup         bool
 
 	// JSON block accumulator for round_stats
 	jsonBuf    []string
@@ -174,12 +188,17 @@ type ScoreInfo struct {
 	T          int
 	GameMode   string
 	CurrentMap string
+	Rounds     []RoundResult
+	HalfRound  int
+	InWarmup   bool
 }
 
 func (s *ServerState) GetScore() ScoreInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return ScoreInfo{Round: s.round, CT: s.ctScore, T: s.tScore, GameMode: s.gameMode, CurrentMap: s.currentMap}
+	rounds := make([]RoundResult, len(s.rounds))
+	copy(rounds, s.rounds)
+	return ScoreInfo{Round: s.round, CT: s.ctScore, T: s.tScore, GameMode: s.gameMode, CurrentMap: s.currentMap, Rounds: rounds, HalfRound: s.halfRound, InWarmup: s.inWarmup}
 }
 
 func (s *ServerState) startingMoney() int {
@@ -203,7 +222,8 @@ func newServerState() *ServerState {
 		stats:      make(map[string]*PlayerStats),
 		accountMap: make(map[string]string),
 		slotMap:    make(map[int]string),
-		maxKills: 100,
+		inWarmup:   true,
+		maxKills: 200,
 	}
 }
 
@@ -300,17 +320,17 @@ func (s *ServerState) GetScoreboard() []PlayerStats {
 
 func (s *ServerState) ensurePlayer(name string) *PlayerStats {
 	if _, ok := s.stats[name]; !ok {
-		s.stats[name] = &PlayerStats{Name: name, Weapons: make(map[string]bool), Online: true}
+		s.stats[name] = &PlayerStats{Name: name, Weapons: make(map[string]bool), Online: true, Alive: true}
 	}
 	return s.stats[name]
 }
 
-func (s *ServerState) recordKill(killer, killerTeam, victim, victimTeam, weapon string, headshot bool) {
+func (s *ServerState) recordKill(killer, killerTeam, victim, victimTeam, weapon string, headshot, wallbang bool) {
 	s.mu.Lock()
 	k := Kill{
 		Time: time.Now(), Killer: killer, KillerTeam: killerTeam,
 		Victim: victim, VictimTeam: victimTeam,
-		Weapon: weapon, Headshot: headshot,
+		Weapon: weapon, Headshot: headshot, Wallbang: wallbang,
 	}
 	s.kills = append(s.kills, k)
 	if len(s.kills) > s.maxKills {
@@ -325,6 +345,7 @@ func (s *ServerState) recordKill(killer, killerTeam, victim, victimTeam, weapon 
 	}
 	p := s.ensurePlayer(victim)
 	p.Deaths++
+	p.Alive = false
 	if victimTeam != "" {
 		p.Team = victimTeam
 	}
@@ -347,6 +368,7 @@ func (s *ServerState) recordSuicide(name, team, weapon string) {
 
 	p := s.ensurePlayer(name)
 	p.Deaths++
+	p.Alive = false
 	if team != "" {
 		p.Team = team
 	}
@@ -355,12 +377,41 @@ func (s *ServerState) recordSuicide(name, team, weapon string) {
 	s.notify()
 }
 
-func (s *ServerState) recordAssist(assister, team string) {
+func (s *ServerState) recordBombKill(name, team string) {
+	s.mu.Lock()
+	k := Kill{
+		Time: time.Now(), Killer: "", Victim: name, VictimTeam: team,
+		Weapon: "planted_c4",
+	}
+	s.kills = append(s.kills, k)
+	if len(s.kills) > s.maxKills {
+		s.kills = s.kills[len(s.kills)-s.maxKills:]
+	}
+	p := s.ensurePlayer(name)
+	p.Deaths++
+	p.Alive = false
+	if team != "" {
+		p.Team = team
+	}
+	p.Weapons = make(map[string]bool)
+	s.mu.Unlock()
+	s.notify()
+}
+
+func (s *ServerState) recordAssist(assister, team, victim string) {
 	s.mu.Lock()
 	p := s.ensurePlayer(assister)
 	p.Assists++
 	if team != "" {
 		p.Team = team
+	}
+	// Attach assister to the most recent kill of this victim
+	for i := len(s.kills) - 1; i >= 0; i-- {
+		if s.kills[i].Victim == victim && !s.kills[i].IsSystem {
+			s.kills[i].Assister = assister
+			s.kills[i].AssisterTeam = team
+			break
+		}
 	}
 	s.mu.Unlock()
 	s.notify()
@@ -377,7 +428,7 @@ func (s *ServerState) recordPurchase(name, team, weapon string) {
 		p.Money -= price
 	}
 	// Normalize weapon name
-	weapon = strings.TrimPrefix(weapon, "weapon_")
+	weapon = strings.ToLower(strings.TrimPrefix(weapon, "weapon_"))
 	// Add weapon/equipment to loadout
 	switch {
 	case weapon == "kevlar":
@@ -413,7 +464,7 @@ func (s *ServerState) recordBuyzone(name, team, items string) {
 	p.HasBomb = false
 
 	for _, item := range strings.Fields(items) {
-		item = strings.TrimPrefix(item, "weapon_")
+		item = strings.ToLower(strings.TrimPrefix(item, "weapon_"))
 		if strings.HasPrefix(item, "kevlar") {
 			p.HasArmor = true
 			continue
@@ -506,6 +557,7 @@ func (s *ServerState) clearWeaponsOnRound() {
 	for _, p := range s.stats {
 		p.Weapons = make(map[string]bool)
 		p.HasBomb = false
+		p.Alive = true
 	}
 	s.mu.Unlock()
 	s.notify()
@@ -634,6 +686,8 @@ func (s *ServerState) resetWithMessage(reason string) {
 	s.round = 0
 	s.ctScore = 0
 	s.tScore = 0
+	s.rounds = nil
+	s.halfRound = 0
 	s.kills = append(s.kills, Kill{
 		Time:     time.Now(),
 		IsSystem: true,
@@ -842,13 +896,16 @@ var (
 	killRe = regexp.MustCompile(`"(.+?)<(\d+)><(.+?)><(CT|TERRORIST|Unassigned)?>".*killed "(.+?)<(\d+)><(.+?)><(CT|TERRORIST|Unassigned)?>".*with "(.+?)"(.*)`)
 
 	// Assist
-	assistRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)?>" assisted killing`)
+	assistRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)?>" assisted killing "(.+?)<`)
 
 	// Purchase: "player<id><steamid><TEAM>" purchased "weapon"
 	purchaseRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)>" purchased "(.+?)"`)
 
 	// Left buyzone: "player<id><steamid><TEAM>" left buyzone with [ items... ]
 	buyzoneRe = regexp.MustCompile(`"(.+?)<(\d+)><(.+?)><(CT|TERRORIST)>" left buyzone with \[\s*(.+?)\s*\]`)
+
+	// Killed by bomb: "player<id><steamid><TEAM>" was killed by the bomb.
+	bombKillRe = regexp.MustCompile(`"(.+?)<(\d+)><(.+?)><(CT|TERRORIST|Unassigned)?>".*was killed by the bomb`)
 
 	// Suicide: "player<id><steamid><TEAM>" committed suicide with "weapon"
 	suicideRe = regexp.MustCompile(`"(.+?)<(\d+)><(.+?)><(CT|TERRORIST|Unassigned)?>" .* committed suicide with "(.+?)"`)
@@ -872,10 +929,10 @@ var (
 	disconnectRe = regexp.MustCompile(`"(.+?)<\d+><.+?><.+?>" disconnected`)
 
 	// World events
-	worldRe = regexp.MustCompile(`World triggered "(Match_Start|Round_Start|Game_Over|Warmup_End)"`)
+	worldRe = regexp.MustCompile(`World triggered "(Match_Start|Round_Start|Game_Over|Warmup_Start|Warmup_End|Game_Halftime)"`)
 
 	// Team win: Team "CT" triggered "SFUI_Notice_CTs_Win" (CT "5") (T "3")
-	teamWinRe = regexp.MustCompile(`Team "(CT|TERRORIST)" triggered "SFUI_Notice_\w+" \(CT "(\d+)"\) \(T "(\d+)"\)`)
+	teamWinRe = regexp.MustCompile(`Team "(CT|TERRORIST)" triggered "(SFUI_Notice_\w+)" \(CT "(\d+)"\) \(T "(\d+)"\)`)
 
 	// MatchStatus: Score: 4:2 on map "de_dust2" RoundsPlayed: 6
 	matchStatusRe = regexp.MustCompile(`MatchStatus: Score: (\d+):(\d+) on map ".+?" RoundsPlayed: (\d+)`)
@@ -921,16 +978,33 @@ func parseLine(line string, state *ServerState) {
 	// Team win
 	if m := teamWinRe.FindStringSubmatch(line); m != nil {
 		ct, t := 0, 0
-		fmt.Sscanf(m[2], "%d", &ct)
-		fmt.Sscanf(m[3], "%d", &t)
-		state.mu.Lock()
-		state.ctScore = ct
-		state.tScore = t
-		state.mu.Unlock()
+		fmt.Sscanf(m[3], "%d", &ct)
+		fmt.Sscanf(m[4], "%d", &t)
+		trigger := m[2]
+
+		// Map trigger to win reason
+		reason := "elimination"
+		switch trigger {
+		case "SFUI_Notice_Target_Bombed":
+			reason = "bomb"
+		case "SFUI_Notice_Bomb_Defused":
+			reason = "defuse"
+		case "SFUI_Notice_Target_Saved":
+			reason = "time"
+		}
+
 		winner := "CT"
 		if m[1] == "TERRORIST" {
 			winner = "T"
 		}
+
+		state.mu.Lock()
+		state.ctScore = ct
+		state.tScore = t
+		state.rounds = append(state.rounds, RoundResult{
+			Round: state.round, Winner: winner, Reason: reason,
+		})
+		state.mu.Unlock()
 		state.addSystemMessage(fmt.Sprintf("%s wins — Score: CT %d - %d T", winner, ct, t))
 		return
 	}
@@ -954,16 +1028,31 @@ func parseLine(line string, state *ServerState) {
 	if m := worldRe.FindStringSubmatch(line); m != nil {
 		switch m[1] {
 		case "Match_Start":
-			state.resetWithMessage("Match Started - Stats Reset")
+			state.mu.Lock()
+			state.inWarmup = false
+			state.mu.Unlock()
 		case "Game_Over":
 			state.resetWithMessage("Game Over - Stats Reset")
+		case "Warmup_Start":
+			state.mu.RLock()
+			already := state.inWarmup
+			state.mu.RUnlock()
+			if already {
+				return
+			}
+			state.mu.Lock()
+			state.inWarmup = true
+			state.mu.Unlock()
+			state.resetWithMessage("Warmup Started")
 		case "Warmup_End":
+			state.mu.Lock()
+			state.inWarmup = false
+			state.mu.Unlock()
 			state.resetWithMessage("Warmup Ended - Stats Reset")
 		case "Round_Start":
 			state.mu.Lock()
 			state.round++
 			round := state.round
-			// Set starting money on first round
 			if round == 1 {
 				startMoney := state.startingMoney()
 				for _, p := range state.stats {
@@ -973,6 +1062,11 @@ func parseLine(line string, state *ServerState) {
 			state.mu.Unlock()
 			state.clearWeaponsOnRound()
 			state.addSystemMessage(fmt.Sprintf("Round %d", round))
+		case "Game_Halftime":
+			state.mu.Lock()
+			state.halfRound = state.round
+			state.mu.Unlock()
+			state.addSystemMessage("Half Time")
 		}
 		return
 	}
@@ -991,27 +1085,45 @@ func parseLine(line string, state *ServerState) {
 		killerName, killerSlot, killerSteamID, killerTeam := m[1], m[2], m[3], m[4]
 		victimName, victimSlot, victimSteamID, victimTeam := m[5], m[6], m[7], m[8]
 		weapon := m[9]
-		headshot := strings.Contains(m[10], "headshot")
+		extras := m[10]
+		headshot := strings.Contains(extras, "headshot")
+		wallbang := strings.Contains(extras, "penetrated")
 
-		// Map slot IDs and account IDs for JSON round_stats
 		mapPlayerIDs(state, killerName, killerSlot, killerSteamID)
 		mapPlayerIDs(state, victimName, victimSlot, victimSteamID)
 
-		state.recordKill(killerName, killerTeam, victimName, victimTeam, weapon, headshot)
+		state.recordKill(killerName, killerTeam, victimName, victimTeam, weapon, headshot, wallbang)
 		return
 	}
 
-	// Suicide
+	// Killed by bomb
+	if m := bombKillRe.FindStringSubmatch(line); m != nil {
+		name, slot, steamID, team := m[1], m[2], m[3], m[4]
+		mapPlayerIDs(state, name, slot, steamID)
+		state.recordBombKill(name, team)
+		return
+	}
+
+	// Suicide — skip if player already dead (e.g. bomb kill followed by suicide "world")
 	if m := suicideRe.FindStringSubmatch(line); m != nil {
 		name, slot, steamID, team, weapon := m[1], m[2], m[3], m[4], m[5]
 		mapPlayerIDs(state, name, slot, steamID)
+		state.mu.RLock()
+		alreadyDead := false
+		if p, ok := state.stats[name]; ok {
+			alreadyDead = !p.Alive
+		}
+		state.mu.RUnlock()
+		if alreadyDead {
+			return
+		}
 		state.recordSuicide(name, team, weapon)
 		return
 	}
 
 	// Assist
 	if m := assistRe.FindStringSubmatch(line); m != nil {
-		state.recordAssist(m[1], m[2])
+		state.recordAssist(m[1], m[2], m[3])
 		return
 	}
 

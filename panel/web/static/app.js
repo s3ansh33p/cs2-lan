@@ -196,7 +196,7 @@ function renderDashboard(servers) {
         html += '<a href="/server/' + esc(s.name) + '" class="block bg-slate-800 border border-slate-700 rounded-lg p-4 hover:bg-slate-700/50 transition-colors">' +
             '<div class="flex items-center justify-between mb-2">' +
                 '<div class="flex items-center gap-2">' +
-                    '<span class="text-orange-400 font-medium">' + esc(s.name) + '</span>' +
+                    '<span class="text-orange-400 font-medium">' + esc(s.alias || s.name) + '</span>' +
                     '<span class="text-slate-500 text-xs">:' + s.port + '</span>' +
                 '</div>' +
                 '<div class="flex items-center gap-3">' +
@@ -215,6 +215,9 @@ function renderDashboard(servers) {
     }
     el.innerHTML = html;
 }
+
+var _currentGameMode = '';
+var _inWarmup = true;
 
 // Game state WebSocket (players + killfeed) - renders from JSON client-side
 function connectGameWS(serverName) {
@@ -255,8 +258,48 @@ function renderScore(score) {
     var modeEl = document.getElementById('score-mode');
     if (modeEl && score.mode) {
         modeEl.textContent = score.mode.charAt(0).toUpperCase() + score.mode.slice(1);
+        _currentGameMode = score.mode;
     }
+    _inWarmup = !!score.warmup;
     bar.classList.remove('hidden');
+
+    // Round history bar
+    var histEl = document.getElementById('round-history');
+    if (!histEl || !score.rounds || !score.rounds.length) return;
+    histEl.classList.remove('hidden');
+
+    var html = '';
+    for (var i = 0; i < score.rounds.length; i++) {
+        var r = score.rounds[i];
+        // Insert half-time divider
+        if (score.half > 0 && i > 0 && score.rounds[i - 1].r <= score.half && r.r > score.half) {
+            html += '<span class="w-px h-6 bg-slate-500 mx-1"></span>';
+        }
+
+        var color = r.w === 'CT' ? 'ct' : 't';
+        var icon = '';
+        switch (r.rs) {
+            case 'elimination':
+                icon = '/static/icons/ui/kill.svg';
+                break;
+            case 'bomb':
+                icon = '/static/icons/equipment/planted_c4.svg';
+                break;
+            case 'defuse':
+                icon = '/static/icons/equipment/defuser.svg';
+                break;
+            case 'time':
+                icon = '/static/icons/ui/timer.svg';
+                break;
+        }
+
+        // White SVGs — use CSS filter to colorize: blue for CT, gold for T
+        var filter = color === 'ct'
+            ? 'filter: brightness(0) saturate(100%) invert(55%) sepia(90%) saturate(500%) hue-rotate(190deg);'
+            : 'filter: brightness(0) saturate(100%) invert(70%) sepia(90%) saturate(400%) hue-rotate(5deg);';
+        html += '<img src="' + icon + '" class="h-5 w-5" style="' + filter + '" title="Round ' + r.r + ': ' + r.w + ' (' + r.rs + ')">';
+    }
+    histEl.innerHTML = html;
 }
 
 function playerTeamBadge(team) {
@@ -278,7 +321,7 @@ function playerEquipIcons(p) {
     }
     if (p.grenades) {
         for (var g = 0; g < p.grenades.length; g++) {
-            html += '<img src="/static/icons/equipment/' + esc(p.grenades[g]) + '.svg" class="h-4 opacity-60" title="' + esc(p.grenades[g]) + '" onerror="var s=document.createElement(\'span\');s.className=\'text-xs text-emerald-400\';s.textContent=\'' + esc(p.grenades[g]) + '\';this.replaceWith(s)">';
+            html += '<img src="/static/icons/equipment/' + esc(p.grenades[g]) + '.svg" class="h-4 opacity-60" title="' + esc(p.grenades[g]) + '" onerror="this.style.display=\'none\'">';
         }
     }
     return html;
@@ -309,13 +352,17 @@ function renderPlayers(players) {
     // Mobile cards
     var cards = '<div class="sm:hidden space-y-2 p-3">';
 
+    var showAlive = !_inWarmup && _currentGameMode && _currentGameMode !== 'deathmatch' && _currentGameMode !== 'armsrace';
+
     for (var i = 0; i < players.length; i++) {
         var p = players[i];
-        var opacity = p.online ? '' : ' opacity-50';
+        var isDead = showAlive && p.online && !p.alive;
+        var opacity = !p.online ? ' opacity-50' : (isDead ? ' opacity-40' : '');
         var teamBadge = playerTeamBadge(p.team);
         var name = esc(p.name);
         if (p.bot) name = '<span class="text-slate-400">(BOT)</span> ' + name;
         if (!p.online) name += ' <span class="text-slate-500 text-xs">(offline)</span>';
+        if (isDead) name += ' <img src="/static/icons/ui/kill.svg" class="h-3.5 inline-block opacity-50" title="Dead">';
         var kd = p.d === 0 ? '-' : (p.k / p.d).toFixed(1);
         var money = p.money ? '$' + p.money.toLocaleString() : '';
         var ping = !p.online ? '-' : (p.bot ? '-' : p.ping + 'ms');
@@ -374,9 +421,12 @@ function renderKillfeed(killfeed) {
     el.innerHTML = html;
 }
 
+var _weaponAliases = {'c4': 'planted_c4', 'weapon_c4': 'planted_c4'};
+
 function weaponIcon(weapon) {
     if (!weapon) return '';
-    return '<img src="/static/icons/equipment/' + esc(weapon) + '.svg" alt="' + esc(weapon) + '" class="h-4 inline-block opacity-80" onerror="var s=document.createElement(\'span\');s.className=\'text-xs text-slate-500\';s.textContent=\'' + esc(weapon) + '\';this.replaceWith(s)">';
+    var file = _weaponAliases[weapon] || weapon;
+    return '<img src="/static/icons/equipment/' + esc(file) + '.svg" alt="' + esc(weapon) + '" class="h-4 inline-block opacity-80" onerror="this.style.display=\'none\'">';
 }
 
 function teamColor(team) {
@@ -404,9 +454,14 @@ function renderKillEntry(k) {
             '</div>';
     }
     var hsIcon = k.hs ? ' <img src="/static/icons/deathnotice/icon_headshot.svg" class="h-3.5 inline-block opacity-80" alt="HS">' : '';
+    var wbIcon = k.wb ? ' <img src="/static/icons/deathnotice/penetrate.svg" class="h-3.5 inline-block opacity-80" alt="Wallbang">' : '';
+    var killerSide = '<span class="' + teamColor(k.kt) + ' text-xs">' + esc(k.killer) + '</span>';
+    if (k.assist) {
+        killerSide += '<span class="text-slate-500 text-xs"> + </span><span class="' + teamColor(k.at) + ' text-xs">' + esc(k.assist) + '</span>';
+    }
     return '<div class="flex items-center gap-2">' +
-        '<span class="' + teamColor(k.kt) + ' text-xs">' + esc(k.killer) + '</span>' +
-        '<span class="flex items-center gap-1">' + weaponIcon(k.weapon) + hsIcon + '</span>' +
+        '<span class="flex items-center gap-1">' + killerSide + '</span>' +
+        '<span class="flex items-center gap-1">' + weaponIcon(k.weapon) + hsIcon + wbIcon + '</span>' +
         '<span class="' + teamColor(k.vt) + ' text-xs">' + esc(k.victim) + '</span>' +
         '<span class="text-slate-600 text-xs ml-auto">' + esc(k.time) + '</span>' +
         '</div>';
@@ -616,6 +671,19 @@ document.addEventListener('htmx:afterRequest', function(e) {
         document.getElementById('rcon-suggestions').classList.add('hidden');
     }
 });
+
+function renameServer(name) {
+    var current = document.getElementById('server-title').textContent;
+    var alias = prompt('Rename server:', current);
+    if (alias === null) return;
+    fetch('/server/' + name + '/rename', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'alias=' + encodeURIComponent(alias)
+    }).then(function() {
+        document.getElementById('server-title').textContent = alias || name;
+    });
+}
 
 document.addEventListener('DOMContentLoaded', function() {
     initRconAutocomplete();

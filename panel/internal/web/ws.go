@@ -192,25 +192,29 @@ type gamePlayerJSON struct {
 	Assists    int      `json:"a"`
 	Ping       int      `json:"ping"`
 	Duration   string   `json:"dur,omitempty"`
-	Money      int      `json:"money,omitempty"`
+	Money      int      `json:"money"`
 	Weapons    []string `json:"weapons,omitempty"`
 	Grenades   []string `json:"grenades,omitempty"`
 	HasArmor   bool     `json:"armor,omitempty"`
 	HasHelmet  bool     `json:"helmet,omitempty"`
 	HasDefuser bool     `json:"defuser,omitempty"`
 	HasBomb    bool     `json:"bomb,omitempty"`
+	Alive      bool     `json:"alive"`
 }
 
 type killJSON struct {
-	Killer     string `json:"killer,omitempty"`
-	KillerTeam string `json:"kt,omitempty"`
-	Victim     string `json:"victim,omitempty"`
-	VictimTeam string `json:"vt,omitempty"`
-	Weapon     string `json:"weapon,omitempty"`
-	Headshot   bool   `json:"hs,omitempty"`
-	System     bool   `json:"sys,omitempty"`
-	Message    string `json:"msg,omitempty"`
-	Time       string `json:"time"`
+	Killer       string `json:"killer,omitempty"`
+	KillerTeam   string `json:"kt,omitempty"`
+	Victim       string `json:"victim,omitempty"`
+	VictimTeam   string `json:"vt,omitempty"`
+	Weapon       string `json:"weapon,omitempty"`
+	Headshot     bool   `json:"hs,omitempty"`
+	Wallbang     bool   `json:"wb,omitempty"`
+	Assister     string `json:"assist,omitempty"`
+	AssisterTeam string `json:"at,omitempty"`
+	System       bool   `json:"sys,omitempty"`
+	Message      string `json:"msg,omitempty"`
+	Time         string `json:"time"`
 }
 
 func shortTeam(t string) string {
@@ -224,17 +228,28 @@ func killToJSON(k gametracker.Kill) killJSON {
 	return killJSON{
 		Killer: k.Killer, KillerTeam: shortTeam(k.KillerTeam),
 		Victim: k.Victim, VictimTeam: shortTeam(k.VictimTeam),
-		Weapon: k.Weapon,
-		Headshot: k.Headshot, System: k.IsSystem, Message: k.Message,
+		Weapon:   k.Weapon,
+		Headshot: k.Headshot, Wallbang: k.Wallbang,
+		Assister: k.Assister, AssisterTeam: shortTeam(k.AssisterTeam),
+		System: k.IsSystem, Message: k.Message,
 		Time: k.Time.Format("15:04:05"),
 	}
 }
 
 type scoreJSON struct {
-	Round    int    `json:"round"`
-	CT       int    `json:"ct"`
-	T        int    `json:"t"`
-	GameMode string `json:"mode,omitempty"`
+	Round     int         `json:"round"`
+	CT        int         `json:"ct"`
+	T         int         `json:"t"`
+	GameMode  string      `json:"mode,omitempty"`
+	Rounds    []roundJSON `json:"rounds,omitempty"`
+	HalfRound int         `json:"half,omitempty"`
+	Warmup    bool        `json:"warmup,omitempty"`
+}
+
+type roundJSON struct {
+	Round  int    `json:"r"`
+	Winner string `json:"w"`  // "CT" or "T"
+	Reason string `json:"rs"` // "elimination", "bomb", "defuse", "time"
 }
 
 // sendPlayers sends a "players" message from tracker state (no RCON calls).
@@ -244,7 +259,11 @@ func (h *Handler) sendPlayers(conn *websocket.Conn, name string) error {
 	var score *scoreJSON
 	if state := h.tracker.GetState(name); state != nil {
 		s := state.GetScore()
-		score = &scoreJSON{Round: s.Round, CT: s.CT, T: s.T, GameMode: s.GameMode}
+		var rounds []roundJSON
+		for _, r := range s.Rounds {
+			rounds = append(rounds, roundJSON{Round: r.Round, Winner: r.Winner, Reason: r.Reason})
+		}
+		score = &scoreJSON{Round: s.Round, CT: s.CT, T: s.T, GameMode: s.GameMode, Rounds: rounds, HalfRound: s.HalfRound, Warmup: s.InWarmup}
 	}
 
 	msg := struct {
@@ -285,7 +304,7 @@ func buildPlayerList(serverName string, tracker *gametracker.Manager) []gamePlay
 			Kills: ps.Kills, Deaths: ps.Deaths, Assists: ps.Assists,
 			Ping: ps.Ping, Duration: ps.Duration, Money: ps.Money,
 			Weapons: weapons, Grenades: grenades,
-			HasArmor: ps.HasArmor, HasHelmet: ps.HasHelmet, HasDefuser: ps.HasDefuser, HasBomb: ps.HasBomb,
+			HasArmor: ps.HasArmor, HasHelmet: ps.HasHelmet, HasDefuser: ps.HasDefuser, HasBomb: ps.HasBomb, Alive: ps.Alive,
 		})
 	}
 
@@ -362,6 +381,7 @@ func (h *Handler) DashboardWebSocket(w http.ResponseWriter, r *http.Request) {
 
 type dashServerJSON struct {
 	Name        string     `json:"name"`
+	Alias       string     `json:"alias"`
 	Status      string     `json:"status"`
 	Port        int        `json:"port"`
 	GameMode    string     `json:"mode"`
@@ -381,6 +401,7 @@ func (h *Handler) sendDashboard(conn *websocket.Conn) error {
 	for _, s := range servers {
 		ds := dashServerJSON{
 			Name:       s.Name,
+			Alias:      h.aliases.Get(s.Name),
 			Status:     s.Status,
 			Port:       s.Port,
 			GameMode:   s.GameMode,

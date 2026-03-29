@@ -19,6 +19,7 @@ type Handler struct {
 	docker      *docker.Client
 	rcon        *rcon.Manager
 	tracker     *gametracker.Manager
+	aliases     *AliasStore
 	composeFile string
 	defaultRCON string
 	pages       map[string]*template.Template
@@ -77,6 +78,7 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, co
 		docker:      dc,
 		rcon:        rm,
 		tracker:     tm,
+		aliases:     NewAliasStore("server-aliases.json"),
 		composeFile: composeFile,
 		defaultRCON: defaultRCON,
 		pages:       pages,
@@ -256,7 +258,8 @@ func (h *Handler) ServerDetail(w http.ResponseWriter, r *http.Request) {
 	state := h.tracker.TrackServer(name, info.Port, info.RCONPassword, info.GameMode)
 
 	h.render(w, "server.html", map[string]any{
-		"Title":      info.Name,
+		"Title":      h.aliases.Get(info.Name),
+		"Alias":      h.aliases.Get(info.Name),
 		"Server":     info,
 		"Status":     status,
 		"Scoreboard": state.GetScoreboard(),
@@ -422,6 +425,13 @@ func (h *Handler) StopServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (h *Handler) RenameServer(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	alias := r.FormValue("alias")
+	h.aliases.Set(name, alias)
+	w.WriteHeader(http.StatusOK)
 }
 
 // CombinedPlayer merges RCON status info with tracker K/D/A.

@@ -33,6 +33,7 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	protected.HandleFunc("GET /server/{name}/logs/ws", h.LogsWebSocket)
 	protected.HandleFunc("GET /server/{name}/game/ws", h.GameStateWebSocket)
 	protected.HandleFunc("GET /server/{name}/killfeed", h.KillfeedPartial)
+	protected.HandleFunc("POST /server/{name}/rename", h.RenameServer)
 	protected.HandleFunc("POST /server/{name}/restart", h.RestartServer)
 	protected.HandleFunc("POST /server/{name}/stop", h.StopServer)
 
