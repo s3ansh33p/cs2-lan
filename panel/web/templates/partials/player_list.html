@@ -1,0 +1,28 @@
+{{define "player_list.html"}}
+{{if and .Status .Status.Players}}
+<table class="w-full text-sm">
+    <thead>
+        <tr class="border-b border-slate-700 text-slate-400 text-left">
+            <th class="px-4 py-2 font-medium">Name</th>
+            <th class="px-4 py-2 font-medium">Ping</th>
+            <th class="px-4 py-2 font-medium">Duration</th>
+            <th class="px-4 py-2 font-medium">Address</th>
+        </tr>
+    </thead>
+    <tbody>
+        {{range .Status.Players}}
+        <tr class="border-b border-slate-700/50">
+            <td class="px-4 py-2 text-white">{{if .IsBot}}<span class="text-slate-400">(BOT)</span> {{end}}{{.Name}}</td>
+            <td class="px-4 py-2 text-slate-300">{{if .IsBot}}-{{else}}{{.Ping}}ms{{end}}</td>
+            <td class="px-4 py-2 text-slate-300">{{.Duration}}</td>
+            <td class="px-4 py-2 text-slate-400 font-mono text-xs">{{if .Address}}{{.Address}}{{else}}-{{end}}</td>
+        </tr>
+        {{end}}
+    </tbody>
+</table>
+{{else}}
+<div class="px-4 py-8 text-center text-slate-500 text-sm">
+    {{if .Status}}No players connected{{else}}Waiting for server...{{end}}
+</div>
+{{end}}
+{{end}}

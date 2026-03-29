@@ -1,0 +1,83 @@
+{{define "content"}}
+<div class="mb-6">
+    <div class="flex items-center gap-3 mb-2">
+        <a href="/" class="text-slate-400 hover:text-white text-sm">&larr; Dashboard</a>
+    </div>
+    <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-bold">{{.Server.Name}}</h1>
+        <button hx-post="/server/{{.Server.Name}}/stop" hx-confirm="Stop server {{.Server.Name}}?"
+            class="bg-red-600 hover:bg-red-700 text-white font-medium rounded px-4 py-2 text-sm transition-colors">
+            Stop Server
+        </button>
+    </div>
+</div>
+
+<!-- Server Info -->
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+    <div class="bg-slate-800 border border-slate-700 rounded-lg p-4">
+        <div class="text-slate-400 text-xs mb-1">Port</div>
+        <div class="text-lg font-medium">{{.Server.Port}}</div>
+    </div>
+    <div class="bg-slate-800 border border-slate-700 rounded-lg p-4">
+        <div class="text-slate-400 text-xs mb-1">Mode</div>
+        <div class="text-lg font-medium">{{.Server.GameMode}}</div>
+    </div>
+    <div class="bg-slate-800 border border-slate-700 rounded-lg p-4">
+        <div class="text-slate-400 text-xs mb-1">Map</div>
+        <div class="text-lg font-medium">{{if .Status}}{{.Status.Map}}{{else}}{{.Server.Map}}{{end}}</div>
+    </div>
+    <div class="bg-slate-800 border border-slate-700 rounded-lg p-4">
+        <div class="text-slate-400 text-xs mb-1">Players</div>
+        <div class="text-lg font-medium">
+            {{if .Status}}{{.Status.Humans}} + {{.Status.Bots}} bots{{else}}--{{end}}
+            / {{.Server.MaxPlayers}}
+        </div>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <!-- RCON Console -->
+    <div class="bg-slate-800 border border-slate-700 rounded-lg flex flex-col" style="height: 500px;">
+        <div class="px-4 py-3 border-b border-slate-700 text-sm font-medium text-slate-300">RCON Console</div>
+        <div id="rcon-output" class="flex-1 overflow-y-auto p-4 space-y-2">
+            <div class="text-slate-500 text-xs">Connected to {{.Server.Name}} on port {{.Server.Port}}</div>
+        </div>
+        <form id="rcon-form" hx-post="/server/{{.Server.Name}}/rcon" hx-target="#rcon-output" hx-swap="beforeend"
+            class="border-t border-slate-700 p-2 flex gap-2">
+            <span class="text-orange-400 py-2 pl-2">&gt;</span>
+            <input type="text" name="command" autocomplete="off" placeholder="Enter RCON command..."
+                class="flex-1 bg-transparent border-none text-white focus:outline-none text-sm">
+            <button type="submit" class="bg-slate-700 hover:bg-slate-600 text-white rounded px-3 py-1 text-sm">Send</button>
+        </form>
+    </div>
+
+    <!-- Live Logs -->
+    <div class="bg-slate-800 border border-slate-700 rounded-lg flex flex-col" style="height: 500px;">
+        <div class="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
+            <span class="text-sm font-medium text-slate-300">Container Logs</span>
+            <div class="flex items-center gap-2">
+                <button id="log-pause" onclick="toggleLogPause()" class="text-xs bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1">Pause</button>
+                <button onclick="clearLogs()" class="text-xs bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1">Clear</button>
+                <button id="log-reconnect" onclick="reconnectLogs()" class="hidden text-xs bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1">Reconnect</button>
+                <span id="log-status" class="text-xs text-green-400">Connecting...</span>
+            </div>
+        </div>
+        <div id="log-output" class="flex-1 overflow-y-auto p-4 text-xs leading-relaxed text-slate-300 whitespace-pre-wrap">
+        </div>
+    </div>
+</div>
+
+<!-- Player List -->
+<div class="mt-6 bg-slate-800 border border-slate-700 rounded-lg">
+    <div class="px-4 py-3 border-b border-slate-700 text-sm font-medium text-slate-300">Players</div>
+    <div id="player-list" hx-get="/server/{{.Server.Name}}/players" hx-trigger="every 5s" hx-swap="innerHTML">
+        {{template "player_list.html" .}}
+    </div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        connectLogWS('{{.Server.Name}}');
+    });
+</script>
+{{end}}

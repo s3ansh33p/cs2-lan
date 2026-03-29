@@ -1,0 +1,75 @@
+{{define "content"}}
+<div class="mb-6">
+    <a href="/" class="text-slate-400 hover:text-white text-sm">&larr; Dashboard</a>
+    <h1 class="text-2xl font-bold mt-2">Launch Server</h1>
+</div>
+
+{{if .Error}}
+<div class="bg-red-900/50 border border-red-700 text-red-300 rounded px-4 py-3 mb-6 text-sm">
+    {{.Error}}
+</div>
+{{end}}
+
+<form method="POST" action="/launch" class="bg-slate-800 border border-slate-700 rounded-lg p-6 max-w-2xl">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+            <label class="block text-sm text-slate-400 mb-1">Server Name</label>
+            <input type="text" name="name" required placeholder="e.g. comp" value="{{if .Form}}{{.Form.Name}}{{end}}"
+                class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm">
+        </div>
+        <div>
+            <label class="block text-sm text-slate-400 mb-1">Port</label>
+            <input type="number" name="port" required placeholder="27015" value="{{if .Form}}{{.Form.Port}}{{end}}"
+                class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm">
+        </div>
+        <div>
+            <label class="block text-sm text-slate-400 mb-1">Game Mode</label>
+            <select name="mode"
+                class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm">
+                <option value="competitive" {{if and .Form (eq .Form.Mode "competitive")}}selected{{end}}>Competitive</option>
+                <option value="casual" {{if and .Form (eq .Form.Mode "casual")}}selected{{end}}>Casual</option>
+                <option value="deathmatch" {{if and .Form (eq .Form.Mode "deathmatch")}}selected{{end}}>Deathmatch</option>
+                <option value="armsrace" {{if and .Form (eq .Form.Mode "armsrace")}}selected{{end}}>Arms Race</option>
+                <option value="demolition" {{if and .Form (eq .Form.Mode "demolition")}}selected{{end}}>Demolition</option>
+            </select>
+        </div>
+        <div>
+            <label class="block text-sm text-slate-400 mb-1">Starting Map</label>
+            <input type="text" name="map" placeholder="de_inferno" value="{{if .Form}}{{.Form.Map}}{{end}}"
+                class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm">
+        </div>
+        <div>
+            <label class="block text-sm text-slate-400 mb-1">Max Players</label>
+            <input type="number" name="players" placeholder="10" value="{{if .Form}}{{.Form.Players}}{{end}}"
+                class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm">
+        </div>
+        <div>
+            <label class="block text-sm text-slate-400 mb-1">Server Password (optional)</label>
+            <input type="text" name="password" placeholder="Leave empty for no password" value="{{if .Form}}{{.Form.Password}}{{end}}"
+                class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm">
+        </div>
+        <div>
+            <label class="block text-sm text-slate-400 mb-1">RCON Password</label>
+            <input type="text" name="rcon" placeholder="{{.DefaultRCON}}" value="{{if .Form}}{{.Form.RCON}}{{end}}"
+                class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm">
+        </div>
+        <div class="flex items-end">
+            <label class="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" name="tv" {{if and .Form .Form.TV}}checked{{end}}
+                    class="w-4 h-4 rounded bg-slate-700 border-slate-600 text-orange-500 focus:ring-orange-400">
+                <span class="text-sm text-slate-300">Enable CSTV</span>
+            </label>
+        </div>
+    </div>
+
+    <div class="mt-6 flex gap-3">
+        <button type="submit"
+            class="bg-orange-500 hover:bg-orange-600 text-white font-medium rounded px-6 py-2 text-sm transition-colors">
+            Launch
+        </button>
+        <a href="/" class="bg-slate-700 hover:bg-slate-600 text-white font-medium rounded px-6 py-2 text-sm transition-colors">
+            Cancel
+        </a>
+    </div>
+</form>
+{{end}}

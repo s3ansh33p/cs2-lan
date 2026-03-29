@@ -1,0 +1,8 @@
+{{define "rcon_output.html"}}
+<div class="fade-in">
+    <div class="text-orange-400 text-xs">&gt; {{.Command}}</div>
+    {{if .Response}}
+    <pre class="{{if .IsError}}text-red-400{{else}}text-slate-300{{end}} text-xs mt-1 whitespace-pre-wrap">{{.Response}}</pre>
+    {{end}}
+</div>
+{{end}}
