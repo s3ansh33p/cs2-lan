@@ -212,8 +212,13 @@ type killJSON struct {
 	Weapon       string `json:"weapon,omitempty"`
 	Headshot     bool   `json:"hs,omitempty"`
 	Wallbang     bool   `json:"wb,omitempty"`
+	Noscope      bool   `json:"ns,omitempty"`
+	BlindKill    bool   `json:"bk,omitempty"`
+	InAir        bool   `json:"ia,omitempty"`
+	ThroughSmoke bool   `json:"ts,omitempty"`
 	Assister     string `json:"assist,omitempty"`
 	AssisterTeam string `json:"at,omitempty"`
+	FlashAssist  bool   `json:"fa,omitempty"`
 	System       bool   `json:"sys,omitempty"`
 	Message      string `json:"msg,omitempty"`
 	Time         string `json:"time"`
@@ -231,8 +236,9 @@ func killToJSON(k gametracker.Kill) killJSON {
 		Killer: html.EscapeString(k.Killer), KillerTeam: shortTeam(k.KillerTeam),
 		Victim: html.EscapeString(k.Victim), VictimTeam: shortTeam(k.VictimTeam),
 		Weapon:   k.Weapon,
-		Headshot: k.Headshot, Wallbang: k.Wallbang,
-		Assister: html.EscapeString(k.Assister), AssisterTeam: shortTeam(k.AssisterTeam),
+		Headshot: k.Headshot, Wallbang: k.Wallbang, Noscope: k.Noscope,
+		BlindKill: k.BlindKill, InAir: k.InAir, ThroughSmoke: k.ThroughSmoke,
+		Assister: html.EscapeString(k.Assister), AssisterTeam: shortTeam(k.AssisterTeam), FlashAssist: k.FlashAssist,
 		System: k.IsSystem, Message: html.EscapeString(k.Message),
 		Time: k.Time.Format("15:04:05"),
 	}
@@ -243,6 +249,7 @@ type scoreJSON struct {
 	CT        int         `json:"ct"`
 	T         int         `json:"t"`
 	GameMode  string      `json:"mode,omitempty"`
+	Map       string      `json:"map,omitempty"`
 	Rounds    []roundJSON `json:"rounds,omitempty"`
 	HalfRound int         `json:"half,omitempty"`
 	Warmup    bool        `json:"warmup,omitempty"`
@@ -265,7 +272,7 @@ func (h *Handler) sendPlayers(conn *websocket.Conn, name string) error {
 		for _, r := range s.Rounds {
 			rounds = append(rounds, roundJSON{Round: r.Round, Winner: r.Winner, Reason: r.Reason})
 		}
-		score = &scoreJSON{Round: s.Round, CT: s.CT, T: s.T, GameMode: s.GameMode, Rounds: rounds, HalfRound: s.HalfRound, Warmup: s.InWarmup}
+		score = &scoreJSON{Round: s.Round, CT: s.CT, T: s.T, GameMode: s.GameMode, Map: s.CurrentMap, Rounds: rounds, HalfRound: s.HalfRound, Warmup: s.InWarmup}
 	}
 
 	msg := struct {
@@ -355,8 +362,12 @@ func (h *Handler) DashboardWebSocket(w http.ResponseWriter, r *http.Request) {
 	pingTicker := time.NewTicker(pingInterval)
 	defer pingTicker.Stop()
 
-	// Send initial state
-	if data := h.getDashboardData(); data != nil {
+	// Send initial state immediately
+	data := h.getDashboardData()
+	if data == nil {
+		data = h.buildDashboardJSON()
+	}
+	if data != nil {
 		conn.SetWriteDeadline(time.Now().Add(writeWait))
 		conn.WriteMessage(websocket.TextMessage, data)
 	}

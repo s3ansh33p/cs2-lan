@@ -260,8 +260,11 @@ function renderScore(score) {
         modeEl.textContent = score.mode.charAt(0).toUpperCase() + score.mode.slice(1);
         _currentGameMode = score.mode;
     }
+    var mapEl = document.getElementById('score-map');
+    if (mapEl && score.map) {
+        mapEl.innerHTML = '<img src="/static/icons/map/' + score.map + '.svg" class="h-4 w-4 opacity-60 rounded" onerror="this.style.display=\'none\'">' + score.map;
+    }
     _inWarmup = !!score.warmup;
-    bar.classList.remove('hidden');
 
     // Round history bar
     var histEl = document.getElementById('round-history');
@@ -331,14 +334,39 @@ function renderPlayers(players) {
     var el = document.getElementById('player-list');
     if (!el) return;
 
+    // Update player count in header
+    var countEl = document.getElementById('player-count');
+    if (countEl) {
+        var online = 0;
+        for (var c = 0; c < players.length; c++) { if (players[c].online) online++; }
+        countEl.textContent = '(' + online + ')';
+    }
+
     if (!players.length) {
         el.innerHTML = '<div class="px-4 py-8 text-center text-slate-500 text-sm">No players connected</div>';
         return;
     }
 
-    // Desktop table
-    var table = '<table class="w-full text-sm hidden sm:table"><thead><tr class="border-b border-slate-700 text-slate-400 text-left">' +
-        '<th class="px-4 py-2 font-medium w-8">Team</th>' +
+    // Split players by team
+    var ctPlayers = [], tPlayers = [], otherPlayers = [];
+    for (var i = 0; i < players.length; i++) {
+        if (players[i].team === 'CT') ctPlayers.push(players[i]);
+        else if (players[i].team === 'T') tPlayers.push(players[i]);
+        else otherPlayers.push(players[i]);
+    }
+
+    var showAlive = !_inWarmup && _currentGameMode && _currentGameMode !== 'deathmatch' && _currentGameMode !== 'armsrace';
+    var tableHeader = '<colgroup>' +
+        '<col style="width:25%">' +
+        '<col style="width:40px">' +
+        '<col style="width:40px">' +
+        '<col style="width:40px">' +
+        '<col style="width:60px">' +
+        '<col style="width:80px">' +
+        '<col>' +
+        '<col style="width:60px">' +
+        '</colgroup>' +
+        '<tr class="border-b border-slate-700 text-slate-400 text-left">' +
         '<th class="px-4 py-2 font-medium">Name</th>' +
         '<th class="px-4 py-2 font-medium text-center">K</th>' +
         '<th class="px-4 py-2 font-medium text-center">D</th>' +
@@ -347,18 +375,11 @@ function renderPlayers(players) {
         '<th class="px-4 py-2 font-medium text-right">Money</th>' +
         '<th class="px-4 py-2 font-medium">Equipment</th>' +
         '<th class="px-4 py-2 font-medium">Ping</th>' +
-        '</tr></thead><tbody>';
+        '</tr>';
 
-    // Mobile cards
-    var cards = '<div class="sm:hidden space-y-2 p-3">';
-
-    var showAlive = !_inWarmup && _currentGameMode && _currentGameMode !== 'deathmatch' && _currentGameMode !== 'armsrace';
-
-    for (var i = 0; i < players.length; i++) {
-        var p = players[i];
+    function playerRow(p) {
         var isDead = showAlive && p.online && !p.alive;
         var opacity = !p.online ? ' opacity-50' : (isDead ? ' opacity-40' : '');
-        var teamBadge = playerTeamBadge(p.team);
         var name = p.name;
         if (p.bot) name = '<span class="text-slate-400">(BOT)</span> ' + name;
         if (!p.online) name += ' <span class="text-slate-500 text-xs">(offline)</span>';
@@ -367,10 +388,7 @@ function renderPlayers(players) {
         var money = p.money ? '$' + p.money.toLocaleString() : '';
         var ping = !p.online ? '-' : (p.bot ? '-' : p.ping + 'ms');
         var equip = playerEquipIcons(p);
-
-        // Desktop row
-        table += '<tr class="border-b border-slate-700/50' + opacity + '">' +
-            '<td class="px-4 py-2">' + teamBadge + '</td>' +
+        return '<tr class="border-b border-slate-700/50' + opacity + '">' +
             '<td class="px-4 py-2 text-white">' + name + '</td>' +
             '<td class="px-4 py-2 text-green-400 text-center">' + p.k + '</td>' +
             '<td class="px-4 py-2 text-red-400 text-center">' + p.d + '</td>' +
@@ -380,11 +398,22 @@ function renderPlayers(players) {
             '<td class="px-4 py-2"><div class="flex flex-wrap items-center gap-1.5">' + equip + '</div></td>' +
             '<td class="px-4 py-2 text-slate-300">' + ping + '</td>' +
             '</tr>';
+    }
 
-        // Mobile card
-        cards += '<div class="bg-slate-700/30 rounded-lg p-3' + opacity + '">' +
+    function playerCard(p) {
+        var isDead = showAlive && p.online && !p.alive;
+        var opacity = !p.online ? ' opacity-50' : (isDead ? ' opacity-40' : '');
+        var name = p.name;
+        if (p.bot) name = '<span class="text-slate-400">(BOT)</span> ' + name;
+        if (!p.online) name += ' <span class="text-slate-500 text-xs">(offline)</span>';
+        if (isDead) name += ' <img src="/static/icons/ui/kill.svg" class="h-3.5 inline-block opacity-50" title="Dead">';
+        var kd = p.d === 0 ? '-' : (p.k / p.d).toFixed(1);
+        var money = p.money ? '$' + p.money.toLocaleString() : '';
+        var ping = !p.online ? '-' : (p.bot ? '-' : p.ping + 'ms');
+        var equip = playerEquipIcons(p);
+        var borderColor = p.team === 'CT' ? ' border-l-2 border-blue-400' : (p.team === 'T' ? ' border-l-2 border-yellow-400' : '');
+        return '<div class="bg-slate-700/30 rounded-lg p-3' + opacity + borderColor + '">' +
             '<div class="flex items-center gap-2 mb-1.5">' +
-                teamBadge +
                 '<span class="text-white text-sm font-medium flex-1">' + name + '</span>' +
                 (money ? '<span class="text-green-300 font-mono text-xs">' + money + '</span>' : '') +
                 '<span class="text-slate-400 text-xs">' + ping + '</span>' +
@@ -399,9 +428,42 @@ function renderPlayers(players) {
             '</div>';
     }
 
-    table += '</tbody></table>';
-    cards += '</div>';
-    el.innerHTML = table + cards;
+    // Desktop: single table with team divider rows
+    var html = '<table class="w-full text-sm hidden sm:table" style="table-layout:fixed">' + tableHeader + '<tbody>';
+
+    if (ctPlayers.length) {
+        html += '<tr><td colspan="8" class="px-4 py-1.5 text-xs font-bold text-blue-400 bg-blue-500/5 border-l-2 border-blue-400">Counter-Terrorists</td></tr>';
+        for (var i = 0; i < ctPlayers.length; i++) html += playerRow(ctPlayers[i]);
+    }
+
+    if (tPlayers.length) {
+        html += '<tr><td colspan="8" class="px-4 py-1.5 text-xs font-bold text-yellow-400 bg-yellow-500/5 border-l-2 border-yellow-400">Terrorists</td></tr>';
+        for (var i = 0; i < tPlayers.length; i++) html += playerRow(tPlayers[i]);
+    }
+
+    if (otherPlayers.length) {
+        for (var i = 0; i < otherPlayers.length; i++) html += playerRow(otherPlayers[i]);
+    }
+
+    html += '</tbody></table>';
+
+    // Mobile cards
+    html += '<div class="sm:hidden space-y-2 p-3">';
+    if (ctPlayers.length) {
+        html += '<div class="text-xs font-bold text-blue-400 px-1 pb-1">Counter-Terrorists</div>';
+        for (var i = 0; i < ctPlayers.length; i++) html += playerCard(ctPlayers[i]);
+    }
+    if (tPlayers.length) {
+        if (ctPlayers.length) html += '<div class="border-t border-slate-700 my-2"></div>';
+        html += '<div class="text-xs font-bold text-yellow-400 px-1 pb-1">Terrorists</div>';
+        for (var i = 0; i < tPlayers.length; i++) html += playerCard(tPlayers[i]);
+    }
+    if (otherPlayers.length) {
+        for (var i = 0; i < otherPlayers.length; i++) html += playerCard(otherPlayers[i]);
+    }
+    html += '</div>';
+
+    el.innerHTML = html;
 }
 
 function renderKillfeed(killfeed) {
@@ -444,6 +506,14 @@ function renderKillEntry(k) {
             '<span class="text-slate-600 text-xs">' + k.time + '</span>' +
             '</div>';
     }
+    // No killer (bomb kill, world kill)
+    if (!k.killer) {
+        return '<div class="flex items-center gap-2">' +
+            '<span class="flex items-center gap-1">' + weaponIcon(k.weapon) + '</span>' +
+            '<span class="' + teamColor(k.vt) + ' text-xs">' + k.victim + '</span>' +
+            '<span class="text-slate-600 text-xs ml-auto">' + k.time + '</span>' +
+            '</div>';
+    }
     if (k.killer && k.killer === k.victim) {
         var tc = teamColor(k.vt);
         return '<div class="flex items-center gap-2">' +
@@ -453,15 +523,26 @@ function renderKillEntry(k) {
             '<span class="text-slate-600 text-xs ml-auto">' + k.time + '</span>' +
             '</div>';
     }
-    var hsIcon = k.hs ? ' <img src="/static/icons/deathnotice/icon_headshot.svg" class="h-3.5 inline-block opacity-80" alt="HS">' : '';
-    var wbIcon = k.wb ? ' <img src="/static/icons/deathnotice/penetrate.svg" class="h-3.5 inline-block opacity-80" alt="Wallbang">' : '';
-    var killerSide = '<span class="' + teamColor(k.kt) + ' text-xs">' + k.killer + '</span>';
+    function dnIcon(src, alt) { return '<img src="/static/icons/deathnotice/' + src + '" class="h-3.5 inline-block opacity-80" alt="' + alt + '">'; }
+
+    // [blind] killer + [flash assist] assist [in air] weapon [noscope] [through smoke] [wallbang] [headshot] victim
+    var blindIcon = k.bk ? dnIcon('blind_kill.svg', 'Blind Kill') + ' ' : '';
+    var flashAssistIcon = (k.assist && k.fa) ? '<img src="/static/icons/equipment/flashbang_assist.svg" class="h-3.5 inline-block opacity-80" alt="Flash Assist"> ' : '';
+    var killerSide = blindIcon + '<span class="' + teamColor(k.kt) + ' text-xs">' + k.killer + '</span>';
     if (k.assist) {
-        killerSide += '<span class="text-slate-500 text-xs"> + </span><span class="' + teamColor(k.at) + ' text-xs">' + k.assist + '</span>';
+        killerSide += '<span class="text-slate-500 text-xs"> + </span>' + flashAssistIcon + '<span class="' + teamColor(k.at) + ' text-xs">' + k.assist + '</span>';
     }
+
+    var inAirIcon = k.ia ? dnIcon('inairkill.svg', 'In Air') + ' ' : '';
+    var weaponHtml = inAirIcon + weaponIcon(k.weapon);
+    if (k.ns) weaponHtml += ' ' + dnIcon('noscope.svg', 'Noscope');
+    if (k.ts) weaponHtml += ' ' + dnIcon('smoke_kill.svg', 'Through Smoke');
+    if (k.wb) weaponHtml += ' ' + dnIcon('penetrate.svg', 'Wallbang');
+    if (k.hs) weaponHtml += ' ' + dnIcon('icon_headshot.svg', 'Headshot');
+
     return '<div class="flex items-center gap-2">' +
         '<span class="flex items-center gap-1">' + killerSide + '</span>' +
-        '<span class="flex items-center gap-1">' + weaponIcon(k.weapon) + hsIcon + wbIcon + '</span>' +
+        '<span class="flex items-center gap-1">' + weaponHtml + '</span>' +
         '<span class="' + teamColor(k.vt) + ' text-xs">' + k.victim + '</span>' +
         '<span class="text-slate-600 text-xs ml-auto">' + k.time + '</span>' +
         '</div>';

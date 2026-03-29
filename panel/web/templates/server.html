@@ -1,7 +1,9 @@
 {{define "content"}}
-<div class="mb-6">
-    <div class="flex items-center gap-3 mb-2">
+<div class="mb-4">
+    <div class="flex items-center gap-2 mb-2">
         <a href="/" class="text-slate-400 hover:text-white text-sm">&larr; Dashboard</a>
+        <span class="text-slate-600 text-sm">&middot;</span>
+        <span class="text-slate-500 text-sm font-mono">:{{.Server.Port}}</span>
     </div>
     <div class="flex items-center justify-between">
         <div class="flex items-center gap-2">
@@ -9,7 +11,6 @@
             <button onclick="renameServer('{{.Server.Name}}')" class="text-slate-500 hover:text-white text-sm" title="Rename">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
             </button>
-            {{if ne .Alias .Server.Name}}<span class="text-slate-500 text-sm">({{.Server.Name}})</span>{{end}}
         </div>
         <div class="flex gap-2">
             <button hx-post="/server/{{.Server.Name}}/restart" hx-confirm="Restart server {{.Server.Name}}?"
@@ -24,27 +25,28 @@
     </div>
 </div>
 
-<!-- Server Info -->
-<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-    <div class="bg-slate-800 border border-slate-700 rounded-lg p-4">
-        <div class="text-slate-400 text-xs mb-1">Port</div>
-        <div class="text-lg font-medium">{{.Server.Port}}</div>
-    </div>
-    <div class="bg-slate-800 border border-slate-700 rounded-lg p-4">
-        <div class="text-slate-400 text-xs mb-1">Mode</div>
-        <div class="text-lg font-medium">{{.Server.GameMode}}</div>
-    </div>
-    <div class="bg-slate-800 border border-slate-700 rounded-lg p-4">
-        <div class="text-slate-400 text-xs mb-1">Map</div>
-        <div class="text-lg font-medium">{{if .Status}}{{.Status.Map}}{{else}}{{.Server.Map}}{{end}}</div>
-    </div>
-    <div class="bg-slate-800 border border-slate-700 rounded-lg p-4">
-        <div class="text-slate-400 text-xs mb-1">Players</div>
-        <div class="text-lg font-medium">
-            {{if .Status}}{{.Status.Humans}} + {{.Status.Bots}} bots{{else}}--{{end}}
-            / {{.Server.MaxPlayers}}
+<!-- Score Bar -->
+<div id="score-bar" class="bg-slate-800 border border-slate-700 rounded-lg p-4 mb-4">
+    <div class="flex items-center justify-center gap-6 text-center">
+        <div>
+            <div class="text-xs text-blue-400 font-medium">CT</div>
+            <div id="score-ct" class="text-3xl font-bold text-blue-400">0</div>
+        </div>
+        <div>
+            <div class="flex items-center justify-center gap-2 text-xs text-slate-500 mb-1">
+                <span id="score-mode"></span>
+                <span>&middot;</span>
+                <span id="score-map" class="flex items-center gap-1"></span>
+            </div>
+            <div class="text-xs text-slate-500">Round</div>
+            <div id="score-round" class="text-lg text-slate-400">0</div>
+        </div>
+        <div>
+            <div class="text-xs text-yellow-400 font-medium">T</div>
+            <div id="score-t" class="text-3xl font-bold text-yellow-400">0</div>
         </div>
     </div>
+    <div id="round-history" class="hidden mt-3 flex items-center justify-center gap-1 flex-wrap px-2 pb-2"></div>
 </div>
 
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -83,28 +85,11 @@
     </div>
 </div>
 
-<!-- Score & Players -->
-<div id="score-bar" class="mt-6 bg-slate-800 border border-slate-700 rounded-lg p-4 hidden">
-    <div class="flex items-center justify-center gap-6 text-center">
-        <div>
-            <div class="text-xs text-blue-400 font-medium">CT</div>
-            <div id="score-ct" class="text-3xl font-bold text-blue-400">0</div>
-        </div>
-        <div>
-            <div id="score-mode" class="text-xs text-slate-500 mb-1"></div>
-            <div class="text-xs text-slate-500">Round</div>
-            <div id="score-round" class="text-lg text-slate-400">0</div>
-        </div>
-        <div>
-            <div class="text-xs text-yellow-400 font-medium">T</div>
-            <div id="score-t" class="text-3xl font-bold text-yellow-400">0</div>
-        </div>
-    </div>
-    <div id="round-history" class="hidden mt-3 flex items-center justify-center gap-1 flex-wrap px-2 pb-2"></div>
-</div>
-
+<!-- Players -->
 <div class="mt-4 bg-slate-800 border border-slate-700 rounded-lg">
-    <div class="px-4 py-3 border-b border-slate-700 text-sm font-medium text-slate-300">Players</div>
+    <div class="px-4 py-3 border-b border-slate-700 text-sm font-medium text-slate-300">
+        Players <span id="player-count" class="text-slate-500"></span>
+    </div>
     <div id="player-list">
         {{template "player_list.html" .}}
     </div>
