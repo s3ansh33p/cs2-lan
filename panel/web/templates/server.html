@@ -28,7 +28,7 @@
 <!-- Score Bar -->
 <div id="score-bar" class="bg-slate-800 border border-slate-700 rounded-lg p-4 mb-4">
     <div class="flex items-center justify-center gap-6 text-center">
-        <div>
+        <div id="score-ct-wrap">
             <div class="text-xs text-blue-400 font-medium">CT</div>
             <div id="score-ct" class="text-3xl font-bold text-blue-400">0</div>
         </div>
@@ -39,15 +39,17 @@
                 <span id="score-map" class="flex items-center gap-1"></span>
             </div>
             <div id="score-paused" class="text-xs font-bold text-red-400 bg-red-400/10 rounded px-2 py-0.5 mb-1" style="display:none">PAUSED</div>
-            <div class="text-xs text-slate-500">Round</div>
-            <div id="score-round" class="text-lg text-slate-400">0</div>
+            <div id="score-round-wrap">
+                <div class="text-xs text-slate-500">Round</div>
+                <div id="score-round" class="text-lg text-slate-400">0</div>
+            </div>
         </div>
-        <div>
+        <div id="score-t-wrap">
             <div class="text-xs text-yellow-400 font-medium">T</div>
             <div id="score-t" class="text-3xl font-bold text-yellow-400">0</div>
         </div>
     </div>
-    <div id="round-history" class="hidden mt-3 flex items-center justify-center gap-1 flex-wrap px-2 pb-2"></div>
+    <div id="round-history" class="hidden mt-3 px-2 pb-2"></div>
 </div>
 
 <!-- Players -->
@@ -99,6 +101,9 @@
                 <option value="wingman">Wingman</option>
             </select>
             <button onclick="rconQuickMode()" class="bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1">Switch</button>
+            <span class="text-slate-600">|</span>
+            <button onclick="rconQuick('sv_cheats 1; sv_enablebunnyhopping 1; sv_autobunnyhopping 1; sv_enablebunnyhopping 1; sv_staminamax 0; sv_staminajumpcost 0; sv_staminalandcost 0; sv_staminarecoveryrate 0; sv_airaccelerate 10000; sv_accelerate_use_weapon_speed 0; sv_maxvelocity 10000; ')" class="bg-emerald-700 hover:bg-emerald-600 text-white rounded px-2 py-1">BHop ON</button>
+            <button onclick="rconQuick('sv_enablebunnyhopping 0;sv_autobunnyhopping 0;sv_staminamax 80;sv_staminajumpcost 0.08;sv_staminalandcost 0.05;sv_staminarecoveryrate 60;sv_airaccelerate 12;sv_maxvelocity 3500;sv_cheats 0')" class="bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1">BHop OFF</button>
         </div>
         <div id="rcon-output" class="flex-1 overflow-y-auto p-4 space-y-2">
             <div class="text-slate-500 text-xs">Connected to {{.Server.Name}} on port {{.Server.Port}}</div>

@@ -265,9 +265,7 @@ function connectGameWS(serverName) {
 function renderScore(score) {
     var bar = document.getElementById('score-bar');
     if (!bar) return;
-    document.getElementById('score-ct').textContent = score.ct;
-    document.getElementById('score-t').textContent = score.t;
-    document.getElementById('score-round').textContent = score.round;
+
     var modeEl = document.getElementById('score-mode');
     if (modeEl && score.mode) {
         modeEl.textContent = score.mode.charAt(0).toUpperCase() + score.mode.slice(1);
@@ -282,6 +280,22 @@ function renderScore(score) {
     }
     _inWarmup = !!score.warmup;
 
+    var noRounds = _currentGameMode === 'deathmatch' || _currentGameMode === 'armsrace';
+
+    // Show/hide round-based elements
+    var ctEl = document.getElementById('score-ct-wrap');
+    var tEl = document.getElementById('score-t-wrap');
+    var roundEl = document.getElementById('score-round-wrap');
+    if (ctEl) ctEl.style.display = noRounds ? 'none' : '';
+    if (tEl) tEl.style.display = noRounds ? 'none' : '';
+    if (roundEl) roundEl.style.display = noRounds ? 'none' : '';
+
+    if (!noRounds) {
+        document.getElementById('score-ct').textContent = score.ct;
+        document.getElementById('score-t').textContent = score.t;
+        document.getElementById('score-round').textContent = score.round;
+    }
+
     // Paused badge
     var pauseEl = document.getElementById('score-paused');
     if (pauseEl) {
@@ -290,40 +304,121 @@ function renderScore(score) {
 
     // Round history bar
     var histEl = document.getElementById('round-history');
-    if (!histEl || !score.rounds || !score.rounds.length) return;
+    if (!histEl) return;
+    if (noRounds || !score.rounds || !score.rounds.length) {
+        histEl.innerHTML = '';
+        histEl.classList.add('hidden');
+        return;
+    }
     histEl.classList.remove('hidden');
 
-    var html = '';
-    for (var i = 0; i < score.rounds.length; i++) {
-        var r = score.rounds[i];
-        // Insert half-time divider
-        if (score.half > 0 && i > 0 && score.rounds[i - 1].r <= score.half && r.r > score.half) {
-            html += '<span class="w-px h-6 bg-slate-500 mx-1"></span>';
-        }
-
-        var color = r.w === 'CT' ? 'ct' : 't';
+    function roundIcon(r) {
         var icon = '';
         switch (r.rs) {
-            case 'elimination':
-                icon = '/static/icons/ui/kill.svg';
-                break;
-            case 'bomb':
-                icon = '/static/icons/equipment/planted_c4.svg';
-                break;
-            case 'defuse':
-                icon = '/static/icons/equipment/defuser.svg';
-                break;
-            case 'time':
-                icon = '/static/icons/ui/timer.svg';
-                break;
+            case 'elimination': icon = '/static/icons/ui/kill.svg'; break;
+            case 'bomb': icon = '/static/icons/equipment/planted_c4.svg'; break;
+            case 'defuse': icon = '/static/icons/equipment/defuser.svg'; break;
+            case 'time': icon = '/static/icons/ui/timer.svg'; break;
         }
-
-        // White SVGs — use CSS filter to colorize: blue for CT, gold for T
+        var color = r.w === 'CT' ? 'ct' : 't';
         var filter = color === 'ct'
             ? 'filter: brightness(0) saturate(100%) invert(55%) sepia(90%) saturate(500%) hue-rotate(190deg);'
             : 'filter: brightness(0) saturate(100%) invert(70%) sepia(90%) saturate(400%) hue-rotate(5deg);';
-        html += '<img src="' + icon + '" class="h-5 w-5" style="' + filter + '" title="Round ' + r.r + ': ' + r.w + ' (' + r.rs + ')">';
+        return '<img src="' + icon + '" class="h-4 w-4" style="' + filter + '" title="Round ' + r.r + ': ' + r.w + ' (' + r.rs + ')">';
     }
+
+    var half = score.half || 0;
+    var maxR = score.maxRounds || (half * 2);
+    var blank = '<span class="inline-block w-4 h-4"></span>';
+    var noHalves = _currentGameMode === 'demolition';
+
+    function getPeriod(roundNum) {
+        // Demolition: single section, no halves
+        if (noHalves) return { section: 'reg', idx: 0 };
+        // No half time detected yet — all rounds in first half
+        if (half === 0) return { section: 'reg', idx: 0 };
+        if (roundNum <= half) return { section: 'reg', idx: 0 };
+        if (maxR > 0 && roundNum <= maxR) return { section: 'reg', idx: 1 };
+        // Overtime
+        var otRound = roundNum - maxR; // 1-based within all OT
+        var otNum = Math.ceil(otRound / 6); // which OT (1-based)
+        var withinOT = otRound - (otNum - 1) * 6; // 1-6 within this OT
+        var otHalf = withinOT <= 3 ? 0 : 1; // first or second half of this OT
+        return { section: 'ot', otNum: otNum, idx: otHalf };
+    }
+
+    function ctOnTop(period) {
+        if (noHalves) return true; // Demolition: CT always on top
+        if (period.section === 'reg') return period.idx === 0;
+        return period.idx === 0;
+    }
+
+    // Collect periods in order for rendering
+    var sections = []; // [{label, top, bottom}]
+    var sectionMap = {}; // key -> {top:'', bottom:''}
+
+    function sectionKey(period) {
+        if (period.section === 'reg') return 'reg_' + period.idx;
+        return 'ot' + period.otNum + '_' + period.idx;
+    }
+
+    function ensureSection(period) {
+        var key = sectionKey(period);
+        if (!sectionMap[key]) {
+            var label = '';
+            if (period.section === 'reg' && period.idx === 0 && !noHalves) label = 'First Half';
+            else if (period.section === 'reg' && period.idx === 1) label = 'Second Half';
+            else if (period.section === 'ot' && period.idx === 0) label = 'OT' + period.otNum;
+            sectionMap[key] = { key: key, label: label, top: '', bottom: '' };
+            sections.push(sectionMap[key]);
+        }
+        return sectionMap[key];
+    }
+
+    // Create regulation sections
+    ensureSection({ section: 'reg', idx: 0 });
+    if (!noHalves) ensureSection({ section: 'reg', idx: 1 });
+
+    for (var i = 0; i < score.rounds.length; i++) {
+        var r = score.rounds[i];
+        var period = getPeriod(r.r);
+        var sec = ensureSection(period);
+        var icon = roundIcon(r);
+        var isTop = (r.w === 'CT') === ctOnTop(period);
+
+        if (isTop) {
+            sec.top += icon;
+            sec.bottom += blank;
+        } else {
+            sec.top += blank;
+            sec.bottom += icon;
+        }
+    }
+
+    // Build grid: each section is a column pair (top+bottom), with dividers between
+    var cols = [];
+    for (var s = 0; s < sections.length; s++) {
+        if (s > 0) cols.push('auto'); // divider column
+        cols.push('1fr');
+    }
+    var html = '<div class="grid grid-rows-[auto_1fr_1fr] gap-0.5" style="grid-template-columns:' + cols.join(' ') + '">';
+
+    // Row 0: labels
+    for (var s = 0; s < sections.length; s++) {
+        if (s > 0) html += '<div class="row-span-3 w-px bg-slate-500 mx-0.5"></div>';
+        html += '<div class="text-center text-xs text-slate-500 font-medium px-1">' + (sections[s].label || '') + '</div>';
+    }
+    // Row 1: top (CT started)
+    for (var s = 0; s < sections.length; s++) {
+        var rounding = s === 0 ? ' rounded-tl' : (s === sections.length - 1 ? ' rounded-tr' : '');
+        html += '<div class="flex items-center gap-0.5 px-1.5 py-1 bg-slate-700/30 min-h-6' + rounding + '">' + sections[s].top + '</div>';
+    }
+    // Row 2: bottom (T started)
+    for (var s = 0; s < sections.length; s++) {
+        var rounding = s === 0 ? ' rounded-bl' : (s === sections.length - 1 ? ' rounded-br' : '');
+        html += '<div class="flex items-center gap-0.5 px-1.5 py-1 bg-slate-700/30 min-h-6' + rounding + '">' + sections[s].bottom + '</div>';
+    }
+    html += '</div>';
     histEl.innerHTML = html;
 }
 
@@ -678,6 +773,15 @@ function renderKillEntry(k) {
             '<span class="text-slate-600 text-xs">' + k.time + '</span>' +
             '</div>';
     }
+    // Action event (bomb plant, defuse) — has killer + message + weapon icon, no victim
+    if (k.msg && k.killer && !k.victim) {
+        return '<div class="flex items-center gap-2">' +
+            '<span class="' + teamColor(k.kt) + ' text-xs">' + k.killer + '</span>' +
+            '<span class="flex items-center gap-1">' + weaponIcon(k.weapon) + '</span>' +
+            '<span class="text-slate-400 text-xs">' + k.msg + '</span>' +
+            '<span class="text-slate-600 text-xs ml-auto">' + k.time + '</span>' +
+            '</div>';
+    }
     // No killer (bomb kill, world kill)
     if (!k.killer) {
         return '<div class="flex items-center gap-2">' +
@@ -715,7 +819,9 @@ function renderKillEntry(k) {
     return '<div class="flex items-center gap-2">' +
         '<span class="flex items-center gap-1">' + killerSide + '</span>' +
         '<span class="flex items-center gap-1">' + weaponHtml + '</span>' +
-        '<span class="' + teamColor(k.vt) + ' text-xs">' + k.victim + '</span>' +
+        (k.victim === 'chicken'
+            ? '<img src="/static/icons/ui/zoo.svg" class="h-4 inline-block opacity-80" title="Chicken">'
+            : '<span class="' + teamColor(k.vt) + ' text-xs">' + k.victim + '</span>') +
         '<span class="text-slate-600 text-xs ml-auto">' + k.time + '</span>' +
         '</div>';
 }

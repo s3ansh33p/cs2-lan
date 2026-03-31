@@ -183,6 +183,7 @@ type ServerState struct {
 	gameMode   string
 	currentMap string
 	halfRound  int // round number where half-time occurred
+	maxRounds  int // halfRound * 2 — for overtime detection
 	inWarmup   bool
 	isPaused   bool
 	gameType   int // for tracking mode changes via rcon
@@ -210,6 +211,7 @@ type ScoreInfo struct {
 	CurrentMap string
 	Rounds     []RoundResult
 	HalfRound  int
+	MaxRounds  int
 	InWarmup   bool
 	IsPaused   bool
 }
@@ -219,7 +221,7 @@ func (s *ServerState) GetScore() ScoreInfo {
 	defer s.mu.RUnlock()
 	rounds := make([]RoundResult, len(s.rounds))
 	copy(rounds, s.rounds)
-	return ScoreInfo{Round: s.round, CT: s.ctScore, T: s.tScore, GameMode: s.gameMode, CurrentMap: s.currentMap, Rounds: rounds, HalfRound: s.halfRound, InWarmup: s.inWarmup, IsPaused: s.isPaused}
+	return ScoreInfo{Round: s.round, CT: s.ctScore, T: s.tScore, GameMode: s.gameMode, CurrentMap: s.currentMap, Rounds: rounds, HalfRound: s.halfRound, MaxRounds: s.maxRounds, InWarmup: s.inWarmup, IsPaused: s.isPaused}
 }
 
 func newServerState() *ServerState {
@@ -496,7 +498,11 @@ func (s *ServerState) recordPurchase(name, team, weapon string) {
 // items is the bracket content, e.g. "weapon_knife weapon_hkp2000 defuser kevlar(100) helmet"
 func (s *ServerState) recordBuyzone(name, team, items string) {
 	s.mu.Lock()
-	p := s.ensurePlayer(name)
+	p, ok := s.stats[name]
+	if !ok {
+		s.mu.Unlock()
+		return
+	}
 	if team != "" {
 		p.Team = team
 	}
@@ -568,8 +574,12 @@ func (s *ServerState) recordConnect(name string, isBot bool) {
 func (s *ServerState) recordDisconnect(name string) {
 	s.mu.Lock()
 	if p, ok := s.stats[name]; ok {
-		p.Online = false
-		p.Weapons = make(map[string]bool)
+		if p.IsBot {
+			delete(s.stats, name)
+		} else {
+			p.Online = false
+			p.Weapons = make(map[string]bool)
+		}
 	}
 	s.mu.Unlock()
 	s.notify()
@@ -764,6 +774,7 @@ func (s *ServerState) resetWithMessage(reason string) {
 	s.tScore = 0
 	s.rounds = nil
 	s.halfRound = 0
+	s.maxRounds = 0
 	s.isPaused = false
 	s.appendKill(Kill{Time: time.Now(), IsSystem: true, Message: reason})
 	s.mu.Unlock()
@@ -1075,16 +1086,45 @@ func parseLine(line string, state *ServerState) {
 		return
 	}
 
+	// BeginMatch — match is starting, reset stats
+	if strings.TrimSpace(line) == "BeginMatch" {
+		state.resetWithMessage("Match Started")
+		return
+	}
+
+	// Half time detection: "SwitchTeamsAtRoundReset" appears when teams swap
+	if strings.Contains(line, "SwitchTeamsAtRoundReset") {
+		state.mu.Lock()
+		if state.halfRound == 0 {
+			// Use score total (CT + T) as the authoritative round count for half time
+			// This avoids race conditions where round_stats JSON or Round_Start
+			// may have already advanced state.round
+			playedRounds := state.ctScore + state.tScore
+			if playedRounds == 0 {
+				playedRounds = len(state.rounds)
+			}
+			if playedRounds == 0 {
+				playedRounds = state.round
+			}
+			state.halfRound = playedRounds
+			state.maxRounds = playedRounds * 2
+			log.Printf("gametracker: half time at round %d, max rounds %d", playedRounds, state.maxRounds)
+		}
+		state.mu.Unlock()
+		state.addSystemMessage("Half Time")
+		return
+	}
+
 	// Match reset for arms race and deathmatch (no quotes in this line, must check before bailout)
 	if (state.gameMode == "armsrace" || state.gameMode == "deathmatch") && strings.Contains(line, "GMR_ResetMatch") {
 		state.resetWithMessage("Match Reset")
 		return
 	}
 
-	// Game Over: detect mode from "Game Over: <mode> ..."
+	// Game Over: detect mode and add to killfeed
+	// e.g. "Game Over: scrimcomp2v2 mg_active de_dust2 score 2:2 after 3 min"
 	if strings.HasPrefix(strings.TrimSpace(line), "Game Over:") {
 		parts := strings.Fields(line)
-		// "Game Over: deathmatch mg_active de_nuke score 0:0 after 1 min"
 		for i, p := range parts {
 			if p == "Over:" && i+1 < len(parts) {
 				newMode := parts[i+1]
@@ -1096,6 +1136,15 @@ func parseLine(line string, state *ServerState) {
 				break
 			}
 		}
+		// Extract "score X:Y" for the killfeed message
+		msg := "Game Over"
+		for i, p := range parts {
+			if p == "score" && i+1 < len(parts) {
+				msg = "Game Over — " + parts[i+1]
+				break
+			}
+		}
+		state.addSystemMessage(msg)
 		return
 	}
 
@@ -1177,7 +1226,7 @@ func parseLine(line string, state *ServerState) {
 		state.ctScore = ct
 		state.tScore = t
 		state.rounds = append(state.rounds, RoundResult{
-			Round: state.round, Winner: winner, Reason: reason,
+			Round: ct + t, Winner: winner, Reason: reason,
 		})
 		state.mu.Unlock()
 		state.addSystemMessage(fmt.Sprintf("%s wins — Score: CT %d - %d T", winner, ct, t))
@@ -1205,6 +1254,11 @@ func parseLine(line string, state *ServerState) {
 		case "Match_Start":
 			state.mu.Lock()
 			state.inWarmup = false
+			for name, p := range state.stats {
+				if !p.Online {
+					delete(state.stats, name)
+				}
+			}
 			state.mu.Unlock()
 		case "Game_Over":
 			state.resetWithMessage("Game Over - Stats Reset")
@@ -1355,8 +1409,17 @@ func parseLine(line string, state *ServerState) {
 			p.HasBomb = false
 		case "Planted_The_Bomb":
 			p.HasBomb = false
+			state.appendKill(Kill{
+				Time: time.Now(), Killer: name, KillerTeam: team,
+				Weapon: "planted_c4", IsSystem: false,
+				Message: "planted the bomb",
+			})
 		case "Defused_The_Bomb":
-			// nothing to update on inventory
+			state.appendKill(Kill{
+				Time: time.Now(), Killer: name, KillerTeam: team,
+				Weapon: "defuser", IsSystem: false,
+				Message: "defused the bomb",
+			})
 		}
 		state.mu.Unlock()
 		state.notify()

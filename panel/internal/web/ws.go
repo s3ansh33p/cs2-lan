@@ -275,6 +275,7 @@ type scoreJSON struct {
 	Map       string      `json:"map,omitempty"`
 	Rounds    []roundJSON `json:"rounds,omitempty"`
 	HalfRound int         `json:"half,omitempty"`
+	MaxRounds int         `json:"maxRounds,omitempty"`
 	Warmup    bool        `json:"warmup,omitempty"`
 	Paused    bool        `json:"paused,omitempty"`
 }
@@ -296,7 +297,7 @@ func (h *Handler) sendPlayers(conn *websocket.Conn, name string) error {
 		for _, r := range s.Rounds {
 			rounds = append(rounds, roundJSON{Round: r.Round, Winner: r.Winner, Reason: r.Reason})
 		}
-		score = &scoreJSON{Round: s.Round, CT: s.CT, T: s.T, GameMode: s.GameMode, Map: s.CurrentMap, Rounds: rounds, HalfRound: s.HalfRound, Warmup: s.InWarmup, Paused: s.IsPaused}
+		score = &scoreJSON{Round: s.Round, CT: s.CT, T: s.T, GameMode: s.GameMode, Map: s.CurrentMap, Rounds: rounds, HalfRound: s.HalfRound, MaxRounds: s.MaxRounds, Warmup: s.InWarmup, Paused: s.IsPaused}
 	}
 
 	msg := struct {
@@ -517,7 +518,9 @@ func isGameEventLine(line string) bool {
 	// Also filter JSON round_stats blocks and MatchStatus
 	if strings.Contains(line, "JSON_BEGIN{") || strings.Contains(line, "}}JSON_END") ||
 		strings.HasPrefix(trimmed, "MatchStatus:") || strings.HasPrefix(trimmed, "Started map") ||
-		strings.HasPrefix(trimmed, "GMR_") {
+		strings.HasPrefix(trimmed, "GMR_") ||
+		strings.Contains(line, "SwitchTeamsAtRoundReset") ||
+		trimmed == "BeginMatch" {
 		return true
 	}
 	return false
