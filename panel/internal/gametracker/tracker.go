@@ -13,13 +13,13 @@ import (
 
 // Kill represents a kill event or a system message in the killfeed.
 type Kill struct {
-	Time       time.Time
-	Killer     string
-	KillerTeam string // "CT", "TERRORIST"
-	Victim     string
-	VictimTeam string // "CT", "TERRORIST"
-	Weapon     string
-	Headshot   bool
+	Time         time.Time
+	Killer       string
+	KillerTeam   string // "CT", "TERRORIST"
+	Victim       string
+	VictimTeam   string // "CT", "TERRORIST"
+	Weapon       string
+	Headshot     bool
 	Wallbang     bool
 	Noscope      bool
 	BlindKill    bool
@@ -34,35 +34,36 @@ type Kill struct {
 
 // PlayerStats tracks per-player game state.
 type PlayerStats struct {
-	Name      string
-	Team      string          // "CT", "TERRORIST", or ""
-	Kills     int
-	Deaths    int
-	Assists   int
-	Weapons   map[string]bool // current loadout
-	Online    bool            // connected to server
-	IsBot     bool
-	Ping      int             // from RCON polling
-	Duration  string          // from RCON polling
-	Address   string          // from RCON polling
-	Money     int             // from round_stats JSON
-	AccountID string          // Steam account ID for JSON mapping
-	Damage    float64         // total damage dealt
-	HSPercent float64         // headshot percentage
-	KDR       float64         // kill/death ratio
-	ADR       float64         // average damage per round
-	MVPs      int
-	EF        int             // enemies flashed
-	UD        float64         // utility damage
-	KnifeKills int
-	ZeusKills  int
-	Level      int // arms race level (state-tracked)
-	LevelKills int // kills at current level (resets on level up)
-	HasArmor  bool
-	HasHelmet bool
-	HasDefuser bool
-	HasBomb    bool
-	Alive      bool
+	Name          string
+	Team          string // "CT", "TERRORIST", or ""
+	Kills         int
+	Deaths        int
+	Assists       int
+	Weapons       map[string]bool // current loadout
+	Online        bool            // connected to server
+	IsBot         bool
+	Ping          int     // from RCON polling
+	Duration      string  // from RCON polling
+	Address       string  // from RCON polling
+	Money         int     // from round_stats JSON
+	AccountID     string  // Steam account ID for JSON mapping
+	Damage        float64 // total damage dealt
+	HSPercent     float64 // headshot percentage
+	KDR           float64 // kill/death ratio
+	ADR           float64 // average damage per round
+	MVPs          int
+	EF            int     // enemies flashed
+	UD            float64 // utility damage
+	KnifeKills    int
+	ZeusKills     int
+	HeadshotKills int
+	Level         int // arms race level (state-tracked)
+	LevelKills    int // kills at current level (resets on level up)
+	HasArmor      bool
+	HasHelmet     bool
+	HasDefuser    bool
+	HasBomb       bool
+	Alive         bool
 }
 
 func (p PlayerStats) Score() int {
@@ -103,7 +104,7 @@ var equipmentSet = map[string]bool{
 	"kevlar": true, "assaultsuit": true, "defuser": true,
 }
 
-func IsGrenade(w string) bool  { return grenadeSet[w] }
+func IsGrenade(w string) bool   { return grenadeSet[w] }
 func IsEquipment(w string) bool { return equipmentSet[w] }
 
 // Display names for weapons
@@ -170,30 +171,30 @@ type RoundResult struct {
 
 // ServerState holds the parsed game state for one server.
 type ServerState struct {
-	mu       sync.RWMutex
-	kills    []Kill
-	stats    map[string]*PlayerStats
-	maxKills int
-	round    int
-	ctScore  int
-	tScore   int
-	rounds   []RoundResult // round history
-	gameMode         string
-	currentMap       string
-	halfRound        int // round number where half-time occurred
-	inWarmup         bool
+	mu         sync.RWMutex
+	kills      []Kill
+	stats      map[string]*PlayerStats
+	maxKills   int
+	round      int
+	ctScore    int
+	tScore     int
+	rounds     []RoundResult // round history
+	gameMode   string
+	currentMap string
+	halfRound  int // round number where half-time occurred
+	inWarmup   bool
 
 	// JSON block accumulator for round_stats
-	jsonBuf    []string
-	inJSON     bool
+	jsonBuf []string
+	inJSON  bool
 
 	// Player mappings for JSON round_stats
 	accountMap map[string]string // accountID -> name (for human players)
 	slotMap    map[int]string    // player slot ID -> name (for all players including bots)
 
 	// Change notification
-	subMu   sync.Mutex
-	subs    []chan struct{}
+	subMu sync.Mutex
+	subs  []chan struct{}
 }
 
 // ScoreInfo returns the current round scores.
@@ -216,14 +217,13 @@ func (s *ServerState) GetScore() ScoreInfo {
 	return ScoreInfo{Round: s.round, CT: s.ctScore, T: s.tScore, GameMode: s.gameMode, CurrentMap: s.currentMap, Rounds: rounds, HalfRound: s.halfRound, InWarmup: s.inWarmup}
 }
 
-
 func newServerState() *ServerState {
 	return &ServerState{
 		stats:      make(map[string]*PlayerStats),
 		accountMap: make(map[string]string),
 		slotMap:    make(map[int]string),
 		inWarmup:   true,
-		maxKills: 200,
+		maxKills:   200,
 	}
 }
 
@@ -328,7 +328,7 @@ func (s *ServerState) appendKill(k Kill) {
 
 func (s *ServerState) ensurePlayer(name string) *PlayerStats {
 	if _, ok := s.stats[name]; !ok {
-		s.stats[name] = &PlayerStats{Name: name, Weapons: make(map[string]bool), Online: true, Alive: true}
+		s.stats[name] = &PlayerStats{Name: name, Weapons: make(map[string]bool), Online: true, Alive: true, Team: "SPECTATOR"}
 	}
 	return s.stats[name]
 }
@@ -353,6 +353,9 @@ func (s *ServerState) recordKill(killer, killerTeam, victim, victimTeam, weapon 
 		p.Kills++
 		if killerTeam != "" {
 			p.Team = killerTeam
+		}
+		if mods.Headshot {
+			p.HeadshotKills++
 		}
 		if weapon == "taser" {
 			p.ZeusKills++
@@ -533,6 +536,9 @@ func (s *ServerState) recordThrow(name, team, weapon string) {
 }
 
 func (s *ServerState) recordTeamSwitch(name, team string) {
+	if team == "Spectator" || team == "Unassigned" {
+		team = "SPECTATOR"
+	}
 	s.mu.Lock()
 	p := s.ensurePlayer(name)
 	p.Team = team
@@ -798,6 +804,19 @@ func (m *Manager) StopAll() {
 	}
 }
 
+// StopNotIn stops tracking servers not in the given set of running names.
+func (m *Manager) StopNotIn(running map[string]bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for name, cancel := range m.cancels {
+		if !running[name] {
+			cancel()
+			delete(m.cancels, name)
+			delete(m.servers, name)
+		}
+	}
+}
+
 func (m *Manager) setupAndTrack(ctx context.Context, name string, gamePort int, rconPassword string, state *ServerState) {
 	addr := fmt.Sprintf("localhost:%d", gamePort)
 	for _, cmd := range []string{"sv_logecho 1", "log on", "mp_logdetail 3"} {
@@ -813,6 +832,9 @@ func (m *Manager) setupAndTrack(ctx context.Context, name string, gamePort int, 
 	// Start RCON poller for ping/duration (single goroutine per server)
 	go m.rconPoller(ctx, name, addr, rconPassword, state)
 
+	retryDelay := 2 * time.Second
+	maxDelay := 30 * time.Second
+
 	for {
 		lines, cleanup, err := m.streamFn(ctx, name)
 		if err != nil {
@@ -820,10 +842,13 @@ func (m *Manager) setupAndTrack(ctx context.Context, name string, gamePort int, 
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(5 * time.Second):
+			case <-time.After(retryDelay):
+				retryDelay = min(retryDelay*2, maxDelay)
 				continue
 			}
 		}
+
+		retryDelay = 2 * time.Second // reset on successful connect
 
 		for {
 			select {
@@ -837,7 +862,8 @@ func (m *Manager) setupAndTrack(ctx context.Context, name string, gamePort int, 
 					select {
 					case <-ctx.Done():
 						return
-					case <-time.After(2 * time.Second):
+					case <-time.After(retryDelay):
+						retryDelay = min(retryDelay*2, maxDelay)
 					}
 					break
 				}
@@ -913,6 +939,9 @@ var (
 	// Kill: "killer<id><steamid><TEAM>" ... killed "victim<id><steamid><TEAM>" ... with "weapon" (headshot)?
 	killRe = regexp.MustCompile(`"(.+?)<(\d+)><(.+?)><(CT|TERRORIST|Unassigned)?>".*killed "(.+?)<(\d+)><(.+?)><(CT|TERRORIST|Unassigned)?>".*with "(.+?)"(.*)`)
 
+	// Killed other (chicken, props): "player<id><steamid><TEAM>" killed other "entity<id>"  with "weapon"
+	killedOtherRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST|Unassigned)?>".*killed other "(chicken)<\d+>".*with "(.+?)"`)
+
 	// Assist
 	assistRe      = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)?>" assisted killing "(.+?)<`)
 	flashAssistRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)?>" flash-assisted killing "(.+?)<`)
@@ -939,7 +968,7 @@ var (
 	threwRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)>" threw\s+(\w+)`)
 
 	// Team switch
-	teamSwitchRe = regexp.MustCompile(`"(.+?)<\d+><.+?><.+?>" switched from team \S+ to (CT|TERRORIST)`)
+	teamSwitchRe = regexp.MustCompile(`"(.+?)<\d+><.+?><.+?>" switched from team \S+ to (CT|TERRORIST|Spectator|Unassigned)`)
 
 	// Player entered
 	enteredRe = regexp.MustCompile(`"(.+?)<(\d+)><(BOT|.+?)><.*?>" entered the game`)
@@ -994,8 +1023,8 @@ func parseLine(line string, state *ServerState) {
 		return
 	}
 
-	// Arms race reset (no quotes in this line, must check before bailout)
-	if state.gameMode == "armsrace" && strings.Contains(line, "GMR_ResetMatch") {
+	// Match reset for arms race and deathmatch (no quotes in this line, must check before bailout)
+	if (state.gameMode == "armsrace" || state.gameMode == "deathmatch") && strings.Contains(line, "GMR_ResetMatch") {
 		state.resetWithMessage("Match Reset")
 		return
 	}
@@ -1123,6 +1152,19 @@ func parseLine(line string, state *ServerState) {
 		mapPlayerIDs(state, victimName, victimSlot, victimSteamID)
 
 		state.recordKill(killerName, killerTeam, victimName, victimTeam, weapon, mods)
+		return
+	}
+
+	// Chicken kill (killfeed only, no stats)
+	if m := killedOtherRe.FindStringSubmatch(line); m != nil {
+		killer, killerTeam, entity, weapon := m[1], m[2], m[3], m[4]
+		state.mu.Lock()
+		state.appendKill(Kill{
+			Time: time.Now(), Killer: killer, KillerTeam: killerTeam,
+			Victim: entity, Weapon: weapon,
+		})
+		state.mu.Unlock()
+		state.notify()
 		return
 	}
 

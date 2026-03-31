@@ -234,10 +234,14 @@ type killJSON struct {
 }
 
 func shortTeam(t string) string {
-	if t == "TERRORIST" {
+	switch t {
+	case "TERRORIST":
 		return "T"
+	case "SPECTATOR":
+		return "S"
+	default:
+		return t
 	}
-	return t
 }
 
 func killToJSON(k gametracker.Kill) killJSON {
@@ -311,13 +315,27 @@ func buildPlayerList(serverName string, tracker *gametracker.Manager) []gamePlay
 		weapons := ps.WeaponList()
 		grenades := ps.GrenadeList()
 
+		// Compute HS% and KDR from kill counts if round_stats hasn't provided them
+		hsp := ps.HSPercent
+		kdr := ps.KDR
+		if hsp == 0 && ps.Kills > 0 && ps.HeadshotKills > 0 {
+			hsp = float64(ps.HeadshotKills) / float64(ps.Kills) * 100
+		}
+		if kdr == 0 && ps.Kills > 0 {
+			if ps.Deaths > 0 {
+				kdr = float64(ps.Kills) / float64(ps.Deaths)
+			} else {
+				kdr = float64(ps.Kills)
+			}
+		}
+
 		players = append(players, gamePlayerJSON{
 			Name: html.EscapeString(ps.Name), Team: team, IsBot: ps.IsBot, Online: ps.Online,
 			Kills: ps.Kills, Deaths: ps.Deaths, Assists: ps.Assists,
 			Ping: ps.Ping, Duration: ps.Duration, Money: ps.Money,
 			Weapons: weapons, Grenades: grenades,
 			HasArmor: ps.HasArmor, HasHelmet: ps.HasHelmet, HasDefuser: ps.HasDefuser, HasBomb: ps.HasBomb, Alive: ps.Alive,
-			HSPercent: ps.HSPercent, KDR: ps.KDR, ADR: ps.ADR, MVPs: ps.MVPs, EF: ps.EF, UD: ps.UD,
+			Damage: ps.Damage, HSPercent: hsp, KDR: kdr, ADR: ps.ADR, MVPs: ps.MVPs, EF: ps.EF, UD: ps.UD,
 			KnifeKills: ps.KnifeKills, ZeusKills: ps.ZeusKills, Level: ps.Level,
 		})
 	}
@@ -423,6 +441,15 @@ func (h *Handler) buildDashboardJSON() []byte {
 	if err != nil {
 		servers = nil
 	}
+
+	// Stop tracking servers that are no longer running
+	runningNames := make(map[string]bool)
+	for _, s := range servers {
+		if s.Status == "running" {
+			runningNames[s.Name] = true
+		}
+	}
+	h.tracker.StopNotIn(runningNames)
 
 	var result []dashServerJSON
 	for _, s := range servers {

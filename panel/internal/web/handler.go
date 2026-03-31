@@ -402,7 +402,6 @@ func (h *Handler) KillfeedPartial(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) RestartServer(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	// Capture current server config before stopping
 	info, err := h.docker.InspectServer(r.Context(), "cs2-"+name)
 	if err != nil {
 		log.Printf("restart %s: inspect failed: %v", name, err)
@@ -410,59 +409,58 @@ func (h *Handler) RestartServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Stop and remove
-	h.tracker.StopTracking(name)
-	if err := h.docker.StopServer(r.Context(), name); err != nil {
-		log.Printf("restart %s: stop failed: %v", name, err)
-	}
-
-	// Relaunch with same settings
-	tvEnabled := "0"
-	if info.TVEnabled {
-		tvEnabled = "1"
-	}
-	req := docker.LaunchRequest{
-		Name:     info.Name,
-		Port:     info.Port,
-		Mode:     info.GameMode,
-		Map:      info.Map,
-		Players:  info.MaxPlayers,
-		Password: info.Password,
-		RCON:     info.RCONPassword,
-		TV:       tvEnabled == "1",
-	}
-
-	if err := h.docker.Launch(r.Context(), req, h.composeFile); err != nil {
-		log.Printf("restart %s: launch failed: %v", name, err)
-	}
-
-	// Redirect back to server page
+	// Redirect immediately, restart in background
 	redirect := "/server/" + name
 	if r.Header.Get("HX-Request") == "true" {
 		w.Header().Set("HX-Redirect", redirect)
 		w.WriteHeader(http.StatusOK)
-		return
+	} else {
+		http.Redirect(w, r, redirect, http.StatusSeeOther)
 	}
-	http.Redirect(w, r, redirect, http.StatusSeeOther)
+
+	go func() {
+		h.tracker.StopTracking(name)
+		if err := h.docker.StopServer(context.Background(), name); err != nil {
+			log.Printf("restart %s: stop failed: %v", name, err)
+		}
+
+		tvEnabled := "0"
+		if info.TVEnabled {
+			tvEnabled = "1"
+		}
+		req := docker.LaunchRequest{
+			Name:     info.Name,
+			Port:     info.Port,
+			Mode:     info.GameMode,
+			Map:      info.Map,
+			Players:  info.MaxPlayers,
+			Password: info.Password,
+			RCON:     info.RCONPassword,
+			TV:       tvEnabled == "1",
+		}
+		if err := h.docker.Launch(context.Background(), req, h.composeFile); err != nil {
+			log.Printf("restart %s: launch failed: %v", name, err)
+		}
+	}()
 }
 
 func (h *Handler) StopServer(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	h.tracker.StopTracking(name)
-
-	err := h.docker.StopServer(r.Context(), name)
-	if err != nil {
-		log.Printf("stop server %s: %v", name, err)
-	}
-
-	// Always redirect to dashboard
+	// Redirect immediately, stop in background
 	if r.Header.Get("HX-Request") == "true" {
 		w.Header().Set("HX-Redirect", "/")
 		w.WriteHeader(http.StatusOK)
-		return
+	} else {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+
+	go func() {
+		h.tracker.StopTracking(name)
+		if err := h.docker.StopServer(context.Background(), name); err != nil {
+			log.Printf("stop server %s: %v", name, err)
+		}
+	}()
 }
 
 func (h *Handler) RenameServer(w http.ResponseWriter, r *http.Request) {

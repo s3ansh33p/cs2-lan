@@ -69,8 +69,14 @@ function appendLogLine(text) {
     // Hide game events unless toggled on
     if (isEvent && !_logShowEvents) return;
 
-    // Deduplicate consecutive identical lines
-    if (_lastLogLine && _lastLogLine._logText === text) {
+    // Strip timestamp prefix for dedup comparison (L MM/DD/YYYY - HH:MM:SS: )
+    function stripLogTs(s) {
+        if (s.length > 25 && s.charAt(0) === 'L' && s.charAt(1) === ' ') return s.substring(25);
+        return s;
+    }
+
+    // Deduplicate consecutive identical lines (ignoring timestamps)
+    if (_lastLogLine && stripLogTs(_lastLogLine._logText) === stripLogTs(text)) {
         _lastLogLine._logCount = (_lastLogLine._logCount || 1) + 1;
         var badge = _lastLogLine.querySelector('.log-count');
         if (!badge) {
@@ -247,7 +253,12 @@ function connectGameWS(serverName) {
     };
 
     ws.onclose = function() {
+        console.log('game ws closed, reconnecting in 3s...');
         setTimeout(function() { connectGameWS(serverName); }, 3000);
+    };
+
+    ws.onerror = function(e) {
+        console.log('game ws error:', e);
     };
 }
 
@@ -341,12 +352,15 @@ function renderPlayers(players) {
     var countEl = document.getElementById('player-count');
     if (countEl) {
         var online = 0;
-        for (var c = 0; c < players.length; c++) { if (players[c].online) online++; }
+        for (var c = 0; c < players.length; c++) {
+            var pc = players[c];
+            if (pc.online && pc.team !== 'S' && pc.name !== 'SourceTV' && (!pc.name || pc.name.indexOf('CSTV') === -1)) online++;
+        }
         countEl.textContent = '(' + online + ')';
     }
     var toggleEl = document.getElementById('stat-toggle');
     if (toggleEl) {
-        toggleEl.style.display = (_currentGameMode === 'armsrace') ? 'none' : '';
+        toggleEl.style.display = (_currentGameMode === 'armsrace' || _currentGameMode === 'deathmatch') ? 'none' : '';
     }
 
     if (!players.length) {
@@ -355,25 +369,20 @@ function renderPlayers(players) {
     }
 
     // Split players by team
-    var ctPlayers = [], tPlayers = [], otherPlayers = [];
+    var ctPlayers = [], tPlayers = [], spectators = [];
     for (var i = 0; i < players.length; i++) {
-        if (players[i].team === 'CT') ctPlayers.push(players[i]);
-        else if (players[i].team === 'T') tPlayers.push(players[i]);
-        else otherPlayers.push(players[i]);
+        var p = players[i];
+        if (p.team === 'CT') ctPlayers.push(p);
+        else if (p.team === 'T') tPlayers.push(p);
+        else spectators.push(p);
     }
 
     var showAlive = !_inWarmup && _currentGameMode && _currentGameMode !== 'deathmatch' && _currentGameMode !== 'armsrace';
 
     var isArmsRace = _currentGameMode === 'armsrace';
+    var isDeathmatch = _currentGameMode === 'deathmatch';
 
-    if (isArmsRace) {
-        // Sort by level descending, then kills descending
-        players.sort(function(a, b) {
-            var la = a.level || 0, lb = b.level || 0;
-            if (la !== lb) return lb - la;
-            return b.k - a.k;
-        });
-    }
+    // Arms race sort moved below after activePlayers is built
     var statHeaders, statCols, extraHeaders, extraCols;
 
     if (isArmsRace) {
@@ -387,6 +396,16 @@ function renderPlayers(players) {
             '<th class="px-4 py-2 font-medium text-center" title="Knife Kills">Knife</th>' +
             '<th class="px-4 py-2 font-medium text-center" title="Level (every 2 kills)">Lvl</th>';
         statCols = '<col style="width:50px"><col style="width:50px"><col style="width:50px"><col style="width:60px"><col style="width:65px"><col style="width:55px"><col style="width:55px"><col style="width:50px">';
+        extraHeaders = '';
+        extraCols = '';
+    } else if (isDeathmatch) {
+        // Deathmatch: K D A KDR HS% — no money or equipment
+        statHeaders = '<th class="px-4 py-2 font-medium text-center" title="Kills">K</th>' +
+            '<th class="px-4 py-2 font-medium text-center" title="Deaths">D</th>' +
+            '<th class="px-4 py-2 font-medium text-center" title="Assists">A</th>' +
+            '<th class="px-4 py-2 font-medium text-center" title="Kill/Death Ratio">KDR</th>' +
+            '<th class="px-4 py-2 font-medium text-center" title="Headshot Percentage">HS%</th>';
+        statCols = '<col style="width:50px"><col style="width:50px"><col style="width:50px"><col style="width:60px"><col style="width:65px">';
         extraHeaders = '';
         extraCols = '';
     } else if (_statMode === 0) {
@@ -428,6 +447,13 @@ function renderPlayers(players) {
                 '<td class="px-4 py-2 text-slate-300 text-center">' + (p.knifek || 0) + '</td>' +
                 '<td class="px-4 py-2 text-orange-400 text-center font-medium">' + lvl + '</td>';
         }
+        if (isDeathmatch) {
+            return '<td class="px-4 py-2 text-green-400 text-center">' + p.k + '</td>' +
+                '<td class="px-4 py-2 text-red-400 text-center">' + p.d + '</td>' +
+                '<td class="px-4 py-2 text-yellow-400 text-center">' + p.a + '</td>' +
+                '<td class="px-4 py-2 text-slate-300 text-center">' + (p.kdr ? p.kdr.toFixed(2) : '-') + '</td>' +
+                '<td class="px-4 py-2 text-slate-300 text-center">' + (p.hsp ? p.hsp.toFixed(1) + '%' : '-') + '</td>';
+        }
         if (_statMode === 0) {
             return '<td class="px-4 py-2 text-green-400 text-center">' + p.k + '</td>' +
                 '<td class="px-4 py-2 text-red-400 text-center">' + p.d + '</td>' +
@@ -442,7 +468,7 @@ function renderPlayers(players) {
     }
 
     function extraCells(p) {
-        if (isArmsRace) return '';
+        if (isArmsRace || isDeathmatch) return '';
         var money = p.money ? '$' + p.money.toLocaleString() : '';
         var equip = playerEquipIcons(p);
         return '<td class="px-4 py-2 text-green-300 text-right font-mono text-xs">' + money + '</td>' +
@@ -457,8 +483,9 @@ function renderPlayers(players) {
         if (!p.online) name += ' <span class="text-slate-500 text-xs">(offline)</span>';
         if (isDead) name += ' <img src="/static/icons/ui/kill.svg" class="h-3.5 inline-block opacity-50" title="Dead">';
         var ping = !p.online ? '-' : (p.bot ? '-' : p.ping + 'ms');
-        var rowClasses = isArmsRace ? '' : 'border-b border-slate-700/50';
-        var nameColor = isArmsRace ? teamColor(p.team) : 'text-white';
+        var noTeamSplit = isArmsRace || isDeathmatch;
+        var rowClasses = noTeamSplit ? '' : 'border-b border-slate-700/50';
+        var nameColor = noTeamSplit ? teamColor(p.team) : 'text-white';
         return '<tr class="' + rowClasses + opacity + '">' +
             '<td class="px-4 py-2 ' + nameColor + '">' + name + '</td>' +
             statCells(p) + extraCells(p) +
@@ -473,14 +500,21 @@ function renderPlayers(players) {
         if (p.bot) name = '<span class="text-slate-400">(BOT)</span> ' + name;
         if (!p.online) name += ' <span class="text-slate-500 text-xs">(offline)</span>';
         if (isDead) name += ' <img src="/static/icons/ui/kill.svg" class="h-3.5 inline-block opacity-50" title="Dead">';
-        var money = !isArmsRace && p.money ? '$' + p.money.toLocaleString() : '';
+        var noEconMode = isArmsRace || isDeathmatch;
+        var money = !noEconMode && p.money ? '$' + p.money.toLocaleString() : '';
         var ping = !p.online ? '-' : (p.bot ? '-' : p.ping + 'ms');
-        var equip = isArmsRace ? '' : playerEquipIcons(p);
-        var borderColor = isArmsRace ? '' : (p.team === 'CT' ? ' border-l-2 border-blue-400' : (p.team === 'T' ? ' border-l-2 border-yellow-400' : ''));
-        var cardNameColor = isArmsRace ? teamColor(p.team) : 'text-white';
+        var equip = noEconMode ? '' : playerEquipIcons(p);
+        var borderColor = noEconMode ? '' : (p.team === 'CT' ? ' border-l-2 border-blue-400' : (p.team === 'T' ? ' border-l-2 border-yellow-400' : ''));
+        var cardNameColor = noEconMode ? teamColor(p.team) : 'text-white';
 
         var statsHtml;
-        if (isArmsRace) {
+        if (isDeathmatch) {
+            statsHtml = '<span class="text-green-400">K: ' + p.k + '</span>' +
+                '<span class="text-red-400">D: ' + p.d + '</span>' +
+                '<span class="text-yellow-400">A: ' + p.a + '</span>' +
+                '<span class="text-slate-300">KDR: ' + (p.kdr ? p.kdr.toFixed(2) : '-') + '</span>' +
+                '<span class="text-slate-300">HS: ' + (p.hsp ? p.hsp.toFixed(1) + '%' : '-') + '</span>';
+        } else if (isArmsRace) {
             statsHtml = '<span class="text-green-400">K: ' + p.k + '</span>' +
                 '<span class="text-red-400">D: ' + p.d + '</span>' +
                 '<span class="text-yellow-400">A: ' + p.a + '</span>' +
@@ -516,11 +550,26 @@ function renderPlayers(players) {
     // Desktop: single table
     var html = '<table class="w-full text-sm hidden sm:table" style="table-layout:fixed">' + tableHeader + '<tbody>';
 
-    var totalCols = isArmsRace ? 10 : (_statMode === 0 ? 8 : 9);
+    var totalCols = isArmsRace ? 10 : (isDeathmatch ? 7 : (_statMode === 0 ? 8 : 9));
 
+    var activePlayers = ctPlayers.concat(tPlayers);
     if (isArmsRace) {
-        // Flat list sorted by score, team indicated by left border on each row
-        for (var i = 0; i < players.length; i++) html += playerRow(players[i]);
+        activePlayers.sort(function(a, b) {
+            var la = a.level || 0, lb = b.level || 0;
+            if (la !== lb) return lb - la;
+            return b.k - a.k;
+        });
+    } else if (isDeathmatch) {
+        activePlayers.sort(function(a, b) {
+            // Sort by kills desc, then deaths asc, then assists desc
+            if (a.k !== b.k) return b.k - a.k;
+            if (a.d !== b.d) return a.d - b.d;
+            return b.a - a.a;
+        });
+    }
+    if (isArmsRace || isDeathmatch) {
+        // Flat list, team color on player name
+        for (var i = 0; i < activePlayers.length; i++) html += playerRow(activePlayers[i]);
     } else {
         if (ctPlayers.length) {
             html += '<tr><td colspan="' + totalCols + '" class="px-4 py-1.5 text-xs font-bold text-blue-400 bg-blue-500/5 border-l-2 border-blue-400">Counter-Terrorists</td></tr>';
@@ -532,8 +581,16 @@ function renderPlayers(players) {
             for (var i = 0; i < tPlayers.length; i++) html += playerRow(tPlayers[i]);
         }
 
-        if (otherPlayers.length) {
-            for (var i = 0; i < otherPlayers.length; i++) html += playerRow(otherPlayers[i]);
+    }
+
+    if (spectators.length) {
+        html += '<tr><td colspan="' + totalCols + '" class="px-4 py-1.5 text-xs font-medium text-slate-500 bg-slate-700/20">Spectators (' + spectators.length + ')</td></tr>';
+        for (var i = 0; i < spectators.length; i++) {
+            var sp = spectators[i];
+            var ping = !sp.online ? '-' : (sp.bot ? '-' : sp.ping + 'ms');
+            html += '<tr class="opacity-50"><td class="px-4 py-2 text-slate-400">' + sp.name + '</td>' +
+                '<td colspan="' + (totalCols - 2) + '"></td>' +
+                '<td class="px-4 py-2 text-slate-500">' + ping + '</td></tr>';
         }
     }
 
@@ -541,8 +598,8 @@ function renderPlayers(players) {
 
     // Mobile cards
     html += '<div class="sm:hidden space-y-2 p-3">';
-    if (isArmsRace) {
-        for (var i = 0; i < players.length; i++) html += playerCard(players[i]);
+    if (isArmsRace || isDeathmatch) {
+        for (var i = 0; i < activePlayers.length; i++) html += playerCard(activePlayers[i]);
     } else {
         if (ctPlayers.length) {
             html += '<div class="text-xs font-bold text-blue-400 px-1 pb-1">Counter-Terrorists</div>';
@@ -553,8 +610,18 @@ function renderPlayers(players) {
             html += '<div class="text-xs font-bold text-yellow-400 px-1 pb-1">Terrorists</div>';
             for (var i = 0; i < tPlayers.length; i++) html += playerCard(tPlayers[i]);
         }
-        if (otherPlayers.length) {
-            for (var i = 0; i < otherPlayers.length; i++) html += playerCard(otherPlayers[i]);
+    }
+    if (spectators.length) {
+        html += '<div class="border-t border-slate-700 my-2"></div>';
+        html += '<div class="text-xs font-medium text-slate-500 px-1 pb-1">Spectators (' + spectators.length + ')</div>';
+        for (var i = 0; i < spectators.length; i++) {
+            var sp = spectators[i];
+            var ping = !sp.online ? '-' : (sp.bot ? '-' : sp.ping + 'ms');
+            html += '<div class="bg-slate-700/20 rounded-lg p-3 opacity-50">' +
+                '<div class="flex items-center gap-2">' +
+                    '<span class="text-slate-400 text-sm flex-1">' + sp.name + '</span>' +
+                    '<span class="text-slate-500 text-xs">' + ping + '</span>' +
+                '</div></div>';
         }
     }
     html += '</div>';
