@@ -157,6 +157,16 @@ func (h *Handler) GameStateWebSocket(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-changes:
+			// Detect killfeed reset (map change, match reset, etc.)
+			currentCount := state.KillCount()
+			if currentCount < lastKillIdx {
+				// Killfeed was reset — send full replace
+				lastKillIdx = currentCount
+				if err := h.sendKillfeedFull(conn, name); err != nil {
+					return
+				}
+			}
+
 			// Push new killfeed entries immediately
 			newKills := state.GetKillsSince(lastKillIdx)
 			if len(newKills) > 0 {
@@ -266,6 +276,7 @@ type scoreJSON struct {
 	Rounds    []roundJSON `json:"rounds,omitempty"`
 	HalfRound int         `json:"half,omitempty"`
 	Warmup    bool        `json:"warmup,omitempty"`
+	Paused    bool        `json:"paused,omitempty"`
 }
 
 type roundJSON struct {
@@ -285,7 +296,7 @@ func (h *Handler) sendPlayers(conn *websocket.Conn, name string) error {
 		for _, r := range s.Rounds {
 			rounds = append(rounds, roundJSON{Round: r.Round, Winner: r.Winner, Reason: r.Reason})
 		}
-		score = &scoreJSON{Round: s.Round, CT: s.CT, T: s.T, GameMode: s.GameMode, Map: s.CurrentMap, Rounds: rounds, HalfRound: s.HalfRound, Warmup: s.InWarmup}
+		score = &scoreJSON{Round: s.Round, CT: s.CT, T: s.T, GameMode: s.GameMode, Map: s.CurrentMap, Rounds: rounds, HalfRound: s.HalfRound, Warmup: s.InWarmup, Paused: s.IsPaused}
 	}
 
 	msg := struct {
@@ -335,7 +346,7 @@ func buildPlayerList(serverName string, tracker *gametracker.Manager) []gamePlay
 			Ping: ps.Ping, Duration: ps.Duration, Money: ps.Money,
 			Weapons: weapons, Grenades: grenades,
 			HasArmor: ps.HasArmor, HasHelmet: ps.HasHelmet, HasDefuser: ps.HasDefuser, HasBomb: ps.HasBomb, Alive: ps.Alive,
-			Damage: ps.Damage, HSPercent: hsp, KDR: kdr, ADR: ps.ADR, MVPs: ps.MVPs, EF: ps.EF, UD: ps.UD,
+			HSPercent: hsp, KDR: kdr, ADR: ps.ADR, MVPs: ps.MVPs, EF: ps.EF, UD: ps.UD,
 			KnifeKills: ps.KnifeKills, ZeusKills: ps.ZeusKills, Level: ps.Level,
 		})
 	}

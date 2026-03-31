@@ -368,6 +368,19 @@ func (h *Handler) RCONCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Filter out game event log lines from RCON response
+	var filtered []string
+	for _, line := range strings.Split(resp, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) > 2 && trimmed[0] == 'L' && trimmed[1] == ' ' {
+			continue
+		}
+		if trimmed != "" {
+			filtered = append(filtered, line)
+		}
+	}
+	resp = strings.Join(filtered, "\n")
+
 	h.render(w, "rcon_output.html", map[string]any{
 		"Command":  command,
 		"Response": resp,

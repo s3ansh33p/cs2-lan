@@ -173,6 +173,7 @@ type RoundResult struct {
 type ServerState struct {
 	mu         sync.RWMutex
 	kills      []Kill
+	killSeq    int // monotonically increasing kill counter
 	stats      map[string]*PlayerStats
 	maxKills   int
 	round      int
@@ -183,6 +184,9 @@ type ServerState struct {
 	currentMap string
 	halfRound  int // round number where half-time occurred
 	inWarmup   bool
+	isPaused   bool
+	gameType   int // for tracking mode changes via rcon
+	gameModeNum int
 
 	// JSON block accumulator for round_stats
 	jsonBuf []string
@@ -207,6 +211,7 @@ type ScoreInfo struct {
 	Rounds     []RoundResult
 	HalfRound  int
 	InWarmup   bool
+	IsPaused   bool
 }
 
 func (s *ServerState) GetScore() ScoreInfo {
@@ -214,7 +219,7 @@ func (s *ServerState) GetScore() ScoreInfo {
 	defer s.mu.RUnlock()
 	rounds := make([]RoundResult, len(s.rounds))
 	copy(rounds, s.rounds)
-	return ScoreInfo{Round: s.round, CT: s.ctScore, T: s.tScore, GameMode: s.gameMode, CurrentMap: s.currentMap, Rounds: rounds, HalfRound: s.halfRound, InWarmup: s.inWarmup}
+	return ScoreInfo{Round: s.round, CT: s.ctScore, T: s.tScore, GameMode: s.gameMode, CurrentMap: s.currentMap, Rounds: rounds, HalfRound: s.halfRound, InWarmup: s.inWarmup, IsPaused: s.isPaused}
 }
 
 func newServerState() *ServerState {
@@ -270,25 +275,29 @@ func (s *ServerState) GetKillfeed(n int) []Kill {
 	return result
 }
 
-// KillCount returns the total number of killfeed entries.
+// KillCount returns the monotonic kill sequence number.
 func (s *ServerState) KillCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.kills)
+	return s.killSeq
 }
 
-// GetKillsSince returns kills added after index `since` (oldest first).
+// GetKillsSince returns kills added after sequence number `since` (oldest first).
 func (s *ServerState) GetKillsSince(since int) []Kill {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if since >= len(s.kills) {
+	// How many new kills since `since`
+	newCount := s.killSeq - since
+	if newCount <= 0 {
 		return nil
 	}
-	if since < 0 {
-		since = 0
+	// The new kills are the last `newCount` entries in the array
+	if newCount > len(s.kills) {
+		newCount = len(s.kills)
 	}
-	result := make([]Kill, len(s.kills)-since)
-	copy(result, s.kills[since:])
+	start := len(s.kills) - newCount
+	result := make([]Kill, newCount)
+	copy(result, s.kills[start:])
 	return result
 }
 
@@ -321,6 +330,7 @@ func (s *ServerState) GetScoreboard() []PlayerStats {
 // appendKill adds a kill to the ring buffer. Caller must hold s.mu.
 func (s *ServerState) appendKill(k Kill) {
 	s.kills = append(s.kills, k)
+	s.killSeq++
 	if len(s.kills) > s.maxKills {
 		s.kills = s.kills[len(s.kills)-s.maxKills:]
 	}
@@ -724,12 +734,37 @@ func (s *ServerState) addSystemMessage(msg string) {
 
 func (s *ServerState) resetWithMessage(reason string) {
 	s.mu.Lock()
-	s.stats = make(map[string]*PlayerStats)
+	// Keep players but zero their stats
+	for _, p := range s.stats {
+		p.Kills = 0
+		p.Deaths = 0
+		p.Assists = 0
+		p.Damage = 0
+		p.HSPercent = 0
+		p.KDR = 0
+		p.ADR = 0
+		p.MVPs = 0
+		p.EF = 0
+		p.UD = 0
+		p.HeadshotKills = 0
+		p.KnifeKills = 0
+		p.ZeusKills = 0
+		p.Level = 0
+		p.LevelKills = 0
+		p.Money = 0
+		p.Weapons = make(map[string]bool)
+		p.HasArmor = false
+		p.HasHelmet = false
+		p.HasDefuser = false
+		p.HasBomb = false
+		p.Alive = true
+	}
 	s.round = 0
 	s.ctScore = 0
 	s.tScore = 0
 	s.rounds = nil
 	s.halfRound = 0
+	s.isPaused = false
 	s.appendKill(Kill{Time: time.Now(), IsSystem: true, Message: reason})
 	s.mu.Unlock()
 	s.notify()
@@ -968,7 +1003,7 @@ var (
 	threwRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)>" threw\s+(\w+)`)
 
 	// Team switch
-	teamSwitchRe = regexp.MustCompile(`"(.+?)<\d+><.+?><.+?>" switched from team \S+ to (CT|TERRORIST|Spectator|Unassigned)`)
+	teamSwitchRe = regexp.MustCompile(`"(.+?)<\d+><[^>]*>(?:<[^>]*>)?" switched from team \S+ to <?(CT|TERRORIST|Spectator|Unassigned)>?`)
 
 	// Player entered
 	enteredRe = regexp.MustCompile(`"(.+?)<(\d+)><(BOT|.+?)><.*?>" entered the game`)
@@ -984,6 +1019,9 @@ var (
 
 	// MatchStatus: Score: 4:2 on map "de_dust2" RoundsPlayed: 6
 	matchStatusRe = regexp.MustCompile(`MatchStatus: Score: (\d+):(\d+) on map ".+?" RoundsPlayed: (\d+)`)
+
+	// Loading map (fires before Started map — bots disconnect here)
+	loadingMapRe = regexp.MustCompile(`Loading map "(.+?)"`)
 
 	// Map change: Started map "de_dust2"
 	mapChangeRe = regexp.MustCompile(`Started map "(.+?)"`)
@@ -1023,9 +1061,87 @@ func parseLine(line string, state *ServerState) {
 		return
 	}
 
+	// Loading map — set map and remove bot players (they reconnect fresh on new map)
+	if m := loadingMapRe.FindStringSubmatch(line); m != nil {
+		state.mu.Lock()
+		state.currentMap = m[1]
+		for name, p := range state.stats {
+			if p.IsBot {
+				delete(state.stats, name)
+			}
+		}
+		state.mu.Unlock()
+		state.notify()
+		return
+	}
+
 	// Match reset for arms race and deathmatch (no quotes in this line, must check before bailout)
 	if (state.gameMode == "armsrace" || state.gameMode == "deathmatch") && strings.Contains(line, "GMR_ResetMatch") {
 		state.resetWithMessage("Match Reset")
+		return
+	}
+
+	// Game Over: detect mode from "Game Over: <mode> ..."
+	if strings.HasPrefix(strings.TrimSpace(line), "Game Over:") {
+		parts := strings.Fields(line)
+		// "Game Over: deathmatch mg_active de_nuke score 0:0 after 1 min"
+		for i, p := range parts {
+			if p == "Over:" && i+1 < len(parts) {
+				newMode := parts[i+1]
+				state.mu.Lock()
+				if newMode != state.gameMode {
+					state.gameMode = newMode
+				}
+				state.mu.Unlock()
+				break
+			}
+		}
+		return
+	}
+
+	// Pause/unpause detection from rcon command logs
+	if strings.Contains(line, `command "mp_pause_match"`) {
+		state.mu.Lock()
+		state.isPaused = true
+		state.mu.Unlock()
+		state.addSystemMessage("Match Paused")
+		return
+	}
+	if strings.Contains(line, `command "mp_unpause_match"`) {
+		state.mu.Lock()
+		state.isPaused = false
+		state.mu.Unlock()
+		state.addSystemMessage("Match Unpaused")
+		return
+	}
+
+	// Track game_type/game_mode rcon changes for mode switching
+	if strings.Contains(line, `command "game_type`) {
+		// Extract number from: command "game_type 1"
+		if idx := strings.Index(line, "game_type "); idx >= 0 {
+			var gt int
+			if _, err := fmt.Sscanf(line[idx:], "game_type %d", &gt); err == nil {
+				state.mu.Lock()
+				state.gameType = gt
+				state.mu.Unlock()
+			}
+		}
+		return
+	}
+	if strings.Contains(line, `command "game_mode`) {
+		if idx := strings.Index(line, "game_mode "); idx >= 0 {
+			var gm int
+			if _, err := fmt.Sscanf(line[idx:], "game_mode %d", &gm); err == nil {
+				state.mu.Lock()
+				state.gameModeNum = gm
+				newMode := resolveGameMode(state.gameType, state.gameModeNum)
+				if newMode != "" && newMode != state.gameMode {
+					state.gameMode = newMode
+				}
+				state.mu.Unlock()
+				state.notify()
+			}
+		}
 		return
 	}
 
@@ -1111,6 +1227,7 @@ func parseLine(line string, state *ServerState) {
 		case "Round_Start":
 			state.mu.Lock()
 			state.round++
+			state.isPaused = false
 			round := state.round
 			state.mu.Unlock()
 			state.clearWeaponsOnRound()
@@ -1265,6 +1382,31 @@ func parseLine(line string, state *ServerState) {
 		state.recordDisconnect(m[1])
 		return
 	}
+}
+
+// resolveGameMode maps game_type + game_mode numbers to a mode name.
+func resolveGameMode(gameType, gameMode int) string {
+	switch gameType {
+	case 0:
+		switch gameMode {
+		case 0:
+			return "casual"
+		case 1:
+			return "competitive"
+		case 2:
+			return "wingman"
+		}
+	case 1:
+		switch gameMode {
+		case 0:
+			return "armsrace"
+		case 1:
+			return "demolition"
+		case 2:
+			return "deathmatch"
+		}
+	}
+	return ""
 }
 
 // mapPlayerIDs maps slot ID and account ID to player name for JSON round_stats lookup.

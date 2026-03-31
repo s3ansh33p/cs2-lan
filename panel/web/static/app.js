@@ -271,13 +271,22 @@ function renderScore(score) {
     var modeEl = document.getElementById('score-mode');
     if (modeEl && score.mode) {
         modeEl.textContent = score.mode.charAt(0).toUpperCase() + score.mode.slice(1);
-        _currentGameMode = score.mode;
+        if (score.mode !== _currentGameMode) {
+            _currentGameMode = score.mode;
+            updateRconMapDropdown(score.mode);
+        }
     }
     var mapEl = document.getElementById('score-map');
     if (mapEl && score.map) {
         mapEl.innerHTML = '<img src="/static/icons/map/' + score.map + '.svg" class="h-4 w-4 opacity-60 rounded" onerror="this.style.display=\'none\'">' + score.map;
     }
     _inWarmup = !!score.warmup;
+
+    // Paused badge
+    var pauseEl = document.getElementById('score-paused');
+    if (pauseEl) {
+        pauseEl.style.display = score.paused ? '' : 'none';
+    }
 
     // Round history bar
     var histEl = document.getElementById('round-history');
@@ -734,6 +743,106 @@ function appendKills(kills) {
     }
 }
 
+
+// RCON quick action buttons
+var _rconServerName = '';
+
+function rconQuick(cmds) {
+    if (!_rconServerName) return;
+    var commands = cmds.split(';');
+    var output = document.getElementById('rcon-output');
+
+    function sendNext(i) {
+        if (i >= commands.length) return;
+        var cmd = commands[i].trim();
+        if (!cmd) { sendNext(i + 1); return; }
+
+        fetch('/server/' + _rconServerName + '/rcon', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'command=' + encodeURIComponent(cmd)
+        }).then(function(r) { return r.text(); }).then(function(html) {
+            if (output) {
+                output.insertAdjacentHTML('beforeend', html);
+                output.scrollTop = output.scrollHeight;
+            }
+            sendNext(i + 1);
+        });
+    }
+    sendNext(0);
+}
+
+function rconQuickMode() {
+    var modeSel = document.getElementById('rcon-mode-select');
+    var mapSel = document.getElementById('rcon-map-select');
+    if (!modeSel || !modeSel.value || !mapSel || !mapSel.value) return;
+    // Set game_type/game_mode cvars then changelevel to apply
+    var modes = {
+        competitive: 'game_type 0;game_mode 1',
+        casual:      'game_type 0;game_mode 0',
+        wingman:     'game_type 0;game_mode 2',
+        armsrace:    'game_type 1;game_mode 0',
+        demolition:  'game_type 1;game_mode 1',
+        deathmatch:  'game_type 1;game_mode 2'
+    };
+    var cvars = modes[modeSel.value];
+    if (cvars) rconQuick(cvars + ';changelevel ' + mapSel.value);
+}
+
+function rconQuickMap() {
+    var sel = document.getElementById('rcon-map-select');
+    if (sel && sel.value) rconQuick('changelevel ' + sel.value);
+}
+
+function updateRconMapDropdown(mode) {
+    var sel = document.getElementById('rcon-map-select');
+    if (!sel) return;
+    var current = sel.value;
+    var preferred = _mapPools[mode || _currentGameMode] || _allMaps;
+    var preferredSet = {};
+    for (var i = 0; i < preferred.length; i++) preferredSet[preferred[i]] = true;
+
+    // Other maps not in the preferred pool
+    var others = [];
+    for (var j = 0; j < _allMaps.length; j++) {
+        if (!preferredSet[_allMaps[j]]) others.push(_allMaps[j]);
+    }
+
+    sel.innerHTML = '';
+    // Preferred maps first
+    for (var i = 0; i < preferred.length; i++) {
+        var opt = document.createElement('option');
+        opt.value = preferred[i];
+        opt.textContent = preferred[i];
+        if (preferred[i] === current) opt.selected = true;
+        sel.appendChild(opt);
+    }
+    // Divider + other maps
+    if (others.length) {
+        var divider = document.createElement('option');
+        divider.disabled = true;
+        divider.textContent = '───────────';
+        sel.appendChild(divider);
+        for (var k = 0; k < others.length; k++) {
+            var opt = document.createElement('option');
+            opt.value = others[k];
+            opt.textContent = others[k];
+            if (others[k] === current) opt.selected = true;
+            sel.appendChild(opt);
+        }
+    }
+}
+
+function initRconMapDropdown() {
+    updateRconMapDropdown();
+    // Update map list when mode dropdown changes
+    var modeSel = document.getElementById('rcon-mode-select');
+    if (modeSel) {
+        modeSel.addEventListener('change', function() {
+            updateRconMapDropdown(modeSel.value);
+        });
+    }
+}
 
 // Map pools by game mode
 var _mapPools = {
