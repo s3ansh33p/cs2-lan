@@ -15,48 +15,144 @@ function mapDisplayName(m) {
 
 // ── Public Bracket Rendering ──
 
-function renderBracketLayout(container, matches, renderFn) {
+function renderBracketLayout(container, matches, renderFn, cardMinWidth) {
     if (!container || !matches.length) return;
+    var minW = cardMinWidth || 220;
 
-    var rounds = {};
+    // Group by round, index by (round, pos) for O(1) lookup
+    var byKey = {};
     var maxRound = 0;
     for (var i = 0; i < matches.length; i++) {
         var m = matches[i];
-        if (!rounds[m.round]) rounds[m.round] = [];
-        rounds[m.round].push(m);
+        byKey[m.round + ':' + m.pos] = m;
         if (m.round > maxRound) maxRound = m.round;
     }
 
-    var html = '<div class="bracket-grid" style="display:flex;align-items:stretch;gap:0;min-width:max-content">';
-    for (var r = 1; r <= maxRound; r++) {
-        var roundMatches = rounds[r] || [];
-        var roundLabel = r === maxRound ? 'Final' : r === maxRound - 1 ? 'Semis' : 'Round ' + r;
-        html += '<div style="display:flex;flex-direction:column;min-width:220px">';
-        html += '<div class="text-xs text-slate-500 text-center mb-2">' + roundLabel + '</div>';
-        html += '<div style="display:flex;flex-direction:column;justify-content:space-around;flex:1;gap:8px">';
-        for (var j = 0; j < roundMatches.length; j++) {
-            html += renderFn(roundMatches[j]);
-        }
-        html += '</div></div>';
-        // Connector lines between rounds
-        if (r < maxRound) {
-            html += '<div style="display:flex;flex-direction:column;justify-content:space-around;flex:1;width:24px;min-width:24px">';
-            var nextRound = rounds[r + 1] || [];
-            for (var k = 0; k < nextRound.length; k++) {
-                html += '<div style="flex:1;display:flex;flex-direction:column;justify-content:center;position:relative">';
-                html += '<svg style="position:absolute;inset:0;width:100%;height:100%" preserveAspectRatio="none">';
-                html += '<line x1="0" y1="25%" x2="50%" y2="25%" stroke="#475569" stroke-width="1"/>';
-                html += '<line x1="0" y1="75%" x2="50%" y2="75%" stroke="#475569" stroke-width="1"/>';
-                html += '<line x1="50%" y1="25%" x2="50%" y2="75%" stroke="#475569" stroke-width="1"/>';
-                html += '<line x1="50%" y1="50%" x2="100%" y2="50%" stroke="#475569" stroke-width="1"/>';
-                html += '</svg>';
-                html += '</div>';
-            }
-            html += '</div>';
-        }
+    function roundLabel(r) {
+        if (r === maxRound) return 'Final';
+        if (r === maxRound - 1) return 'Semis';
+        return 'Round ' + r;
     }
-    html += '</div>';
-    container.innerHTML = html;
+
+    // Recursively build nested bracket HTML from the final round backward.
+    // Each pair: [sources column] [connector] [match card]
+    // CSS align-items:center ensures the target is always vertically centered
+    // between its two feeder matches, regardless of card height differences.
+    function buildSubtree(round, pos) {
+        var match = byKey[round + ':' + pos];
+        var card = match ? renderFn(match) : '<div class="text-xs text-slate-500 italic p-2">TBD</div>';
+
+        if (round === 1) {
+            return '<div class="bracket-card" data-round="' + round + '" style="min-width:' + minW + 'px">' + card + '</div>';
+        }
+
+        var s1 = buildSubtree(round - 1, pos * 2);
+        var s2 = buildSubtree(round - 1, pos * 2 + 1);
+
+        return '<div class="bracket-pair" style="display:flex;align-items:center">' +
+            '<div class="bracket-sources" style="display:flex;flex-direction:column;gap:8px">' +
+                s1 + s2 +
+            '</div>' +
+            '<div class="bracket-conn" style="width:24px;min-width:24px;align-self:stretch;position:relative"></div>' +
+            '<div class="bracket-card" data-round="' + round + '" style="min-width:' + minW + 'px">' + card + '</div>' +
+        '</div>';
+    }
+
+    // Build bracket tree from each final-round match
+    var treeHtml = '';
+    for (var p = 0; byKey[maxRound + ':' + p]; p++) {
+        treeHtml += buildSubtree(maxRound, p);
+    }
+
+    container.innerHTML =
+        '<div class="bracket-labels" style="position:relative;height:20px;min-width:max-content"></div>' +
+        '<div class="bracket-tree" style="min-width:max-content;margin-top:40px">' + treeHtml + '</div>';
+
+    // Draw SVG connector lines using actual rendered positions
+    drawBracketConnectors(container);
+
+    // Position round labels above the actual bracket columns
+    var labelsRow = container.querySelector('.bracket-labels');
+    var cards = container.querySelectorAll('.bracket-card');
+    var placed = {};
+    for (var ci = 0; ci < cards.length; ci++) {
+        var rd = cards[ci].getAttribute('data-round');
+        if (placed[rd]) continue;
+        placed[rd] = true;
+        var cardRect = cards[ci].getBoundingClientRect();
+        var containerRect = container.getBoundingClientRect();
+        var lbl = document.createElement('div');
+        lbl.className = 'text-xs text-slate-500';
+        lbl.style.cssText = 'position:absolute;top:0;width:' + minW + 'px;text-align:center;left:' +
+            (cardRect.left - containerRect.left) + 'px';
+        lbl.textContent = roundLabel(parseInt(rd));
+        labelsRow.appendChild(lbl);
+    }
+}
+
+function drawBracketConnectors(container) {
+    var connectors = container.querySelectorAll('.bracket-conn');
+    var svgNS = 'http://www.w3.org/2000/svg';
+
+    for (var c = 0; c < connectors.length; c++) {
+        var conn = connectors[c];
+        var pair = conn.parentElement; // .bracket-pair
+        var sources = conn.previousElementSibling; // .bracket-sources
+        var target = conn.nextElementSibling; // .bracket-card
+
+        if (!sources || !target) continue;
+
+        // The two source children (either bracket-card or bracket-pair)
+        var children = sources.children;
+        if (children.length < 2) continue;
+
+        var connRect = conn.getBoundingClientRect();
+        var s1Rect = children[0].getBoundingClientRect();
+        var s2Rect = children[1].getBoundingClientRect();
+        var tgtRect = target.getBoundingClientRect();
+
+        var y1 = s1Rect.top + s1Rect.height / 2 - connRect.top;
+        var y2 = s2Rect.top + s2Rect.height / 2 - connRect.top;
+        var yTgt = tgtRect.top + tgtRect.height / 2 - connRect.top;
+        var midX = connRect.width / 2;
+        var w = connRect.width;
+
+        var svg = document.createElementNS(svgNS, 'svg');
+        svg.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;overflow:visible';
+        svg.setAttribute('width', w);
+        svg.setAttribute('height', connRect.height);
+
+        // Source 1 horizontal
+        var l = document.createElementNS(svgNS, 'line');
+        l.setAttribute('x1', 0); l.setAttribute('y1', y1);
+        l.setAttribute('x2', midX); l.setAttribute('y2', y1);
+        l.setAttribute('stroke', '#475569'); l.setAttribute('stroke-width', '1');
+        svg.appendChild(l);
+
+        // Source 2 horizontal
+        l = document.createElementNS(svgNS, 'line');
+        l.setAttribute('x1', 0); l.setAttribute('y1', y2);
+        l.setAttribute('x2', midX); l.setAttribute('y2', y2);
+        l.setAttribute('stroke', '#475569'); l.setAttribute('stroke-width', '1');
+        svg.appendChild(l);
+
+        // Vertical joining sources
+        l = document.createElementNS(svgNS, 'line');
+        l.setAttribute('x1', midX); l.setAttribute('y1', y1);
+        l.setAttribute('x2', midX); l.setAttribute('y2', y2);
+        l.setAttribute('stroke', '#475569'); l.setAttribute('stroke-width', '1');
+        svg.appendChild(l);
+
+        // Horizontal to target
+        l = document.createElementNS(svgNS, 'line');
+        l.setAttribute('x1', midX); l.setAttribute('y1', yTgt);
+        l.setAttribute('x2', w); l.setAttribute('y2', yTgt);
+        l.setAttribute('stroke', '#475569'); l.setAttribute('stroke-width', '1');
+        svg.appendChild(l);
+
+        conn.innerHTML = '';
+        conn.appendChild(svg);
+    }
 }
 
 // Format half-time score splits with CT/T coloring

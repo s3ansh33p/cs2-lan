@@ -1,7 +1,7 @@
 {{define "content"}}
 <div class="flex items-center justify-between mb-6">
     <h1 class="text-2xl font-bold">Servers</h1>
-    <a href="/launch" class="bg-orange-500 hover:bg-orange-600 text-white font-medium rounded px-4 py-2 text-sm transition-colors">
+    <a href="/admin/launch" class="bg-orange-500 hover:bg-orange-600 text-white font-medium rounded px-4 py-2 text-sm transition-colors">
         Launch Server
     </a>
 </div>
@@ -11,7 +11,7 @@
 <div id="dashboard-servers" class="space-y-4">
     {{if not .Servers}}
     <div class="bg-slate-800 border border-slate-700 rounded-lg px-4 py-12 text-center text-slate-500">
-        No servers running. <a href="/launch" class="text-orange-400 hover:underline">Launch one</a>.
+        No servers running. <a href="/admin/launch" class="text-orange-400 hover:underline">Launch one</a>.
     </div>
     {{end}}
 </div>
