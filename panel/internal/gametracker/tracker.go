@@ -197,6 +197,9 @@ type ServerState struct {
 	accountMap map[string]string // accountID -> name (for human players)
 	slotMap    map[int]string    // player slot ID -> name (for all players including bots)
 
+	// Server lifecycle: "", "restarting", "stopped"
+	status string
+
 	// Change notification
 	subMu sync.Mutex
 	subs  []chan struct{}
@@ -262,6 +265,37 @@ func (s *ServerState) notify() {
 		default: // don't block if subscriber is slow
 		}
 	}
+}
+
+// MarkStopped marks this server as stopped and notifies all subscribers.
+func (s *ServerState) MarkStopped() {
+	s.mu.Lock()
+	s.status = "stopped"
+	s.mu.Unlock()
+	s.notify()
+}
+
+// MarkRestarting marks this server as restarting and notifies all subscribers.
+func (s *ServerState) MarkRestarting() {
+	s.mu.Lock()
+	s.status = "restarting"
+	s.mu.Unlock()
+	s.notify()
+}
+
+// MarkReady clears the lifecycle status and notifies all subscribers.
+func (s *ServerState) MarkReady() {
+	s.mu.Lock()
+	s.status = "ready"
+	s.mu.Unlock()
+	s.notify()
+}
+
+// Status returns the current lifecycle status ("", "restarting", "stopped", "ready").
+func (s *ServerState) Status() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.status
 }
 
 func (s *ServerState) GetKillfeed(n int) []Kill {
@@ -832,8 +866,18 @@ func (m *Manager) GetState(name string) *ServerState {
 
 func (m *Manager) StopTracking(name string) {
 	m.mu.Lock()
+	state := m.servers[name]
+	cancel, hasCancel := m.cancels[name]
+	m.mu.Unlock()
+
+	// Notify game WS subscribers before teardown (skip if already marked restarting)
+	if state != nil && state.Status() == "" {
+		state.MarkStopped()
+	}
+
+	m.mu.Lock()
 	defer m.mu.Unlock()
-	if cancel, ok := m.cancels[name]; ok {
+	if hasCancel {
 		cancel()
 		delete(m.cancels, name)
 		delete(m.servers, name)
@@ -896,6 +940,7 @@ func (m *Manager) setupAndTrack(ctx context.Context, name string, gamePort int, 
 
 		retryDelay = 2 * time.Second // reset on successful connect
 
+	readLoop:
 		for {
 			select {
 			case <-ctx.Done():
@@ -911,7 +956,7 @@ func (m *Manager) setupAndTrack(ctx context.Context, name string, gamePort int, 
 					case <-time.After(retryDelay):
 						retryDelay = min(retryDelay*2, maxDelay)
 					}
-					break
+					break readLoop
 				}
 				parseLine(line, state)
 			}

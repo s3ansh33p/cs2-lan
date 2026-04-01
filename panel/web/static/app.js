@@ -1,10 +1,33 @@
+// Server status indicator (next to title)
+function setServerStatus(status) {
+    var el = document.getElementById('server-status');
+    if (!el) return;
+    if (!status) {
+        el.classList.add('hidden');
+        el.textContent = '';
+        return;
+    }
+    el.classList.remove('hidden');
+    el.className = 'text-xs font-medium rounded px-2 py-0.5';
+    if (status === 'stopped') {
+        el.className += ' bg-red-500/20 text-red-400';
+        el.textContent = 'Stopped';
+    } else if (status === 'restarting') {
+        el.className += ' bg-orange-500/20 text-orange-400';
+        el.textContent = 'Restarting\u2026';
+    }
+}
+
 // Log viewer WebSocket
 var _logServerName = null;
 var _logPaused = false;
 var _logBuffer = []; // buffer lines while paused
 var _logShowEvents = false; // show game event lines in log viewer
+var _logRetries = 0;
+var _logMaxRetries = 3;
 
 function connectLogWS(serverName) {
+    if (_serverStopped) return;
     _logServerName = serverName;
     _logPaused = false;
     _logBuffer = [];
@@ -16,10 +39,13 @@ function connectLogWS(serverName) {
     var output = document.getElementById('log-output');
     var status = document.getElementById('log-status');
     var reconnectBtn = document.getElementById('log-reconnect');
+    var _gotError = false;
 
     if (reconnectBtn) reconnectBtn.classList.add('hidden');
 
     ws.onopen = function() {
+        console.log('[log-ws] connected to', serverName);
+        _logRetries = 0;
         if (status) {
             status.textContent = 'Connected';
             status.className = 'text-xs text-green-400';
@@ -27,9 +53,20 @@ function connectLogWS(serverName) {
     };
 
     ws.onmessage = function(e) {
+        // Server sent an error (e.g. container not found) — stop retrying
+        if (typeof e.data === 'string' && e.data.indexOf('Error:') === 0) {
+            console.log('[log-ws] server error:', e.data);
+            _gotError = true;
+            _logRetries = _logMaxRetries;
+            if (status) {
+                status.textContent = 'Disconnected';
+                status.className = 'text-xs text-red-400';
+            }
+            if (reconnectBtn) reconnectBtn.classList.remove('hidden');
+            return;
+        }
         if (_logPaused) {
             _logBuffer.push(e.data);
-            // Cap buffer so memory doesn't blow up
             if (_logBuffer.length > 2000) _logBuffer.shift();
             updatePauseButton();
             return;
@@ -38,19 +75,39 @@ function connectLogWS(serverName) {
     };
 
     ws.onclose = function() {
-        if (status) {
-            status.textContent = 'Disconnected';
-            status.className = 'text-xs text-red-400';
+        if (_serverStopped || _gotError) return;
+        console.log('[log-ws] disconnected, retries=' + _logRetries);
+        if (_logRetries < _logMaxRetries) {
+            _logRetries++;
+            if (status) {
+                status.textContent = 'Reconnecting (' + _logRetries + '/' + _logMaxRetries + ')...';
+                status.className = 'text-xs text-yellow-400';
+            }
+            setTimeout(function() { connectLogWS(serverName); }, 5000);
+        } else {
+            if (status) {
+                status.textContent = 'Disconnected';
+                status.className = 'text-xs text-red-400';
+            }
+            if (reconnectBtn) reconnectBtn.classList.remove('hidden');
         }
-        if (reconnectBtn) reconnectBtn.classList.remove('hidden');
     };
 
     ws.onerror = function() {
-        if (status) {
-            status.textContent = 'Error';
-            status.className = 'text-xs text-red-400';
-        }
+        console.log('[log-ws] error');
     };
+}
+
+function resetLogRetries() {
+    _logRetries = 0;
+}
+
+function setLogStatus(text, className) {
+    var status = document.getElementById('log-status');
+    if (status) {
+        status.textContent = text;
+        status.className = className;
+    }
 }
 
 var _lastLogLine = null; // track last line element for dedup
@@ -146,12 +203,14 @@ function clearLogs() {
 
 function reconnectLogs() {
     if (_logServerName) {
+        resetLogRetries();
         appendLogLine('--- Reconnecting... ---');
         connectLogWS(_logServerName);
     }
 }
 
 // Dashboard WebSocket
+var _lastDashJSON = '';
 function connectDashboardWS() {
     var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     var ws = new WebSocket(protocol + '//' + location.host + '/api/dashboard/ws');
@@ -159,7 +218,13 @@ function connectDashboardWS() {
     ws.onmessage = function(e) {
         try {
             var data = JSON.parse(e.data);
-            if (data.type === 'dashboard') renderDashboard(data.servers);
+            if (data.type === 'dashboard') {
+                    var key = JSON.stringify(data.servers);
+                    if (key !== _lastDashJSON) {
+                        _lastDashJSON = key;
+                        renderDashboard(data.servers);
+                    }
+                }
         } catch(err) {}
     };
 
@@ -181,9 +246,14 @@ function renderDashboard(servers) {
     var html = '';
     for (var i = 0; i < servers.length; i++) {
         var s = servers[i];
-        var statusText = s.status === 'running'
-            ? '<span class="text-green-400 text-xs">Running</span>'
-            : '<span class="text-slate-400 text-xs">' + s.status + '</span>';
+        var statusText;
+        if (s.status === 'running') {
+            statusText = '<span class="text-green-400 text-xs">Running</span>';
+        } else if (s.status === 'restarting') {
+            statusText = '<span class="text-orange-400 text-xs">Restarting</span>';
+        } else {
+            statusText = '<span class="text-slate-400 text-xs">' + s.status + '</span>';
+        }
 
         var mapName = s.map || '-';
         var scoreHtml = '';
@@ -223,42 +293,76 @@ function renderDashboard(servers) {
 }
 
 var _currentGameMode = '';
+var _lastScoreMap = '';
 var _inWarmup = true;
 var _statMode = 0; // 0 = K/D/A/MVP, 1 = HS%/KDR/ADR/EF/UD
 var _statModeLabels = ['Kills Deaths Assists MVPs', 'HS% KDR ADR UD EF'];
 
 // Game state WebSocket (players + killfeed) - renders from JSON client-side
+var _serverStopped = false;
+var _serverRestarting = false;
+
 function connectGameWS(serverName) {
     var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     var ws = new WebSocket(protocol + '//' + location.host + '/server/' + serverName + '/game/ws');
 
+    var _wsConnected = false;
+
+    ws.onopen = function() {
+        _wsConnected = true;
+        console.log('[game-ws] connected to', serverName);
+        if (_serverRestarting) {
+            _serverRestarting = false;
+            setServerStatus(null);
+            // Reconnect log WS too
+            if (_logServerName) connectLogWS(_logServerName);
+        }
+    };
+
     ws.onmessage = function(e) {
         try {
             var data = JSON.parse(e.data);
+            console.log('[game-ws] received:', data.type, data.status || '');
             switch (data.type) {
                 case 'players':
                     if (data.score) renderScore(data.score);
                     renderPlayers(data.players);
                     break;
                 case 'killfeed':
-                    // Full killfeed replace (initial load)
                     renderKillfeed(data.killfeed);
                     break;
                 case 'kill':
-                    // Incremental: append new kills
                     appendKills(data.kills);
+                    break;
+                case 'server_status':
+                    if (data.status === 'stopped') {
+                        _serverStopped = true;
+                        setServerStatus('stopped');
+                        setLogStatus('Disconnected', 'text-xs text-red-400');
+                    } else if (data.status === 'restarting') {
+                        _serverRestarting = true;
+                        resetLogRetries();
+                        setServerStatus('restarting');
+                    }
                     break;
             }
         } catch(err) {}
     };
 
     ws.onclose = function() {
-        console.log('game ws closed, reconnecting in 3s...');
+        if (_serverStopped) return;
+        // If WS never connected and not restarting, server doesn't exist — redirect
+        if (!_wsConnected && !_serverRestarting) {
+            console.log('[game-ws] server not found, redirecting to dashboard');
+            window.location.href = '/';
+            return;
+        }
+        console.log('[game-ws] closed, reconnecting in 3s...');
         setTimeout(function() { connectGameWS(serverName); }, 3000);
     };
 
     ws.onerror = function(e) {
-        console.log('game ws error:', e);
+        console.log('[game-ws] error:', e);
     };
 }
 
@@ -275,7 +379,8 @@ function renderScore(score) {
         }
     }
     var mapEl = document.getElementById('score-map');
-    if (mapEl && score.map) {
+    if (mapEl && score.map && score.map !== _lastScoreMap) {
+        _lastScoreMap = score.map;
         mapEl.innerHTML = '<img src="/static/icons/map/' + score.map + '.svg" class="h-4 w-4 opacity-60 rounded" onerror="this.style.display=\'none\'">' + score.map;
     }
     _inWarmup = !!score.warmup;

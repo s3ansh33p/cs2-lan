@@ -32,6 +32,10 @@ type Handler struct {
 	dashMu   sync.RWMutex
 	dashData []byte // cached JSON message
 	dashSubs []chan struct{}
+
+	// Servers currently being restarted (name -> last known info for dashboard)
+	restartMu      sync.RWMutex
+	restartServers map[string]docker.ServerInfo
 }
 
 func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, composeFile, defaultRCON string) (*Handler, error) {
@@ -84,15 +88,16 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, co
 	pages["killfeed.html"] = base
 
 	h := &Handler{
-		docker:      dc,
-		rcon:        rm,
-		tracker:     tm,
-		aliases:     NewAliasStore("server-aliases.json"),
-		composeFile: composeFile,
-		defaultRCON: defaultRCON,
-		pages:       pages,
+		docker:         dc,
+		rcon:           rm,
+		tracker:        tm,
+		aliases:        NewAliasStore("server-aliases.json"),
+		composeFile:    composeFile,
+		defaultRCON:    defaultRCON,
+		pages:          pages,
+		restartServers: make(map[string]docker.ServerInfo),
 	}
-	go h.dashboardBroadcaster()
+	go h.dashboardPoller()
 	return h, nil
 }
 
@@ -156,23 +161,13 @@ func (h *Handler) enrichServers(ctx context.Context) []serverWithStatus {
 	return result
 }
 
-// dashboardBroadcaster computes dashboard state every 5s and caches it.
-func (h *Handler) dashboardBroadcaster() {
-	ticker := time.NewTicker(5 * time.Second)
+// dashboardPoller refreshes dashboard state periodically as a fallback
+// for changes not covered by explicit notifyDashboard calls (e.g. player count changes).
+func (h *Handler) dashboardPoller() {
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		data := h.buildDashboardJSON()
-		h.dashMu.Lock()
-		h.dashData = data
-		subs := make([]chan struct{}, len(h.dashSubs))
-		copy(subs, h.dashSubs)
-		h.dashMu.Unlock()
-		for _, ch := range subs {
-			select {
-			case ch <- struct{}{}:
-			default:
-			}
-		}
+		h.notifyDashboard()
 	}
 }
 
@@ -197,6 +192,22 @@ func (h *Handler) getDashboardData() []byte {
 	h.dashMu.RLock()
 	defer h.dashMu.RUnlock()
 	return h.dashData
+}
+
+// notifyDashboard triggers an immediate dashboard rebuild + broadcast.
+func (h *Handler) notifyDashboard() {
+	data := h.buildDashboardJSON()
+	h.dashMu.Lock()
+	h.dashData = data
+	subs := make([]chan struct{}, len(h.dashSubs))
+	copy(subs, h.dashSubs)
+	h.dashMu.Unlock()
+	for _, ch := range subs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
@@ -260,6 +271,7 @@ func (h *Handler) LaunchServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.notifyDashboard()
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -431,8 +443,19 @@ func (h *Handler) RestartServer(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, redirect, http.StatusSeeOther)
 	}
 
+	// Notify game WS clients that server is restarting
+	if state := h.tracker.GetState(name); state != nil {
+		state.MarkRestarting()
+	}
+
+	// Track restarting state for dashboard
+	h.restartMu.Lock()
+	h.restartServers[name] = info
+	h.restartMu.Unlock()
+
 	go func() {
 		h.tracker.StopTracking(name)
+		h.notifyDashboard()
 		if err := h.docker.StopServer(context.Background(), name); err != nil {
 			log.Printf("restart %s: stop failed: %v", name, err)
 		}
@@ -454,6 +477,12 @@ func (h *Handler) RestartServer(w http.ResponseWriter, r *http.Request) {
 		if err := h.docker.Launch(context.Background(), req, h.composeFile); err != nil {
 			log.Printf("restart %s: launch failed: %v", name, err)
 		}
+
+		h.restartMu.Lock()
+		delete(h.restartServers, name)
+		h.restartMu.Unlock()
+
+		h.notifyDashboard()
 	}()
 }
 
@@ -470,9 +499,11 @@ func (h *Handler) StopServer(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		h.tracker.StopTracking(name)
+		h.notifyDashboard()
 		if err := h.docker.StopServer(context.Background(), name); err != nil {
 			log.Printf("stop server %s: %v", name, err)
 		}
+		h.notifyDashboard()
 	}()
 }
 

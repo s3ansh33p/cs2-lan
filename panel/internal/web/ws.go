@@ -157,6 +157,17 @@ func (h *Handler) GameStateWebSocket(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-changes:
+			// Server lifecycle status changes
+			if status := state.Status(); status != "" {
+				msg := struct {
+					Type   string `json:"type"`
+					Status string `json:"status"`
+				}{Type: "server_status", Status: status}
+				conn.SetWriteDeadline(time.Now().Add(writeWait))
+				conn.WriteJSON(msg)
+				return // close WS — client reconnects for "restarting"
+			}
+
 			// Detect killfeed reset (map change, match reset, etc.)
 			currentCount := state.KillCount()
 			if currentCount < lastKillIdx {
@@ -454,17 +465,31 @@ func (h *Handler) buildDashboardJSON() []byte {
 		servers = nil
 	}
 
-	// Stop tracking servers that are no longer running
+	// Stop tracking servers that are no longer running (but skip restarting ones)
+	h.restartMu.RLock()
+	restartingNames := make(map[string]bool, len(h.restartServers))
+	for name := range h.restartServers {
+		restartingNames[name] = true
+	}
+	h.restartMu.RUnlock()
+
 	runningNames := make(map[string]bool)
 	for _, s := range servers {
 		if s.Status == "running" {
 			runningNames[s.Name] = true
 		}
 	}
+	// Don't stop tracking servers that are mid-restart
+	for name := range restartingNames {
+		runningNames[name] = true
+	}
 	h.tracker.StopNotIn(runningNames)
 
+	// Build set of servers we've already seen from Docker
+	seen := make(map[string]bool)
 	var result []dashServerJSON
 	for _, s := range servers {
+		seen[s.Name] = true
 		ds := dashServerJSON{
 			Name:       s.Name,
 			Alias:      html.EscapeString(h.aliases.Get(s.Name)),
@@ -475,8 +500,14 @@ func (h *Handler) buildDashboardJSON() []byte {
 			MaxPlayers: s.MaxPlayers,
 		}
 
+		// Override status if server is restarting
+		if restartingNames[s.Name] {
+			ds.Status = "restarting"
+		}
+
 		// Start tracking if not already (so dashboard shows live data)
-		if s.Status == "running" && s.Port > 0 && s.RCONPassword != "" {
+		// Skip if server is mid-restart to avoid spawning trackers against a dying container
+		if s.Status == "running" && s.Port > 0 && s.RCONPassword != "" && !restartingNames[s.Name] {
 			h.tracker.TrackServer(s.Name, s.Port, s.RCONPassword, s.GameMode, s.Map)
 		}
 
@@ -497,6 +528,23 @@ func (h *Handler) buildDashboardJSON() []byte {
 
 		result = append(result, ds)
 	}
+
+	// Add placeholder cards for restarting servers whose containers are gone
+	h.restartMu.RLock()
+	for name, info := range h.restartServers {
+		if !seen[name] {
+			result = append(result, dashServerJSON{
+				Name:       name,
+				Alias:      html.EscapeString(h.aliases.Get(name)),
+				Status:     "restarting",
+				Port:       info.Port,
+				GameMode:   info.GameMode,
+				Map:        info.Map,
+				MaxPlayers: info.MaxPlayers,
+			})
+		}
+	}
+	h.restartMu.RUnlock()
 
 	msg := struct {
 		Type    string           `json:"type"`
