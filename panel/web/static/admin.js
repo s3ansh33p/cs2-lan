@@ -1551,9 +1551,9 @@ function renderBracketMatch(m) {
                 // Pending — show score entry form (AJAX)
                 html += '<form onsubmit="return submitBracketForm(this, \'/admin/match/' + m.id + '/game/' + game.id + '\')" class="flex items-center gap-1">';
                 html += '<span class="text-slate-400">' + (mapDisplayName(game.map) || 'Game ' + game.num) + '</span>';
-                html += '<input type="number" name="team1_score" value="' + game.t1 + '" min="0" class="w-8 bg-slate-600 border border-slate-500 rounded px-1 py-0.5 text-center text-white text-xs">';
+                html += '<input type="number" name="team1_score" value="' + game.t1 + '" min="0" class="w-12 bg-slate-600 border border-slate-500 rounded px-1 py-0.5 text-center text-white text-xs">';
                 html += '<span class="text-slate-500">-</span>';
-                html += '<input type="number" name="team2_score" value="' + game.t2 + '" min="0" class="w-8 bg-slate-600 border border-slate-500 rounded px-1 py-0.5 text-center text-white text-xs">';
+                html += '<input type="number" name="team2_score" value="' + game.t2 + '" min="0" class="w-12 bg-slate-600 border border-slate-500 rounded px-1 py-0.5 text-center text-white text-xs">';
                 html += '<select name="winner_id" class="bg-slate-600 border border-slate-500 rounded px-1 py-0.5 text-white text-xs">';
                 html += '<option value="">Winner</option>';
                 if (m.team1.id) html += '<option value="' + m.team1.id + '">' + (m.team1.name || 'T1') + '</option>';
