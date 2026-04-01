@@ -276,10 +276,30 @@ func (h *Handler) sendBracketState(conn *websocket.Conn) error {
 		matches = append(matches, mj)
 	}
 
+	// Build tournament metadata for status-aware clients
+	var connectInfo string
+	if tournament.ServerIP != "" {
+		connectInfo = fmt.Sprintf("connect %s", tournament.ServerIP)
+		if tournament.ServerPassword != "" {
+			connectInfo += fmt.Sprintf("; password %s", tournament.ServerPassword)
+		}
+	}
+
 	msg := struct {
-		Type    string      `json:"type"`
-		Bracket []matchJSON `json:"bracket"`
-	}{Type: "bracket", Bracket: matches}
+		Type        string      `json:"type"`
+		Bracket     []matchJSON `json:"bracket"`
+		Status      string      `json:"status"`
+		Name        string      `json:"name"`
+		CanRegister bool        `json:"canRegister"`
+		ConnectInfo string      `json:"connectInfo,omitempty"`
+	}{
+		Type:        "bracket",
+		Bracket:     matches,
+		Status:      tournament.Status,
+		Name:        tournament.Name,
+		CanRegister: tournament.CanRegister(),
+		ConnectInfo: connectInfo,
+	}
 
 	conn.SetWriteDeadline(time.Now().Add(writeWait))
 	return conn.WriteJSON(msg)

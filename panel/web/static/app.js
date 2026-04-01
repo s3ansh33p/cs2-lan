@@ -113,10 +113,9 @@ function copyConnect(btn, cmd) {
 var _bracketWS = null;
 var _bracketRetries = 0;
 var _lastBracketJSON = '';
+var _lastTournamentStatus = '';
 function connectBracketWS() {
     if (_bracketWS) { try { _bracketWS.close(); } catch(e) {} }
-    var container = document.querySelector('.bracket-container');
-    if (!container) return;
 
     var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     var ws = new WebSocket(protocol + '//' + location.host + '/ws');
@@ -126,11 +125,28 @@ function connectBracketWS() {
         try {
             _bracketRetries = 0;
             var data = JSON.parse(e.data);
-            if (data.type === 'bracket' && data.bracket) {
-                var key = JSON.stringify(data.bracket);
-                if (key !== _lastBracketJSON) {
-                    _lastBracketJSON = key;
-                    renderPublicBracket(data.bracket);
+            if (data.type === 'bracket') {
+                // If tournament status changed, reload to get new page structure
+                if (_lastTournamentStatus && data.status && data.status !== _lastTournamentStatus) {
+                    location.reload();
+                    return;
+                }
+                if (data.status) _lastTournamentStatus = data.status;
+
+                // Update bracket if data changed
+                if (data.bracket) {
+                    var key = JSON.stringify(data.bracket);
+                    if (key !== _lastBracketJSON) {
+                        _lastBracketJSON = key;
+                        var container = document.querySelector('.bracket-container');
+                        if (container) renderPublicBracket(data.bracket);
+                    }
+                }
+
+                // Update connect info if provided
+                if (data.connectInfo !== undefined) {
+                    _serverIP = '';
+                    _serverPassword = '';
                 }
             }
         } catch(err) { console.error('[bracket-ws] error:', err); }

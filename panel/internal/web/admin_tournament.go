@@ -130,6 +130,7 @@ func (h *Handler) SetTournamentStatus(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.SetTournamentStatus(tournament.ID, status); err != nil {
 		log.Printf("set tournament status: %v", err)
 	}
+	h.notifyBracket()
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 }
 
@@ -280,6 +281,10 @@ func (h *Handler) AdminSetBestOf(w http.ResponseWriter, r *http.Request) {
 		log.Printf("set best of: %v", err)
 	}
 	h.notifyBracket()
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 }
 
@@ -298,6 +303,10 @@ func (h *Handler) AdminSetWinner(w http.ResponseWriter, r *http.Request) {
 		log.Printf("set winner: %v", err)
 	}
 	h.notifyBracket()
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 }
 
@@ -318,6 +327,10 @@ func (h *Handler) AdminCreateGame(w http.ResponseWriter, r *http.Request) {
 		log.Printf("create game: %v", err)
 	}
 	h.notifyBracket()
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 }
 
@@ -340,6 +353,10 @@ func (h *Handler) AdminUpdateGame(w http.ResponseWriter, r *http.Request) {
 		log.Printf("update game: %v", err)
 	}
 	h.notifyBracket()
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 }
 
@@ -372,6 +389,23 @@ func (h *Handler) AdminSetGameSide(w http.ResponseWriter, r *http.Request) {
 		ct = 0
 	}
 	h.db.Exec(`UPDATE games SET team1_starts_ct=? WHERE id=?`, ct, gameID)
+	h.notifyBracket()
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+}
+
+func (h *Handler) AdminDeleteGame(w http.ResponseWriter, r *http.Request) {
+	gameID, err := strconv.ParseInt(r.PathValue("gid"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid game ID", http.StatusBadRequest)
+		return
+	}
+	if err := h.db.DeleteGame(gameID); err != nil {
+		log.Printf("delete game: %v", err)
+	}
 	h.notifyBracket()
 	if isAJAX(r) {
 		w.WriteHeader(http.StatusOK)

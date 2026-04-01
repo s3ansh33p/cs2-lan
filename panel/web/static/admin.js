@@ -1384,6 +1384,35 @@ function swapSide(matchId, gameId, newVal, btn) {
     });
 }
 
+function deleteGame(matchId, gameId) {
+    if (!confirm('Delete this game?')) return;
+    fetch('/admin/match/' + matchId + '/game/' + gameId + '/delete', {
+        method: 'POST',
+        headers: {'X-Requested-With': 'XMLHttpRequest'}
+    });
+}
+
+// Generic AJAX form submit for bracket actions (prevents page reload)
+function submitBracketForm(form, url) {
+    var data = new FormData(form);
+    fetch(url, {
+        method: 'POST',
+        headers: {'X-Requested-With': 'XMLHttpRequest'},
+        body: new URLSearchParams(data)
+    });
+    return false;
+}
+
+// Generic AJAX button action for bracket (winner, bestof)
+function bracketAction(url, params) {
+    var body = Object.keys(params).map(function(k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
+    fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest'},
+        body: body
+    });
+}
+
 function removeMember(teamId, memberId, btn) {
     fetch('/admin/tournament/teams/' + teamId + '/members/' + memberId + '/delete', {
         method: 'POST',
@@ -1442,13 +1471,12 @@ function renderBracketMatch(m) {
                     html += '<span class="bg-orange-500/20 text-orange-400 font-bold rounded px-1.5 py-0.5">LIVE</span>';
                 }
             } else {
-                // Pending — show score entry form
-                html += '<form method="POST" action="/admin/match/' + m.id + '/game/' + game.id + '" class="flex items-center gap-1">';
+                // Pending — show score entry form (AJAX)
+                html += '<form onsubmit="return submitBracketForm(this, \'/admin/match/' + m.id + '/game/' + game.id + '\')" class="flex items-center gap-1">';
                 html += '<span class="text-slate-400">' + (mapDisplayName(game.map) || 'Game ' + game.num) + '</span>';
                 html += '<input type="number" name="team1_score" value="' + game.t1 + '" min="0" class="w-8 bg-slate-600 border border-slate-500 rounded px-1 py-0.5 text-center text-white text-xs">';
                 html += '<span class="text-slate-500">-</span>';
                 html += '<input type="number" name="team2_score" value="' + game.t2 + '" min="0" class="w-8 bg-slate-600 border border-slate-500 rounded px-1 py-0.5 text-center text-white text-xs">';
-                // Winner select
                 html += '<select name="winner_id" class="bg-slate-600 border border-slate-500 rounded px-1 py-0.5 text-white text-xs">';
                 html += '<option value="">Winner</option>';
                 if (m.team1.id) html += '<option value="' + m.team1.id + '">' + (m.team1.name || 'T1') + '</option>';
@@ -1470,6 +1498,8 @@ function renderBracketMatch(m) {
             if (game.status !== 'pending') {
                 html += '<button onclick="resetGame(' + m.id + ',' + game.id + ')" class="text-red-400 hover:text-red-300 text-xs" title="Reset game results">&#8635;</button>';
             }
+            // Delete game button
+            html += '<button onclick="deleteGame(' + m.id + ',' + game.id + ')" class="text-red-400 hover:text-red-300 text-xs" title="Delete game">&times;</button>';
             html += '</div>';
         }
         html += '</div>';
@@ -1478,12 +1508,12 @@ function renderBracketMatch(m) {
     // Admin controls
     html += '<div class="px-2 py-1.5 border-t border-slate-600/50 flex flex-wrap gap-1 text-xs">';
 
-    // Add game (pick map)
+    // Add game (pick map) — AJAX
     if (bothTeams && !m.winner) {
         var nextGameNum = (m.games ? m.games.length : 0) + 1;
         var maxGames = m.bestOf;
         if (!m.games || m.games.length < maxGames) {
-            html += '<form method="POST" action="/admin/match/' + m.id + '/game" class="flex items-center gap-1">';
+            html += '<form onsubmit="return submitBracketForm(this, \'/admin/match/' + m.id + '/game\')" class="flex items-center gap-1">';
             html += '<input type="hidden" name="game_number" value="' + nextGameNum + '">';
             html += '<select name="map_name" class="bg-slate-600 border border-slate-500 rounded px-1 py-0.5 text-white text-xs">';
             var compMaps = typeof _mapPools !== 'undefined' ? (_mapPools.competitive || []) : [];
@@ -1501,25 +1531,16 @@ function renderBracketMatch(m) {
         }
     }
 
-    // Winner override buttons
+    // Winner override buttons — AJAX
     if (bothTeams && !m.winner) {
-        html += '<form method="POST" action="/admin/bracket/winner" class="inline">' +
-            '<input type="hidden" name="match_id" value="' + m.id + '">' +
-            '<input type="hidden" name="winner_id" value="' + m.team1.id + '">' +
-            '<button class="bg-slate-600 hover:bg-slate-500 text-white rounded px-1.5 py-0.5" title="Manually advance">' + (m.team1.name || 'T1') + ' wins</button></form>';
-        html += '<form method="POST" action="/admin/bracket/winner" class="inline">' +
-            '<input type="hidden" name="match_id" value="' + m.id + '">' +
-            '<input type="hidden" name="winner_id" value="' + m.team2.id + '">' +
-            '<button class="bg-slate-600 hover:bg-slate-500 text-white rounded px-1.5 py-0.5" title="Manually advance">' + (m.team2.name || 'T2') + ' wins</button></form>';
+        html += '<button onclick="bracketAction(\'/admin/bracket/winner\', {match_id:\'' + m.id + '\',winner_id:\'' + m.team1.id + '\'})" class="bg-slate-600 hover:bg-slate-500 text-white rounded px-1.5 py-0.5" title="Manually advance">' + (m.team1.name || 'T1') + ' wins</button>';
+        html += '<button onclick="bracketAction(\'/admin/bracket/winner\', {match_id:\'' + m.id + '\',winner_id:\'' + m.team2.id + '\'})" class="bg-slate-600 hover:bg-slate-500 text-white rounded px-1.5 py-0.5" title="Manually advance">' + (m.team2.name || 'T2') + ' wins</button>';
     }
 
-    // Bo toggle
+    // Bo toggle — AJAX
     if (!m.winner) {
         var nextBo = m.bestOf === 1 ? 3 : 1;
-        html += '<form method="POST" action="/admin/bracket/bestof" class="inline">' +
-            '<input type="hidden" name="match_id" value="' + m.id + '">' +
-            '<input type="hidden" name="best_of" value="' + nextBo + '">' +
-            '<button class="bg-slate-600 hover:bg-slate-500 text-white rounded px-1.5 py-0.5">&rarr; Bo' + nextBo + '</button></form>';
+        html += '<button onclick="bracketAction(\'/admin/bracket/bestof\', {match_id:\'' + m.id + '\',best_of:\'' + nextBo + '\'})" class="bg-slate-600 hover:bg-slate-500 text-white rounded px-1.5 py-0.5">&rarr; Bo' + nextBo + '</button>';
     }
 
     html += '</div>';

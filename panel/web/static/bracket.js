@@ -68,6 +68,19 @@ function renderBracketLayout(container, matches, renderFn, cardMinWidth) {
         '<div class="bracket-labels" style="position:relative;height:20px;min-width:max-content"></div>' +
         '<div class="bracket-tree" style="min-width:max-content;margin-top:40px">' + treeHtml + '</div>';
 
+    // Equalize card widths per round so columns align
+    var cards = container.querySelectorAll('.bracket-card');
+    var maxWidths = {};
+    for (var ci = 0; ci < cards.length; ci++) {
+        var rd = cards[ci].getAttribute('data-round');
+        var w = cards[ci].offsetWidth;
+        if (!maxWidths[rd] || w > maxWidths[rd]) maxWidths[rd] = w;
+    }
+    for (var ci = 0; ci < cards.length; ci++) {
+        var rd = cards[ci].getAttribute('data-round');
+        cards[ci].style.width = maxWidths[rd] + 'px';
+    }
+
     // Draw SVG connector lines using actual rendered positions
     drawBracketConnectors(container);
 

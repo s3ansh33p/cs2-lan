@@ -217,6 +217,20 @@ func (db *DB) UpdateGameHalfRound(id int64, halfRound int) error {
 	return err
 }
 
+// DeleteGame removes a game and its associated rounds/stats.
+func (db *DB) DeleteGame(gameID int64) error {
+	if _, err := db.Exec(`DELETE FROM game_rounds WHERE game_id=?`, gameID); err != nil {
+		return fmt.Errorf("delete rounds: %w", err)
+	}
+	if _, err := db.Exec(`DELETE FROM game_player_stats WHERE game_id=?`, gameID); err != nil {
+		return fmt.Errorf("delete stats: %w", err)
+	}
+	if _, err := db.Exec(`DELETE FROM games WHERE id=?`, gameID); err != nil {
+		return fmt.Errorf("delete game: %w", err)
+	}
+	return nil
+}
+
 // ResetGame clears a game's results and cascades: deletes rounds/stats,
 // undoes match winner if set, and removes pending Bo3 follow-up games.
 func (db *DB) ResetGame(gameID int64) error {

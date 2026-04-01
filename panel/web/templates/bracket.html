@@ -78,20 +78,25 @@
 </div>
 {{else if .Teams}}
 <!-- Team List (read-only, registration closed) -->
-<div class="max-w-2xl mx-auto mb-8">
+<div id="teams-section" class="max-w-2xl mx-auto mb-8">
     <div class="bg-slate-800 border border-slate-700 rounded-lg p-6">
-        <h2 class="text-lg font-semibold mb-4">Teams ({{len .Teams}})</h2>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {{range .Teams}}
-            <div class="bg-slate-700/50 rounded p-3">
-                <span class="font-medium text-sm">{{.Name}}</span>
-                {{if .Members}}
-                <ul class="text-xs text-slate-400 mt-1">
-                    {{range .Members}}<li>{{.SteamName}}</li>{{end}}
-                </ul>
+        <button onclick="var c=document.getElementById('public-teams');c.classList.toggle('hidden');this.querySelector('.arrow').textContent=c.classList.contains('hidden')?'\u25B8':'\u25BE'" class="flex items-center gap-2 w-full text-left">
+            <h2 class="text-lg font-semibold">Teams ({{len .Teams}})</h2>
+            <span class="arrow text-slate-400">&#x25B8;</span>
+        </button>
+        <div id="public-teams" class="hidden mt-4">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {{range .Teams}}
+                <div class="bg-slate-700/50 rounded p-3">
+                    <span class="font-medium text-sm">{{.Name}}</span>
+                    {{if .Members}}
+                    <ul class="text-xs text-slate-400 mt-1">
+                        {{range .Members}}<li>{{.SteamName}}</li>{{end}}
+                    </ul>
+                    {{end}}
+                </div>
                 {{end}}
             </div>
-            {{end}}
         </div>
     </div>
 </div>
@@ -138,5 +143,11 @@ connectBracketWS();
     <div id="match-stats-content"></div>
 </div>
 
+{{if not .Bracket}}
+<script>
+// Connect WS even without bracket so we detect status changes (e.g. bracket appearing)
+connectBracketWS();
+</script>
+{{end}}
 {{end}}
 {{end}}
