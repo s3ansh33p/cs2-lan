@@ -21,10 +21,14 @@ type connEntry struct {
 type Manager struct {
 	mu    sync.Mutex
 	conns map[string]*connEntry
+	done  chan struct{}
 }
 
 func NewManager() *Manager {
-	m := &Manager{conns: make(map[string]*connEntry)}
+	m := &Manager{
+		conns: make(map[string]*connEntry),
+		done:  make(chan struct{}),
+	}
 	go m.reaper()
 	return m
 }
@@ -73,6 +77,12 @@ func (m *Manager) getConn(addr, password string) (*gorcon.Conn, error) {
 	}
 
 	m.mu.Lock()
+	// Re-check: another goroutine may have connected while we were dialing
+	if e, ok := m.conns[addr]; ok {
+		m.mu.Unlock()
+		conn.Close() // close our duplicate
+		return e.conn, nil
+	}
 	m.conns[addr] = &connEntry{conn: conn, lastUsed: time.Now()}
 	m.mu.Unlock()
 
@@ -89,6 +99,7 @@ func (m *Manager) closeAddr(addr string) {
 }
 
 func (m *Manager) CloseAll() {
+	close(m.done)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for addr, e := range m.conns {
@@ -100,15 +111,20 @@ func (m *Manager) CloseAll() {
 func (m *Manager) reaper() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
-		m.mu.Lock()
-		for addr, e := range m.conns {
-			if time.Since(e.lastUsed) > idleTimeout {
-				e.conn.Close()
-				delete(m.conns, addr)
+	for {
+		select {
+		case <-ticker.C:
+			m.mu.Lock()
+			for addr, e := range m.conns {
+				if time.Since(e.lastUsed) > idleTimeout {
+					e.conn.Close()
+					delete(m.conns, addr)
+				}
 			}
+			m.mu.Unlock()
+		case <-m.done:
+			return
 		}
-		m.mu.Unlock()
 	}
 }
 
@@ -133,7 +149,7 @@ type Player struct {
 //    1      BOT    0    0     active      0 'Jaques'
 //    2    02:50    0    0     active 786432 127.0.0.1:53616 's3ansh33p'
 // Fields: id, time, ping, loss, state, rate, [addr], name
-var playerLineRe = regexp.MustCompile(`^\s*(\d+)\s+(\S+)\s+(\d+)\s+(\d+)\s+(\w+)\s+(\d+)\s+(?:(\S+)\s+)?'(.+?)'`)
+var PlayerLineRe = regexp.MustCompile(`^\s*(\d+)\s+(\S+)\s+(\d+)\s+(\d+)\s+(\w+)\s+(\d+)\s+(?:(\S+)\s+)?'(.+?)'`)
 
 // ParseStatus parses the output of the CS2 RCON "status" command.
 func ParseStatus(raw string) StatusInfo {
@@ -190,7 +206,7 @@ func ParseStatus(raw string) StatusInfo {
 		}
 
 		if inPlayers {
-			if m := playerLineRe.FindStringSubmatch(trimmed); m != nil {
+			if m := PlayerLineRe.FindStringSubmatch(trimmed); m != nil {
 				ping, _ := strconv.Atoi(m[3])
 				isBot := m[2] == "BOT"
 				info.Players = append(info.Players, Player{

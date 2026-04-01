@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # cs2-status.sh — List running CS2 server instances
 
 echo "Running CS2 servers:"

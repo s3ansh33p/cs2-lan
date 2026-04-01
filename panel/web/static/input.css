@@ -2,3 +2,9 @@
 @source "../../web/templates";
 @source "../../web/static/app.js";
 @source "../../web/static/admin.js";
+
+@layer components {
+    .input-field {
+        @apply w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500;
+    }
+}

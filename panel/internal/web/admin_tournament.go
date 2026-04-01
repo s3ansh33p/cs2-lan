@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -35,7 +36,7 @@ func (h *Handler) AdminTournament(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) CreateTournament(w http.ResponseWriter, r *http.Request) {
-	name := r.FormValue("name")
+	name := sanitize(r.FormValue("name"))
 	if name == "" {
 		name = "Tournament"
 	}
@@ -67,7 +68,7 @@ func (h *Handler) UpdateTournament(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name := r.FormValue("name")
+	name := sanitize(r.FormValue("name"))
 	teamSize, _ := strconv.Atoi(r.FormValue("team_size"))
 	if teamSize == 0 {
 		teamSize = tournament.TeamSize
@@ -140,7 +141,7 @@ func (h *Handler) AdminCreateTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name := r.FormValue("name")
+	name := sanitize(r.FormValue("name"))
 	if name == "" {
 		http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 		return
@@ -153,7 +154,11 @@ func (h *Handler) AdminCreateTeam(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) AdminDeleteTeam(w http.ResponseWriter, r *http.Request) {
-	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid team ID", http.StatusBadRequest)
+		return
+	}
 	if err := h.db.DeleteTeam(id); err != nil {
 		log.Printf("delete team: %v", err)
 	}
@@ -161,8 +166,12 @@ func (h *Handler) AdminDeleteTeam(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) AdminAddMember(w http.ResponseWriter, r *http.Request) {
-	teamID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	steamName := r.FormValue("steam_name")
+	teamID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid team ID", http.StatusBadRequest)
+		return
+	}
+	steamName := sanitize(r.FormValue("steam_name"))
 	if steamName == "" {
 		if isAJAX(r) {
 			http.Error(w, "Name required", http.StatusBadRequest)
@@ -183,14 +192,22 @@ func (h *Handler) AdminAddMember(w http.ResponseWriter, r *http.Request) {
 	}
 	if isAJAX(r) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"id":%d,"team_id":%d,"name":"%s"}`, mid, teamID, steamName)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":      mid,
+			"team_id": teamID,
+			"name":    steamName,
+		})
 		return
 	}
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 }
 
 func (h *Handler) AdminRemoveMember(w http.ResponseWriter, r *http.Request) {
-	id, _ := strconv.ParseInt(r.PathValue("mid"), 10, 64)
+	id, err := strconv.ParseInt(r.PathValue("mid"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid member ID", http.StatusBadRequest)
+		return
+	}
 	if err := h.db.RemoveMember(id); err != nil {
 		log.Printf("remove member: %v", err)
 	}
@@ -253,7 +270,11 @@ func (h *Handler) AdminSeedBracket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) AdminSetBestOf(w http.ResponseWriter, r *http.Request) {
-	matchID, _ := strconv.ParseInt(r.FormValue("match_id"), 10, 64)
+	matchID, err := strconv.ParseInt(r.FormValue("match_id"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid match ID", http.StatusBadRequest)
+		return
+	}
 	bestOf, _ := strconv.Atoi(r.FormValue("best_of"))
 	if err := h.db.SetMatchBestOf(matchID, bestOf); err != nil {
 		log.Printf("set best of: %v", err)
@@ -263,8 +284,16 @@ func (h *Handler) AdminSetBestOf(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) AdminSetWinner(w http.ResponseWriter, r *http.Request) {
-	matchID, _ := strconv.ParseInt(r.FormValue("match_id"), 10, 64)
-	winnerID, _ := strconv.ParseInt(r.FormValue("winner_id"), 10, 64)
+	matchID, err := strconv.ParseInt(r.FormValue("match_id"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid match ID", http.StatusBadRequest)
+		return
+	}
+	winnerID, err := strconv.ParseInt(r.FormValue("winner_id"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid winner ID", http.StatusBadRequest)
+		return
+	}
 	if err := h.db.SetMatchWinner(matchID, winnerID); err != nil {
 		log.Printf("set winner: %v", err)
 	}
@@ -273,7 +302,11 @@ func (h *Handler) AdminSetWinner(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) AdminCreateGame(w http.ResponseWriter, r *http.Request) {
-	matchID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	matchID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid match ID", http.StatusBadRequest)
+		return
+	}
 	gameNumber, _ := strconv.Atoi(r.FormValue("game_number"))
 	mapName := r.FormValue("map_name")
 	team1StartsCT := r.FormValue("team1_starts_ct") != "0"
@@ -289,7 +322,11 @@ func (h *Handler) AdminCreateGame(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) AdminUpdateGame(w http.ResponseWriter, r *http.Request) {
-	gameID, _ := strconv.ParseInt(r.PathValue("gid"), 10, 64)
+	gameID, err := strconv.ParseInt(r.PathValue("gid"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid game ID", http.StatusBadRequest)
+		return
+	}
 	team1Score, _ := strconv.Atoi(r.FormValue("team1_score"))
 	team2Score, _ := strconv.Atoi(r.FormValue("team2_score"))
 
@@ -307,7 +344,11 @@ func (h *Handler) AdminUpdateGame(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) AdminResetGame(w http.ResponseWriter, r *http.Request) {
-	gameID, _ := strconv.ParseInt(r.PathValue("gid"), 10, 64)
+	gameID, err := strconv.ParseInt(r.PathValue("gid"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid game ID", http.StatusBadRequest)
+		return
+	}
 	if err := h.db.ResetGame(gameID); err != nil {
 		log.Printf("reset game: %v", err)
 	}
@@ -320,7 +361,11 @@ func (h *Handler) AdminResetGame(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) AdminSetGameSide(w http.ResponseWriter, r *http.Request) {
-	gameID, _ := strconv.ParseInt(r.PathValue("gid"), 10, 64)
+	gameID, err := strconv.ParseInt(r.PathValue("gid"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid game ID", http.StatusBadRequest)
+		return
+	}
 	t1ct := r.FormValue("team1_starts_ct")
 	ct := 1
 	if t1ct == "0" {
@@ -361,9 +406,17 @@ func (h *Handler) AdminLaunchMatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) AdminSwapTeams(w http.ResponseWriter, r *http.Request) {
-	match1ID, _ := strconv.ParseInt(r.FormValue("match1_id"), 10, 64)
+	match1ID, err := strconv.ParseInt(r.FormValue("match1_id"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid match ID", http.StatusBadRequest)
+		return
+	}
 	slot1 := r.FormValue("slot1")
-	match2ID, _ := strconv.ParseInt(r.FormValue("match2_id"), 10, 64)
+	match2ID, err := strconv.ParseInt(r.FormValue("match2_id"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid match ID", http.StatusBadRequest)
+		return
+	}
 	slot2 := r.FormValue("slot2")
 
 	if err := h.db.SwapTeams(match1ID, slot1, match2ID, slot2); err != nil {

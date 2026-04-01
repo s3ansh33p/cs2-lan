@@ -1,6 +1,9 @@
 package db
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 type Game struct {
 	ID            int64
@@ -74,6 +77,9 @@ func (db *DB) GetMatchGames(matchID int64) ([]Game, error) {
 			return nil, err
 		}
 		games = append(games, g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return games, nil
 }
@@ -169,6 +175,9 @@ func (db *DB) GetGameStats(gameID int64) ([]PlayerStat, error) {
 		}
 		stats = append(stats, s)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return stats, nil
 }
 
@@ -197,6 +206,9 @@ func (db *DB) GetGameRounds(gameID int64) ([]GameRound, error) {
 		}
 		rounds = append(rounds, r)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return rounds, nil
 }
 
@@ -223,19 +235,26 @@ func (db *DB) ResetGame(gameID int64) error {
 	}
 
 	// Delete associated rounds and stats
-	db.Exec(`DELETE FROM game_rounds WHERE game_id=?`, gameID)
-	db.Exec(`DELETE FROM game_player_stats WHERE game_id=?`, gameID)
+	if _, err := db.Exec(`DELETE FROM game_rounds WHERE game_id=?`, gameID); err != nil {
+		return fmt.Errorf("delete rounds: %w", err)
+	}
+	if _, err := db.Exec(`DELETE FROM game_player_stats WHERE game_id=?`, gameID); err != nil {
+		return fmt.Errorf("delete stats: %w", err)
+	}
 
 	// Check if match winner needs to be undone
 	var matchWinnerID *int64
-	db.QueryRow(`SELECT winner_id FROM matches WHERE id=?`, game.MatchID).Scan(&matchWinnerID)
-	if matchWinnerID != nil {
-		db.ClearMatchWinner(game.MatchID)
+	if err := db.QueryRow(`SELECT winner_id FROM matches WHERE id=?`, game.MatchID).Scan(&matchWinnerID); err == nil && matchWinnerID != nil {
+		if err := db.ClearMatchWinner(game.MatchID); err != nil {
+			return fmt.Errorf("clear match winner: %w", err)
+		}
 	}
 
 	// Delete pending follow-up games in Bo3 (auto-created games after this one)
-	db.Exec(`DELETE FROM games WHERE match_id=? AND game_number>? AND status='pending'`,
-		game.MatchID, game.GameNumber)
+	if _, err := db.Exec(`DELETE FROM games WHERE match_id=? AND game_number>? AND status='pending'`,
+		game.MatchID, game.GameNumber); err != nil {
+		return fmt.Errorf("delete follow-up games: %w", err)
+	}
 
 	return nil
 }

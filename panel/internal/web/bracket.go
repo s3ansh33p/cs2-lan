@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"fmt"
+	"html"
 	"log"
 	"net/http"
 	"strconv"
@@ -40,12 +41,17 @@ func (h *Handler) PublicBracket(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Look up ports for live games
+		// Look up ports for live games via single ListServers call
+		servers, _ := h.docker.ListServers(r.Context())
+		serverPorts := make(map[string]int)
+		for _, s := range servers {
+			serverPorts[s.Name] = s.Port
+		}
 		for _, m := range bracket {
 			for _, g := range m.Games {
 				if g.Status == "live" && g.ServerName != "" {
-					if info, err := h.docker.InspectServer(r.Context(), "cs2-"+g.ServerName); err == nil {
-						gamePorts[g.ServerName] = info.Port
+					if port, ok := serverPorts[g.ServerName]; ok {
+						gamePorts[g.ServerName] = port
 					}
 				}
 			}
@@ -71,7 +77,7 @@ func (h *Handler) PublicCreateTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name := r.FormValue("name")
+	name := sanitize(r.FormValue("name"))
 	if name == "" {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
@@ -92,7 +98,7 @@ func (h *Handler) PublicAddMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	teamID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	steamName := r.FormValue("steam_name")
+	steamName := sanitize(r.FormValue("steam_name"))
 	if steamName == "" {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
@@ -233,6 +239,13 @@ func (h *Handler) sendBracketState(conn *websocket.Conn) error {
 		Games  []gameJSON `json:"games"`
 	}
 
+	// Build server port lookup
+	servers, _ := h.docker.ListServers(context.Background())
+	serverPorts := make(map[string]int)
+	for _, s := range servers {
+		serverPorts[s.Name] = s.Port
+	}
+
 	var matches []matchJSON
 	for _, m := range bracket {
 		mj := matchJSON{
@@ -254,8 +267,8 @@ func (h *Handler) sendBracketState(conn *websocket.Conn) error {
 				H1CT: g.H1CT, H1T: g.H1T, H2CT: g.H2CT, H2T: g.H2T}
 			// Look up port for live games
 			if g.Status == "live" && g.ServerName != "" {
-				if info, err := h.docker.InspectServer(context.Background(), "cs2-"+g.ServerName); err == nil {
-					gj.Port = info.Port
+				if port, ok := serverPorts[g.ServerName]; ok {
+					gj.Port = port
 				}
 			}
 			mj.Games = append(mj.Games, gj)
@@ -306,7 +319,7 @@ func (h *Handler) PublicGameStats(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `</tr></thead><tbody>`)
 		for _, s := range stats {
 			fmt.Fprintf(w, `<tr class="text-slate-300 border-b border-slate-700/50">`)
-			fmt.Fprintf(w, `<td class="px-3 py-1.5 font-medium">%s</td>`, s.PlayerName)
+			fmt.Fprintf(w, `<td class="px-3 py-1.5 font-medium">%s</td>`, html.EscapeString(s.PlayerName))
 			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.Kills)
 			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.Deaths)
 			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.Assists)

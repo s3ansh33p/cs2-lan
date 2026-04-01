@@ -158,18 +158,7 @@ func (h *Handler) handleGameOver(info gametracker.GameOverInfo) {
 			continue
 		}
 
-		hsp := p.HSPercent
-		kdr := p.KDR
-		if hsp == 0 && p.Kills > 0 && p.HeadshotKills > 0 {
-			hsp = float64(p.HeadshotKills) / float64(p.Kills) * 100
-		}
-		if kdr == 0 && p.Kills > 0 {
-			if p.Deaths > 0 {
-				kdr = float64(p.Kills) / float64(p.Deaths)
-			} else {
-				kdr = float64(p.Kills)
-			}
-		}
+		hsp, kdr := computeHSPKDR(p.Kills, p.Deaths, p.HeadshotKills, p.HSPercent, p.KDR)
 
 		stats = append(stats, db.PlayerStat{
 			GameID: game.ID, TeamID: teamID, PlayerName: p.Name,

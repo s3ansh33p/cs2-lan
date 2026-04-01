@@ -18,13 +18,34 @@ type Auth struct {
 	password string
 	sessions map[string]time.Time
 	mu       sync.Mutex
+	secure   bool // set to true when TLS is enabled
 }
 
 func New(password string) *Auth {
-	return &Auth{
+	a := &Auth{
 		password: password,
 		sessions: make(map[string]time.Time),
 	}
+	go a.cleanupLoop()
+	return a
+}
+
+func (a *Auth) cleanupLoop() {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		a.mu.Lock()
+		for token, created := range a.sessions {
+			if time.Since(created) > sessionMaxAge {
+				delete(a.sessions, token)
+			}
+		}
+		a.mu.Unlock()
+	}
+}
+
+func (a *Auth) SetSecure(secure bool) {
+	a.secure = secure
 }
 
 func (a *Auth) CheckPassword(input string) bool {
@@ -33,7 +54,9 @@ func (a *Auth) CheckPassword(input string) bool {
 
 func (a *Auth) CreateSession() string {
 	b := make([]byte, 32)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
 	token := hex.EncodeToString(b)
 
 	a.mu.Lock()
@@ -82,6 +105,7 @@ func (a *Auth) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   a.secure,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(sessionMaxAge.Seconds()),
 	})

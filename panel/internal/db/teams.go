@@ -1,6 +1,9 @@
 package db
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type Team struct {
 	ID           int64
@@ -33,11 +36,35 @@ func (db *DB) ListTeams(tournamentID int64) ([]Team, error) {
 		}
 		teams = append(teams, t)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
-	// Load members for each team
-	for i := range teams {
-		teams[i].Members, err = db.ListMembers(teams[i].ID)
+	// Batch-load members for all teams
+	if len(teams) > 0 {
+		teamIDs := make([]any, len(teams))
+		placeholders := make([]string, len(teams))
+		teamIdx := make(map[int64]int)
+		for i, t := range teams {
+			teamIDs[i] = t.ID
+			placeholders[i] = "?"
+			teamIdx[t.ID] = i
+		}
+		mRows, err := db.Query(`SELECT id, team_id, steam_name FROM team_members WHERE team_id IN (`+strings.Join(placeholders, ",")+`)`, teamIDs...)
 		if err != nil {
+			return nil, err
+		}
+		defer mRows.Close()
+		for mRows.Next() {
+			var m TeamMember
+			if err := mRows.Scan(&m.ID, &m.TeamID, &m.SteamName); err != nil {
+				return nil, err
+			}
+			if idx, ok := teamIdx[m.TeamID]; ok {
+				teams[idx].Members = append(teams[idx].Members, m)
+			}
+		}
+		if err := mRows.Err(); err != nil {
 			return nil, err
 		}
 	}
@@ -95,6 +122,9 @@ func (db *DB) ListMembers(teamID int64) ([]TeamMember, error) {
 			return nil, err
 		}
 		members = append(members, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return members, nil
 }

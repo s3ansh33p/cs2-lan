@@ -23,7 +23,15 @@ const (
 )
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return true // allow non-browser clients
+		}
+		// Allow same-host connections (LAN panel)
+		host := r.Host
+		return strings.Contains(origin, host)
+	},
 }
 
 // setupWSConn upgrades and configures a WebSocket connection.
@@ -255,6 +263,21 @@ type killJSON struct {
 	Time         string `json:"time"`
 }
 
+// computeHSPKDR calculates HS% and KDR from kill counts when round_stats hasn't provided them.
+func computeHSPKDR(kills, deaths, headshotKills int, hsp, kdr float64) (float64, float64) {
+	if hsp == 0 && kills > 0 && headshotKills > 0 {
+		hsp = float64(headshotKills) / float64(kills) * 100
+	}
+	if kdr == 0 && kills > 0 {
+		if deaths > 0 {
+			kdr = float64(kills) / float64(deaths)
+		} else {
+			kdr = float64(kills)
+		}
+	}
+	return hsp, kdr
+}
+
 func shortTeam(t string) string {
 	switch t {
 	case "TERRORIST":
@@ -343,19 +366,7 @@ func buildPlayerList(serverName string, tracker *gametracker.Manager) []gamePlay
 		weapons := ps.WeaponList()
 		grenades := ps.GrenadeList()
 
-		// Compute HS% and KDR from kill counts if round_stats hasn't provided them
-		hsp := ps.HSPercent
-		kdr := ps.KDR
-		if hsp == 0 && ps.Kills > 0 && ps.HeadshotKills > 0 {
-			hsp = float64(ps.HeadshotKills) / float64(ps.Kills) * 100
-		}
-		if kdr == 0 && ps.Kills > 0 {
-			if ps.Deaths > 0 {
-				kdr = float64(ps.Kills) / float64(ps.Deaths)
-			} else {
-				kdr = float64(ps.Kills)
-			}
-		}
+		hsp, kdr := computeHSPKDR(ps.Kills, ps.Deaths, ps.HeadshotKills, ps.HSPercent, ps.KDR)
 
 		players = append(players, gamePlayerJSON{
 			Name: html.EscapeString(ps.Name), Team: team, IsBot: ps.IsBot, Online: ps.Online,

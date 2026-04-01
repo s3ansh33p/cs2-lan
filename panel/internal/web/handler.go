@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +23,13 @@ import (
 	"cs2-panel/internal/rcon"
 	webfs "cs2-panel/web"
 )
+
+var htmlTagRe = regexp.MustCompile(`<[^>]*>`)
+
+// sanitize strips HTML tags and trims whitespace from user input.
+func sanitize(s string) string {
+	return strings.TrimSpace(htmlTagRe.ReplaceAllString(s, ""))
+}
 
 type Handler struct {
 	docker      *docker.Client
@@ -129,7 +138,9 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, da
 
 func generateRCONPassword() string {
 	b := make([]byte, 12)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
 	return hex.EncodeToString(b)
 }
 
@@ -148,11 +159,14 @@ func (h *Handler) render(w http.ResponseWriter, name string, data any) {
 		execName = "layout"
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := t.ExecuteTemplate(w, execName, data); err != nil {
+	var buf bytes.Buffer
+	if err := t.ExecuteTemplate(&buf, execName, data); err != nil {
 		log.Printf("render %s: %v", name, err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	buf.WriteTo(w)
 }
 
 func (h *Handler) LoginPage(w http.ResponseWriter, r *http.Request) {

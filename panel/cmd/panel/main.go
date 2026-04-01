@@ -78,6 +78,9 @@ func main() {
 	defer database.Close()
 
 	a := auth.New(*password)
+	if *tlsEnabled {
+		a.SetSecure(true)
+	}
 
 	h, err := web.NewHandler(dc, rm, tm, database, absCompose, *defaultRCON)
 	if err != nil {
@@ -168,7 +171,10 @@ func ensureSelfSignedCert() (certPath, keyPath string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: certDER}); err != nil {
+		certOut.Close()
+		return "", "", fmt.Errorf("encode cert: %w", err)
+	}
 	certOut.Close()
 
 	keyBytes, err := x509.MarshalECPrivateKey(key)
@@ -179,7 +185,10 @@ func ensureSelfSignedCert() (certPath, keyPath string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
+	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes}); err != nil {
+		keyOut.Close()
+		return "", "", fmt.Errorf("encode key: %w", err)
+	}
 	keyOut.Close()
 
 	log.Printf("Self-signed cert saved to %s (valid 1 year)", certPath)

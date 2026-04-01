@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -65,7 +66,10 @@ func (db *DB) CreateTournament(name string, teamSize int, gameMode, serverIP, se
 	if err != nil {
 		return nil, err
 	}
-	id, _ := res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("last insert id: %w", err)
+	}
 	return &Tournament{ID: id, Name: name, TeamSize: teamSize, GameMode: gameMode, ServerIP: serverIP, ServerPassword: serverPassword, Status: "draft"}, nil
 }
 

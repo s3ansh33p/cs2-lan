@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"cs2-panel/internal/rcon"
 	"regexp"
 	"sort"
 	"strings"
@@ -1055,7 +1056,7 @@ func parseRCONStatus(raw string) map[string]RCONPlayerInfo {
 			continue
 		}
 
-		if m := rconPlayerRe.FindStringSubmatch(trimmed); m != nil {
+		if m := rcon.PlayerLineRe.FindStringSubmatch(trimmed); m != nil {
 			ping := 0
 			fmt.Sscanf(m[3], "%d", &ping)
 			isBot := m[2] == "BOT"
@@ -1071,7 +1072,7 @@ func parseRCONStatus(raw string) map[string]RCONPlayerInfo {
 	return result
 }
 
-var rconPlayerRe = regexp.MustCompile(`^\s*(\d+)\s+(\S+)\s+(\d+)\s+(\d+)\s+(\w+)\s+(\d+)\s+(?:(\S+)\s+)?'(.+?)'`)
+// Use shared regex from rcon package — removed duplicate
 
 // Log line patterns — all game event lines start with "L MM/DD/YYYY"
 var (

@@ -6,3 +6,10 @@ panel/server-aliases.json
 panel/tournament.db
 panel/tournament.db-wal
 panel/tournament.db-shm
+
+# Broad safety nets
+*.pem
+*.db
+*.db-wal
+*.db-shm
+.env
