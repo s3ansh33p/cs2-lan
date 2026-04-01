@@ -53,8 +53,8 @@
                 class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm">
         </div>
         <div>
-            <label class="block text-sm text-slate-400 mb-1">RCON Password</label>
-            <input type="text" name="rcon" placeholder="{{.DefaultRCON}}" value="{{if .Form}}{{.Form.RCON}}{{end}}"
+            <label class="block text-sm text-slate-400 mb-1">RCON Password <span class="text-slate-500">(auto-generated if empty)</span></label>
+            <input type="text" name="rcon" placeholder="Leave empty for random" value="{{if .Form}}{{.Form.RCON}}{{end}}"
                 class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm">
         </div>
         <div class="flex items-end">

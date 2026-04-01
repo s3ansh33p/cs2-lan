@@ -2,6 +2,8 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -123,6 +125,12 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, da
 	go h.dashboardPoller()
 	h.setupGameOverHook()
 	return h, nil
+}
+
+func generateRCONPassword() string {
+	b := make([]byte, 12)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 func (h *Handler) render(w http.ResponseWriter, name string, data any) {
@@ -282,7 +290,7 @@ func (h *Handler) LaunchServer(w http.ResponseWriter, r *http.Request) {
 		req.Map = "de_inferno"
 	}
 	if req.RCON == "" {
-		req.RCON = h.defaultRCON
+		req.RCON = generateRCONPassword()
 	}
 
 	err := h.docker.Launch(r.Context(), req, h.composeFile)
