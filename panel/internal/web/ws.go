@@ -309,7 +309,11 @@ func (h *Handler) sendPlayers(conn *websocket.Conn, name string) error {
 		for _, r := range s.Rounds {
 			rounds = append(rounds, roundJSON{Round: r.Round, Winner: r.Winner, Reason: r.Reason})
 		}
-		score = &scoreJSON{Round: s.Round, CT: s.CT, T: s.T, GameMode: s.GameMode, Map: s.CurrentMap, Rounds: rounds, HalfRound: s.HalfRound, MaxRounds: s.MaxRounds, Warmup: s.InWarmup, Paused: s.IsPaused}
+		round := s.Round
+		if round == 0 {
+			round = 1
+		}
+		score = &scoreJSON{Round: round, CT: s.CT, T: s.T, GameMode: s.GameMode, Map: s.CurrentMap, Rounds: rounds, HalfRound: s.HalfRound, MaxRounds: s.MaxRounds, Warmup: s.InWarmup, Paused: s.IsPaused}
 	}
 
 	msg := struct {

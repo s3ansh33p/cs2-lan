@@ -364,6 +364,20 @@ func (h *Handler) ServerDetail(w http.ResponseWriter, r *http.Request) {
 	playersJSON, _ := json.Marshal(initialPlayers)
 	scoreJSON, _ := json.Marshal(initialScore)
 
+	// Check if server is linked to a tournament game for team name display
+	var ctTeamName, tTeamName string
+	if game, err := h.db.GetGameByServerAny(name); err == nil {
+		if match, err := h.db.GetMatchByID(game.MatchID); err == nil {
+			if game.Team1StartsCT {
+				ctTeamName = match.Team1Name
+				tTeamName = match.Team2Name
+			} else {
+				ctTeamName = match.Team2Name
+				tTeamName = match.Team1Name
+			}
+		}
+	}
+
 	h.render(w, "server.html", map[string]any{
 		"Title":        h.aliases.Get(info.Name),
 		"Alias":        h.aliases.Get(info.Name),
@@ -373,6 +387,8 @@ func (h *Handler) ServerDetail(w http.ResponseWriter, r *http.Request) {
 		"Killfeed":     state.GetKillfeed(20),
 		"InitPlayers":  template.JS(playersJSON),
 		"InitScore":    template.JS(scoreJSON),
+		"CTTeamName":   ctTeamName,
+		"TTeamName":    tTeamName,
 	})
 }
 

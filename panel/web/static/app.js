@@ -102,16 +102,14 @@ function renderPublicMatch(m) {
             if (game.status === 'completed') html += formatHalfScores(game);
             if (game.status === 'live') {
                 html += '<span class="text-orange-400">LIVE</span>';
-                // Connect button for live games
                 var connectCmd = buildConnectCmd(game);
                 if (connectCmd) {
                     html += '<button onclick="copyConnect(this, \'' + connectCmd.replace(/'/g, "\\'") + '\')" class="ml-auto bg-slate-600 hover:bg-slate-500 text-white rounded px-2 py-0.5 text-xs">Connect</button>';
                 }
             }
             if (game.status === 'completed') html += '<span class="text-green-500">&#10003;</span>';
-            // Stats link for completed games
             if (game.status === 'completed' && game.id) {
-                var statsLabel = (game.map || 'Game ' + game.num) + ' — ' + game.t1 + ':' + game.t2;
+                var statsLabel = (game.map || 'Game ' + game.num) + ' \u2014 ' + t1name + ' ' + game.t1 + ':' + game.t2 + ' ' + t2name;
                 html += '<button onclick="showMatchStats(' + game.id + ', \'' + statsLabel.replace(/'/g, "\\'") + '\')" class="text-slate-400 hover:text-white ml-auto">Stats</button>';
             }
             html += '</div>';

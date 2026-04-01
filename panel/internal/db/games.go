@@ -125,6 +125,16 @@ func (db *DB) GetGameByServer(serverName string) (*Game, error) {
 	return &g, nil
 }
 
+// GetGameByServerAny finds any game linked to this server (any status), most recent first.
+func (db *DB) GetGameByServerAny(serverName string) (*Game, error) {
+	g, err := scanGame(db.QueryRow(`SELECT `+gameColumns+`
+		FROM games WHERE server_name=? ORDER BY id DESC LIMIT 1`, serverName))
+	if err != nil {
+		return nil, err
+	}
+	return &g, nil
+}
+
 func (db *DB) SavePlayerStats(gameID int64, stats []PlayerStat) error {
 	for _, s := range stats {
 		_, err := db.Exec(`INSERT INTO game_player_stats

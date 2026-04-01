@@ -30,7 +30,7 @@
 <div id="score-bar" class="bg-slate-800 border border-slate-700 rounded-lg p-4 mb-4">
     <div class="flex items-center justify-center gap-6 text-center">
         <div id="score-ct-wrap">
-            <div class="text-xs text-blue-400 font-medium">CT</div>
+            <div id="score-ct-label" class="text-xs text-blue-400 font-medium">{{if .CTTeamName}}{{.CTTeamName}}{{else}}CT{{end}}</div>
             <div id="score-ct" class="text-3xl font-bold text-blue-400">0</div>
         </div>
         <div>
@@ -46,7 +46,7 @@
             </div>
         </div>
         <div id="score-t-wrap">
-            <div class="text-xs text-yellow-400 font-medium">T</div>
+            <div id="score-t-label" class="text-xs text-yellow-400 font-medium">{{if .TTeamName}}{{.TTeamName}}{{else}}T{{end}}</div>
             <div id="score-t" class="text-3xl font-bold text-yellow-400">0</div>
         </div>
     </div>
