@@ -272,37 +272,199 @@ func (h *Handler) sendBracketState(conn *websocket.Conn) error {
 	return conn.WriteJSON(msg)
 }
 
-// Public game stats JSON endpoint
+// PublicGameStats returns HTML with round history bar + player stats table.
 func (h *Handler) PublicGameStats(w http.ResponseWriter, r *http.Request) {
 	gameID, _ := strconv.ParseInt(r.PathValue("gid"), 10, 64)
-	stats, err := h.db.GetGameStats(gameID)
-	if err != nil || len(stats) == 0 {
+
+	rounds, _ := h.db.GetGameRounds(gameID)
+	stats, _ := h.db.GetGameStats(gameID)
+
+	if len(rounds) == 0 && len(stats) == 0 {
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, `<p class="text-sm text-slate-500">No player stats available for this game.</p>`)
+		fmt.Fprint(w, `<p class="text-sm text-slate-500">No data available for this game.</p>`)
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprint(w, `<table class="w-full text-sm"><thead><tr class="text-slate-500 border-b border-slate-700">`)
-	fmt.Fprint(w, `<th class="text-left px-3 py-2">Player</th>`)
-	fmt.Fprint(w, `<th class="px-2 py-2">K</th><th class="px-2 py-2">D</th><th class="px-2 py-2">A</th>`)
-	fmt.Fprint(w, `<th class="px-2 py-2">MVPs</th><th class="px-2 py-2">HS%</th>`)
-	fmt.Fprint(w, `<th class="px-2 py-2">KDR</th><th class="px-2 py-2">ADR</th>`)
-	fmt.Fprint(w, `<th class="px-2 py-2">EF</th><th class="px-2 py-2">UD</th>`)
-	fmt.Fprint(w, `</tr></thead><tbody>`)
-	for _, s := range stats {
-		fmt.Fprintf(w, `<tr class="text-slate-300 border-b border-slate-700/50">`)
-		fmt.Fprintf(w, `<td class="px-3 py-1.5 font-medium">%s</td>`, s.PlayerName)
-		fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.Kills)
-		fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.Deaths)
-		fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.Assists)
-		fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.MVPs)
-		fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.0f%%</td>`, s.HSPercent)
-		fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.2f</td>`, s.KDR)
-		fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.0f</td>`, s.ADR)
-		fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.EF)
-		fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.0f</td>`, s.UD)
-		fmt.Fprint(w, `</tr>`)
+
+	// Round history bar
+	if len(rounds) > 0 {
+		var halfRound int
+		h.db.QueryRow(`SELECT half_round FROM games WHERE id=?`, gameID).Scan(&halfRound)
+		maxRounds := halfRound * 2
+		renderRoundHistoryHTML(w, rounds, halfRound, maxRounds)
 	}
-	fmt.Fprint(w, `</tbody></table>`)
+
+	// Player stats table
+	if len(stats) > 0 {
+		fmt.Fprint(w, `<table class="w-full text-sm mt-4"><thead><tr class="text-slate-500 border-b border-slate-700">`)
+		fmt.Fprint(w, `<th class="text-left px-3 py-2">Player</th>`)
+		fmt.Fprint(w, `<th class="px-2 py-2">K</th><th class="px-2 py-2">D</th><th class="px-2 py-2">A</th>`)
+		fmt.Fprint(w, `<th class="px-2 py-2">MVPs</th><th class="px-2 py-2">HS%</th>`)
+		fmt.Fprint(w, `<th class="px-2 py-2">KDR</th><th class="px-2 py-2">ADR</th>`)
+		fmt.Fprint(w, `<th class="px-2 py-2">EF</th><th class="px-2 py-2">UD</th>`)
+		fmt.Fprint(w, `</tr></thead><tbody>`)
+		for _, s := range stats {
+			fmt.Fprintf(w, `<tr class="text-slate-300 border-b border-slate-700/50">`)
+			fmt.Fprintf(w, `<td class="px-3 py-1.5 font-medium">%s</td>`, s.PlayerName)
+			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.Kills)
+			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.Deaths)
+			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.Assists)
+			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.MVPs)
+			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.0f%%</td>`, s.HSPercent)
+			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.2f</td>`, s.KDR)
+			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.0f</td>`, s.ADR)
+			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.EF)
+			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.0f</td>`, s.UD)
+			fmt.Fprint(w, `</tr>`)
+		}
+		fmt.Fprint(w, `</tbody></table>`)
+	}
+}
+
+// renderRoundHistoryHTML writes the 2-row round history bar as HTML.
+// Same visual logic as the live server view JS (admin.js renderScore).
+func renderRoundHistoryHTML(w http.ResponseWriter, rounds []db.GameRound, halfRound, maxRounds int) {
+	type section struct {
+		label  string
+		top    string // CT-on-top icons
+		bottom string // T-on-top icons
+	}
+
+	iconHTML := func(r db.GameRound) string {
+		icon := ""
+		switch r.Reason {
+		case "elimination":
+			icon = "/static/icons/ui/kill.svg"
+		case "bomb":
+			icon = "/static/icons/equipment/planted_c4.svg"
+		case "defuse":
+			icon = "/static/icons/equipment/defuser.svg"
+		case "time":
+			icon = "/static/icons/ui/timer.svg"
+		}
+		filter := `filter:brightness(0) saturate(100%) invert(55%) sepia(90%) saturate(500%) hue-rotate(190deg)` // CT blue
+		if r.Winner == "T" {
+			filter = `filter:brightness(0) saturate(100%) invert(70%) sepia(90%) saturate(400%) hue-rotate(5deg)` // T yellow
+		}
+		return fmt.Sprintf(`<img src="%s" class="h-4 w-4" style="%s" title="Round %d: %s (%s)">`,
+			icon, filter, r.Round, r.Winner, r.Reason)
+	}
+
+	blank := `<span class="inline-block w-4 h-4"></span>`
+
+	// getPeriod returns section index and whether CT is on top
+	type period struct {
+		key     string
+		label   string
+		ctOnTop bool
+	}
+	getPeriod := func(roundNum int) period {
+		if halfRound == 0 {
+			return period{"reg_0", "First Half", true}
+		}
+		if roundNum <= halfRound {
+			return period{"reg_0", "First Half", true}
+		}
+		if maxRounds > 0 && roundNum <= maxRounds {
+			return period{"reg_1", "Second Half", false}
+		}
+		// Overtime
+		otRound := roundNum - maxRounds
+		otNum := (otRound-1)/6 + 1
+		withinOT := otRound - (otNum-1)*6
+		otHalf := 0
+		if withinOT > 3 {
+			otHalf = 1
+		}
+		ctTop := otHalf == 0
+		key := fmt.Sprintf("ot%d_%d", otNum, otHalf)
+		label := ""
+		if otHalf == 0 {
+			label = fmt.Sprintf("OT%d", otNum)
+		}
+		return period{key, label, ctTop}
+	}
+
+	// Build sections in order
+	var sections []section
+	sectionMap := map[string]int{} // key -> index in sections
+
+	ensureSection := func(p period) int {
+		if idx, ok := sectionMap[p.key]; ok {
+			return idx
+		}
+		idx := len(sections)
+		sections = append(sections, section{label: p.label})
+		sectionMap[p.key] = idx
+		return idx
+	}
+
+	// Pre-create regulation sections
+	ensureSection(period{"reg_0", "First Half", true})
+	if halfRound > 0 {
+		ensureSection(period{"reg_1", "Second Half", false})
+	}
+
+	for _, r := range rounds {
+		p := getPeriod(r.Round)
+		idx := ensureSection(p)
+		icon := iconHTML(r)
+		isTop := (r.Winner == "CT") == p.ctOnTop
+		if isTop {
+			sections[idx].top += icon
+			sections[idx].bottom += blank
+		} else {
+			sections[idx].top += blank
+			sections[idx].bottom += icon
+		}
+	}
+
+	// Render grid
+	var cols []string
+	for i := range sections {
+		if i > 0 {
+			cols = append(cols, "auto")
+		}
+		cols = append(cols, "1fr")
+	}
+
+	colStr := ""
+	for i, c := range cols {
+		if i > 0 {
+			colStr += " "
+		}
+		colStr += c
+	}
+
+	fmt.Fprintf(w, `<div class="mb-4"><div class="grid grid-rows-[auto_1fr_1fr] gap-0.5" style="grid-template-columns:%s">`, colStr)
+
+	// Row 0: labels
+	for i, s := range sections {
+		if i > 0 {
+			fmt.Fprint(w, `<div class="row-span-3 w-px bg-slate-500 mx-0.5"></div>`)
+		}
+		fmt.Fprintf(w, `<div class="text-center text-xs text-slate-500 font-medium px-1">%s</div>`, s.label)
+	}
+	// Row 1: top
+	for i, s := range sections {
+		rounding := ""
+		if i == 0 {
+			rounding = " rounded-tl"
+		} else if i == len(sections)-1 {
+			rounding = " rounded-tr"
+		}
+		fmt.Fprintf(w, `<div class="flex items-center gap-0.5 px-1.5 py-1 bg-slate-700/30 min-h-6%s">%s</div>`, rounding, s.top)
+	}
+	// Row 2: bottom
+	for i, s := range sections {
+		rounding := ""
+		if i == 0 {
+			rounding = " rounded-bl"
+		} else if i == len(sections)-1 {
+			rounding = " rounded-br"
+		}
+		fmt.Fprintf(w, `<div class="flex items-center gap-0.5 px-1.5 py-1 bg-slate-700/30 min-h-6%s">%s</div>`, rounding, s.bottom)
+	}
+	fmt.Fprint(w, `</div></div>`)
 }

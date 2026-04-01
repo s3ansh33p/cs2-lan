@@ -17,8 +17,17 @@ type Game struct {
 	H1T           int // first half T round wins
 	H2CT          int // second half CT round wins
 	H2T           int // second half T round wins
+	HalfRound     int // round number where half-time occurred
 	StartedAt     *time.Time
 	CompletedAt   *time.Time
+}
+
+type GameRound struct {
+	ID     int64
+	GameID int64
+	Round  int
+	Winner string // "CT" or "T"
+	Reason string // "elimination", "bomb", "defuse", "time"
 }
 
 type PlayerStat struct {
@@ -38,14 +47,14 @@ type PlayerStat struct {
 }
 
 const gameColumns = `id, match_id, game_number, map_name, team1_score, team2_score,
-	winner_id, server_name, status, team1_starts_ct, h1_ct, h1_t, h2_ct, h2_t, started_at, completed_at`
+	winner_id, server_name, status, team1_starts_ct, h1_ct, h1_t, h2_ct, h2_t, half_round, started_at, completed_at`
 
 func scanGame(s interface{ Scan(...any) error }) (Game, error) {
 	var g Game
 	var startsCT int
 	err := s.Scan(&g.ID, &g.MatchID, &g.GameNumber, &g.MapName, &g.Team1Score,
 		&g.Team2Score, &g.WinnerID, &g.ServerName, &g.Status,
-		&startsCT, &g.H1CT, &g.H1T, &g.H2CT, &g.H2T, &g.StartedAt, &g.CompletedAt)
+		&startsCT, &g.H1CT, &g.H1T, &g.H2CT, &g.H2T, &g.HalfRound, &g.StartedAt, &g.CompletedAt)
 	g.Team1StartsCT = startsCT != 0
 	return g, err
 }
@@ -151,4 +160,37 @@ func (db *DB) GetGameStats(gameID int64) ([]PlayerStat, error) {
 		stats = append(stats, s)
 	}
 	return stats, nil
+}
+
+func (db *DB) SaveGameRounds(gameID int64, rounds []GameRound) error {
+	for _, r := range rounds {
+		_, err := db.Exec(`INSERT INTO game_rounds (game_id, round, winner, reason) VALUES (?, ?, ?, ?)`,
+			gameID, r.Round, r.Winner, r.Reason)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (db *DB) GetGameRounds(gameID int64) ([]GameRound, error) {
+	rows, err := db.Query(`SELECT id, game_id, round, winner, reason FROM game_rounds WHERE game_id=? ORDER BY round`, gameID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var rounds []GameRound
+	for rows.Next() {
+		var r GameRound
+		if err := rows.Scan(&r.ID, &r.GameID, &r.Round, &r.Winner, &r.Reason); err != nil {
+			return nil, err
+		}
+		rounds = append(rounds, r)
+	}
+	return rounds, nil
+}
+
+func (db *DB) UpdateGameHalfRound(id int64, halfRound int) error {
+	_, err := db.Exec(`UPDATE games SET half_round=? WHERE id=?`, halfRound, id)
+	return err
 }

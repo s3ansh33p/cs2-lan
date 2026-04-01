@@ -110,8 +110,20 @@ func (h *Handler) handleGameOver(info gametracker.GameOverInfo) {
 		team1Score, team2Score = mapScores(info.Score.CT, info.Score.T, game.Team1StartsCT)
 	}
 
-	// Store half scores
+	// Store half scores + half round
 	h.db.UpdateGameHalfScores(game.ID, h1ct, h1t, h2ct, h2t)
+	h.db.UpdateGameHalfRound(game.ID, halfRound)
+
+	// Store round-by-round results
+	if len(info.Score.Rounds) > 0 {
+		var gameRounds []db.GameRound
+		for _, r := range info.Score.Rounds {
+			gameRounds = append(gameRounds, db.GameRound{
+				GameID: game.ID, Round: r.Round, Winner: r.Winner, Reason: r.Reason,
+			})
+		}
+		h.db.SaveGameRounds(game.ID, gameRounds)
+	}
 
 	// Determine winner
 	var winnerID *int64

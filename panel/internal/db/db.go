@@ -38,6 +38,7 @@ func (db *DB) migrate() error {
 		`ALTER TABLE games ADD COLUMN h1_t INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE games ADD COLUMN h2_ct INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE games ADD COLUMN h2_t INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE games ADD COLUMN half_round INTEGER NOT NULL DEFAULT 0`,
 	} {
 		db.Exec(q) // ignore errors (column already exists)
 	}
@@ -100,8 +101,17 @@ CREATE TABLE IF NOT EXISTS games (
 	h1_t INTEGER NOT NULL DEFAULT 0,
 	h2_ct INTEGER NOT NULL DEFAULT 0,
 	h2_t INTEGER NOT NULL DEFAULT 0,
+	half_round INTEGER NOT NULL DEFAULT 0,
 	started_at DATETIME,
 	completed_at DATETIME
+);
+
+CREATE TABLE IF NOT EXISTS game_rounds (
+	id INTEGER PRIMARY KEY,
+	game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+	round INTEGER NOT NULL,
+	winner TEXT NOT NULL,
+	reason TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS game_player_stats (
