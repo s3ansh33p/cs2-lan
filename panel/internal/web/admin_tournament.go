@@ -164,11 +164,27 @@ func (h *Handler) AdminAddMember(w http.ResponseWriter, r *http.Request) {
 	teamID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	steamName := r.FormValue("steam_name")
 	if steamName == "" {
-		http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+		if isAJAX(r) {
+			http.Error(w, "Name required", http.StatusBadRequest)
+		} else {
+			http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+		}
 		return
 	}
-	if _, err := h.db.AddMember(teamID, steamName); err != nil {
+	mid, err := h.db.AddMember(teamID, steamName)
+	if err != nil {
 		log.Printf("add member: %v", err)
+		if isAJAX(r) {
+			http.Error(w, "Failed", http.StatusInternalServerError)
+		} else {
+			http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+		}
+		return
+	}
+	if isAJAX(r) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":%d,"team_id":%d,"name":"%s"}`, mid, teamID, steamName)
+		return
 	}
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 }
@@ -178,7 +194,15 @@ func (h *Handler) AdminRemoveMember(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.RemoveMember(id); err != nil {
 		log.Printf("remove member: %v", err)
 	}
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+}
+
+func isAJAX(r *http.Request) bool {
+	return r.Header.Get("X-Requested-With") == "XMLHttpRequest"
 }
 
 // Bracket generation — takes comma-separated team IDs in seed order
@@ -282,6 +306,22 @@ func (h *Handler) AdminUpdateGame(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 }
 
+func (h *Handler) AdminSetGameSide(w http.ResponseWriter, r *http.Request) {
+	gameID, _ := strconv.ParseInt(r.PathValue("gid"), 10, 64)
+	t1ct := r.FormValue("team1_starts_ct")
+	ct := 1
+	if t1ct == "0" {
+		ct = 0
+	}
+	h.db.Exec(`UPDATE games SET team1_starts_ct=? WHERE id=?`, ct, gameID)
+	h.notifyBracket()
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+}
+
 // AdminLaunchMatch redirects to launch page pre-filled with match details
 func (h *Handler) AdminLaunchMatch(w http.ResponseWriter, r *http.Request) {
 	matchID := r.PathValue("id")
@@ -302,8 +342,8 @@ func (h *Handler) AdminLaunchMatch(w http.ResponseWriter, r *http.Request) {
 		password = tournament.ServerPassword
 	}
 
-	query := fmt.Sprintf("/launch?name=match-%s-g%s&map=%s&mode=%s&players=%d&match_id=%s&game_number=%s&password=%s",
-		matchID, gameNumber, mapName, gameMode, maxPlayers, matchID, gameNumber, password)
+	query := fmt.Sprintf("/launch?name=match-%s&map=%s&mode=%s&players=%d&match_id=%s&game_number=%s&password=%s",
+		matchID, mapName, gameMode, maxPlayers, matchID, gameNumber, password)
 	http.Redirect(w, r, query, http.StatusSeeOther)
 }
 

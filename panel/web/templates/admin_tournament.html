@@ -192,21 +192,16 @@
                             <button type="submit" class="text-red-400 hover:text-red-300 text-xs" onclick="return confirm('Delete team?')">Delete</button>
                         </form>
                     </div>
-                    {{if .Members}}
-                    <ul class="text-xs text-slate-400 space-y-1 mb-2">
+                    <ul id="members-{{.ID}}" class="text-xs text-slate-400 space-y-1 mb-2">
                         {{range .Members}}
-                        <li class="flex items-center justify-between">
+                        <li class="flex items-center justify-between" data-mid="{{.ID}}">
                             <span>{{.SteamName}}</span>
-                            <form method="POST" action="/admin/tournament/teams/{{.TeamID}}/members/{{.ID}}/delete" class="inline">
-                                <button type="submit" class="text-red-400 hover:text-red-300">&times;</button>
-                            </form>
+                            <button onclick="removeMember({{.TeamID}}, {{.ID}}, this)" class="text-red-400 hover:text-red-300">&times;</button>
                         </li>
                         {{end}}
                     </ul>
-                    {{else}}
-                    <p class="text-xs text-slate-500 mb-2">No members</p>
-                    {{end}}
-                    <form method="POST" action="/admin/tournament/teams/{{.ID}}/members" class="flex gap-1">
+                    {{if not .Members}}<p id="no-members-{{.ID}}" class="text-xs text-slate-500 mb-2">No members</p>{{end}}
+                    <form onsubmit="return addMember({{.ID}}, this)" class="flex gap-1">
                         <input type="text" name="steam_name" placeholder="Steam name" required
                             class="flex-1 bg-slate-600 border border-slate-500 rounded px-2 py-1 text-xs text-white focus:outline-none">
                         <button type="submit" class="bg-slate-600 hover:bg-slate-500 text-white rounded px-2 py-1 text-xs">+</button>

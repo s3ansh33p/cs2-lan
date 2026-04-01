@@ -68,6 +68,7 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	protected.HandleFunc("POST /admin/bracket/swap", h.AdminSwapTeams)
 	protected.HandleFunc("POST /admin/match/{id}/game", h.AdminCreateGame)
 	protected.HandleFunc("POST /admin/match/{id}/game/{gid}", h.AdminUpdateGame)
+	protected.HandleFunc("POST /admin/match/{id}/game/{gid}/side", h.AdminSetGameSide)
 	protected.HandleFunc("GET /admin/match/{id}/launch", h.AdminLaunchMatch)
 
 	mux.Handle("/", a.Middleware(protected))

@@ -1322,6 +1322,59 @@ document.addEventListener('DOMContentLoaded', function() {
     initRconAutocomplete();
 });
 
+// ── Team Member AJAX ──
+
+function addMember(teamId, form) {
+    var input = form.querySelector('[name="steam_name"]');
+    var name = input.value.trim();
+    if (!name) return false;
+
+    fetch('/admin/tournament/teams/' + teamId + '/members', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest'},
+        body: 'steam_name=' + encodeURIComponent(name)
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        var list = document.getElementById('members-' + teamId);
+        if (list) {
+            var li = document.createElement('li');
+            li.className = 'flex items-center justify-between';
+            li.dataset.mid = data.id;
+            li.innerHTML = '<span>' + data.name + '</span>' +
+                '<button onclick="removeMember(' + teamId + ', ' + data.id + ', this)" class="text-red-400 hover:text-red-300">&times;</button>';
+            list.appendChild(li);
+        }
+        var noMembers = document.getElementById('no-members-' + teamId);
+        if (noMembers) noMembers.remove();
+        input.value = '';
+    }).catch(function() {
+        // Fallback: submit normally
+        form.method = 'POST';
+        form.action = '/admin/tournament/teams/' + teamId + '/members';
+        form.submit();
+    });
+    return false;
+}
+
+function swapSide(matchId, gameId, newVal, btn) {
+    fetch('/admin/match/' + matchId + '/game/' + gameId + '/side', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest'},
+        body: 'team1_starts_ct=' + newVal
+    }).then(function() {
+        // Bracket WS will push updated data and re-render
+    });
+}
+
+function removeMember(teamId, memberId, btn) {
+    fetch('/admin/tournament/teams/' + teamId + '/members/' + memberId + '/delete', {
+        method: 'POST',
+        headers: {'X-Requested-With': 'XMLHttpRequest'}
+    }).then(function() {
+        var li = btn.closest('li');
+        if (li) li.remove();
+    });
+}
+
 // ── Tournament Bracket Rendering ──
 
 function renderBracketLayout(container, matches, renderFn) {
@@ -1462,6 +1515,11 @@ function renderBracketMatch(m) {
             if (game.status !== 'completed' && game.map) {
                 html += '<a href="/admin/match/' + m.id + '/launch?game_number=' + game.num + '&map_name=' + encodeURIComponent(game.map) + '" class="text-orange-400 hover:text-orange-300 ml-auto" title="Launch server">&#9654;</a>';
             }
+            // CT side indicator + swap
+            var ctName = game.t1ct ? t1name : t2name;
+            var newVal = game.t1ct ? '0' : '1';
+            html += '<button onclick="swapSide(' + m.id + ',' + game.id + ',\'' + newVal + '\',this)" class="text-blue-400 hover:text-blue-300 text-xs ml-auto" title="Click to swap sides">' +
+                '<span class="text-blue-400">CT:</span>' + ctName + '</button>';
             html += '</div>';
         }
         html += '</div>';

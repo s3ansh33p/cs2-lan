@@ -184,13 +184,35 @@ func (h *Handler) handleGameOver(info gametracker.GameOverInfo) {
 		}
 	}
 
+	// Set final map from tracker
+	if info.Score.CurrentMap != "" {
+		h.db.Exec(`UPDATE games SET map_name=? WHERE id=?`, info.Score.CurrentMap, game.ID)
+	}
+
 	if winnerID != nil {
 		h.checkMatchDecided(match, *winnerID)
 	}
 
-	log.Printf("game-over: recorded game %d — %s %d:%d %s (halves: %d:%d / %d:%d)",
+	log.Printf("game-over: recorded game %d — %s %d:%d %s on %s (halves: %d:%d / %d:%d)",
 		game.ID, match.Team1Name, team1Score, team2Score, match.Team2Name,
-		h1ct, h1t, h2ct, h2t)
+		info.Score.CurrentMap, h1ct, h1t, h2ct, h2t)
+
+	// For Bo3+: if match not decided, auto-create next game on same server
+	if match.BestOf > 1 {
+		// Refresh match to check if winner was set by checkMatchDecided
+		match, _ = h.db.GetMatchByID(match.ID)
+		if match != nil && match.WinnerID == nil {
+			nextNum := game.GameNumber + 1
+			if nextNum <= match.BestOf {
+				nextID, err := h.db.CreateGame(match.ID, nextNum, "", game.Team1StartsCT)
+				if err == nil {
+					h.db.LinkGameToServer(nextID, game.ServerName)
+					log.Printf("game-over: auto-created game %d (game %d of Bo%d) on server %s",
+						nextID, nextNum, match.BestOf, game.ServerName)
+				}
+			}
+		}
+	}
 
 	h.notifyBracket()
 }
@@ -208,6 +230,15 @@ func (h *Handler) handleRoundEnd(info gametracker.RoundEndInfo) {
 	if err := h.db.UpdateLiveScore(game.ID, team1Score, team2Score); err != nil {
 		return
 	}
+
+	// Keep map in sync with what the server is currently playing
+	if state := h.tracker.GetState(info.ServerName); state != nil {
+		sc := state.GetScore()
+		if sc.CurrentMap != "" && sc.CurrentMap != game.MapName {
+			h.db.Exec(`UPDATE games SET map_name=? WHERE id=?`, sc.CurrentMap, game.ID)
+		}
+	}
+
 	h.notifyBracket()
 }
 
