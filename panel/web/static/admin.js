@@ -50,7 +50,7 @@ function connectLogWS(serverName) {
     updatePauseButton();
 
     var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var ws = new WebSocket(protocol + '//' + location.host + '/server/' + serverName + '/logs/ws');
+    var ws = new WebSocket(protocol + '//' + location.host + '/admin/server/' + serverName + '/logs/ws');
     var output = document.getElementById('log-output');
     var status = document.getElementById('log-status');
     var reconnectBtn = document.getElementById('log-reconnect');
@@ -228,7 +228,7 @@ function reconnectLogs() {
 var _lastDashJSON = '';
 function connectDashboardWS() {
     var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var ws = new WebSocket(protocol + '//' + location.host + '/api/dashboard/ws');
+    var ws = new WebSocket(protocol + '//' + location.host + '/admin/api/dashboard/ws');
 
     ws.onmessage = function(e) {
         try {
@@ -255,7 +255,7 @@ function renderDashboard(servers) {
 
     if (!servers || !servers.length) {
         el.innerHTML = '<div class="bg-slate-800 border border-slate-700 rounded-lg px-4 py-12 text-center text-slate-500">' +
-            'No servers running. <a href="/launch" class="text-orange-400 hover:underline">Launch one</a>.</div>';
+            'No servers running. <a href="/admin/launch" class="text-orange-400 hover:underline">Launch one</a>.</div>';
         return;
     }
 
@@ -285,7 +285,7 @@ function renderDashboard(servers) {
         var modeLabel = s.mode ? s.mode.charAt(0).toUpperCase() + s.mode.slice(1) : '-';
 
         // Card layout (works on all screen sizes)
-        html += '<a href="/server/' + s.name + '" class="block bg-slate-800 border border-slate-700 rounded-lg p-4 hover:bg-slate-700/50 transition-colors">' +
+        html += '<a href="/admin/server/' + s.name + '" class="block bg-slate-800 border border-slate-700 rounded-lg p-4 hover:bg-slate-700/50 transition-colors">' +
             '<div class="flex items-center justify-between mb-2">' +
                 '<div class="flex items-center gap-2">' +
                     '<span class="text-orange-400 font-medium">' + (s.alias || s.name) + '</span>' +
@@ -372,7 +372,7 @@ var _serverRestarting = false;
 
 function connectGameWS(serverName) {
     var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var ws = new WebSocket(protocol + '//' + location.host + '/server/' + serverName + '/game/ws');
+    var ws = new WebSocket(protocol + '//' + location.host + '/admin/server/' + serverName + '/game/ws');
 
     var _wsConnected = false;
 
@@ -422,7 +422,7 @@ function connectGameWS(serverName) {
         // If WS never connected and not restarting, server doesn't exist — redirect
         if (!_wsConnected && !_serverRestarting) {
             console.log('[game-ws] server not found, redirecting to dashboard');
-            window.location.href = '/';
+            window.location.href = '/admin';
             return;
         }
         console.log('[game-ws] closed, reconnecting in 3s...');
@@ -1036,7 +1036,7 @@ function rconQuick(cmds) {
         var cmd = commands[i].trim();
         if (!cmd) { sendNext(i + 1); return; }
 
-        fetch('/server/' + _rconServerName + '/rcon', {
+        fetch('/admin/server/' + _rconServerName + '/rcon', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: 'command=' + encodeURIComponent(cmd)
@@ -1324,7 +1324,7 @@ function renameServer(name) {
     var current = document.getElementById('server-title').textContent;
     var alias = prompt('Rename server:', current);
     if (alias === null) return;
-    fetch('/server/' + name + '/rename', {
+    fetch('/admin/server/' + name + '/rename', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: 'alias=' + encodeURIComponent(alias)
@@ -1513,7 +1513,7 @@ function renderBracketMatch(m) {
                 html += '<span class="text-orange-400">' + (mapDisplayName(game.map) || 'Game ' + game.num) + '</span>';
                 html += '<span class="text-orange-300 font-mono">' + game.t1 + '-' + game.t2 + '</span>';
                 if (game.server) {
-                    html += '<a href="/server/' + game.server + '" class="bg-orange-500/20 text-orange-400 hover:bg-orange-500/30 font-bold rounded px-1.5 py-0.5">LIVE</a>';
+                    html += '<a href="/admin/server/' + game.server + '" class="bg-orange-500/20 text-orange-400 hover:bg-orange-500/30 font-bold rounded px-1.5 py-0.5">LIVE</a>';
                 } else {
                     html += '<span class="bg-orange-500/20 text-orange-400 font-bold rounded px-1.5 py-0.5">LIVE</span>';
                 }
@@ -1609,7 +1609,7 @@ function connectAdminBracketWS() {
     if (!container) return;
 
     var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var ws = new WebSocket(protocol + '//' + location.host + '/bracket/ws');
+    var ws = new WebSocket(protocol + '//' + location.host + '/ws');
 
     ws.onmessage = function(e) {
         try {

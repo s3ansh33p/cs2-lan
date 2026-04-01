@@ -355,7 +355,7 @@ func (h *Handler) AdminLaunchMatch(w http.ResponseWriter, r *http.Request) {
 		password = tournament.ServerPassword
 	}
 
-	query := fmt.Sprintf("/launch?name=match-%s&map=%s&mode=%s&players=%d&match_id=%s&game_number=%s&password=%s",
+	query := fmt.Sprintf("/admin/launch?name=match-%s&map=%s&mode=%s&players=%d&match_id=%s&game_number=%s&password=%s",
 		matchID, mapName, gameMode, maxPlayers, matchID, gameNumber, password)
 	http.Redirect(w, r, query, http.StatusSeeOther)
 }

@@ -85,7 +85,7 @@ func (a *Auth) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(sessionMaxAge.Seconds()),
 	})
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
 func (a *Auth) HandleLogout(w http.ResponseWriter, r *http.Request) {

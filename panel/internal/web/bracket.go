@@ -67,55 +67,55 @@ func (h *Handler) PublicBracket(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) PublicCreateTeam(w http.ResponseWriter, r *http.Request) {
 	tournament, err := h.db.GetTournament()
 	if err != nil || tournament == nil || !tournament.CanRegister() {
-		http.Redirect(w, r, "/bracket", http.StatusSeeOther)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 
 	name := r.FormValue("name")
 	if name == "" {
-		http.Redirect(w, r, "/bracket", http.StatusSeeOther)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 
 	if _, err := h.db.CreateTeam(tournament.ID, name); err != nil {
 		log.Printf("public create team: %v", err)
 	}
-	http.Redirect(w, r, "/bracket", http.StatusSeeOther)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 // Public add member (during registration window)
 func (h *Handler) PublicAddMember(w http.ResponseWriter, r *http.Request) {
 	tournament, err := h.db.GetTournament()
 	if err != nil || tournament == nil || !tournament.CanRegister() {
-		http.Redirect(w, r, "/bracket", http.StatusSeeOther)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 
 	teamID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	steamName := r.FormValue("steam_name")
 	if steamName == "" {
-		http.Redirect(w, r, "/bracket", http.StatusSeeOther)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 
 	// Enforce team size limit
 	members, _ := h.db.ListMembers(teamID)
 	if len(members) >= tournament.TeamSize {
-		http.Redirect(w, r, "/bracket", http.StatusSeeOther)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 
 	if _, err := h.db.AddMember(teamID, steamName); err != nil {
 		log.Printf("public add member: %v", err)
 	}
-	http.Redirect(w, r, "/bracket", http.StatusSeeOther)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 // Public remove member (during registration window)
 func (h *Handler) PublicRemoveMember(w http.ResponseWriter, r *http.Request) {
 	tournament, err := h.db.GetTournament()
 	if err != nil || tournament == nil || !tournament.CanRegister() {
-		http.Redirect(w, r, "/bracket", http.StatusSeeOther)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 
@@ -123,7 +123,7 @@ func (h *Handler) PublicRemoveMember(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.RemoveMember(mid); err != nil {
 		log.Printf("public remove member: %v", err)
 	}
-	http.Redirect(w, r, "/bracket", http.StatusSeeOther)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 // notifyBracket pushes an update signal to all bracket WS subscribers.

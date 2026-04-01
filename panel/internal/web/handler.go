@@ -326,7 +326,7 @@ func (h *Handler) LaunchServer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
 func (h *Handler) ServerDetail(w http.ResponseWriter, r *http.Request) {
@@ -505,7 +505,7 @@ func (h *Handler) RestartServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Redirect immediately, restart in background
-	redirect := "/server/" + name
+	redirect := "/admin/server/" + name
 	if r.Header.Get("HX-Request") == "true" {
 		w.Header().Set("HX-Redirect", redirect)
 		w.WriteHeader(http.StatusOK)
@@ -562,10 +562,10 @@ func (h *Handler) StopServer(w http.ResponseWriter, r *http.Request) {
 
 	// Redirect immediately, stop in background
 	if r.Header.Get("HX-Request") == "true" {
-		w.Header().Set("HX-Redirect", "/")
+		w.Header().Set("HX-Redirect", "/admin")
 		w.WriteHeader(http.StatusOK)
 	} else {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		http.Redirect(w, r, "/admin", http.StatusSeeOther)
 	}
 
 	go func() {

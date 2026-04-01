@@ -146,7 +146,7 @@ function showMatchStats(gameId, title) {
     section.classList.remove('hidden');
     section.scrollIntoView({behavior: 'smooth', block: 'nearest'});
 
-    fetch('/bracket/game/' + gameId + '/stats')
+    fetch('/game/' + gameId + '/stats')
         .then(function(r) { return r.text(); })
         .then(function(html) {
             contentEl.innerHTML = html;
@@ -192,7 +192,7 @@ function connectBracketWS() {
     if (!container) return;
 
     var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var ws = new WebSocket(protocol + '//' + location.host + '/bracket/ws');
+    var ws = new WebSocket(protocol + '//' + location.host + '/ws');
 
     ws.onmessage = function(e) {
         try {
