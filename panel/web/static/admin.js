@@ -1339,30 +1339,12 @@ function addMember(teamId, form) {
     var input = form.querySelector('[name="steam_name"]');
     var name = input.value.trim();
     if (!name) return false;
-
     fetch('/admin/tournament/teams/' + teamId + '/members', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest'},
         body: 'steam_name=' + encodeURIComponent(name)
-    }).then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); }).then(function(data) {
-        var list = document.getElementById('members-' + teamId);
-        if (list) {
-            var li = document.createElement('li');
-            li.className = 'flex items-center justify-between';
-            li.dataset.mid = data.id;
-            li.innerHTML = '<span>' + data.name + '</span>' +
-                '<button onclick="removeMember(' + teamId + ', ' + data.id + ', this)" class="text-red-400 hover:text-red-300">&times;</button>';
-            list.appendChild(li);
-        }
-        var noMembers = document.getElementById('no-members-' + teamId);
-        if (noMembers) noMembers.remove();
-        input.value = '';
-    }).catch(function() {
-        // Fallback: submit normally
-        form.method = 'POST';
-        form.action = '/admin/tournament/teams/' + teamId + '/members';
-        form.submit();
     });
+    input.value = '';
     return false;
 }
 
@@ -1413,6 +1395,99 @@ function bracketAction(url, params) {
     });
 }
 
+function adminAddTeam(form) {
+    var data = new URLSearchParams(new FormData(form));
+    fetch('/admin/tournament/teams', {
+        method: 'POST',
+        headers: {'X-Requested-With': 'XMLHttpRequest'},
+        body: data
+    });
+    form.querySelector('input[name="name"]').value = '';
+    return false;
+}
+
+function adminDeleteTeam(teamId) {
+    if (!confirm('Delete team?')) return;
+    fetch('/admin/tournament/teams/' + teamId + '/delete', {
+        method: 'POST',
+        headers: {'X-Requested-With': 'XMLHttpRequest'}
+    });
+}
+
+function adminRenameTeam(teamId, btn) {
+    var row = btn.closest('.flex.justify-between');
+    var span = row.querySelector('.font-medium');
+    var current = span.textContent;
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.value = current;
+    input.className = 'bg-slate-600 border border-slate-500 rounded px-1 py-0.5 text-sm text-white flex-1 min-w-0 focus:outline-none';
+    span.replaceWith(input);
+    input.focus();
+    input.select();
+    function save() {
+        var name = input.value.trim();
+        if (!name || name === current) {
+            var s = document.createElement('span');
+            s.className = 'font-medium text-sm';
+            s.textContent = current;
+            input.replaceWith(s);
+            return;
+        }
+        fetch('/admin/tournament/teams/' + teamId + '/rename', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest'},
+            body: 'name=' + encodeURIComponent(name)
+        });
+    }
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } if (e.key === 'Escape') { input.value = current; input.blur(); } });
+}
+
+function renderAdminTeams(teams) {
+    var el = document.getElementById('admin-teams-list');
+    if (!el) return;
+    var heading = document.getElementById('teams-heading');
+    if (heading) heading.textContent = 'Teams (' + (teams ? teams.length : 0) + ')';
+    // Update seed list if present
+    if (typeof renderSeedList === 'function') renderSeedList(teams);
+
+    if (!teams || teams.length === 0) {
+        el.innerHTML = '<p class="text-slate-500 text-sm">No teams yet.</p>';
+        return;
+    }
+    var html = '<div class="space-y-3">';
+    for (var i = 0; i < teams.length; i++) {
+        var t = teams[i];
+        html += '<div class="bg-slate-700/50 rounded p-3">';
+        html += '<div class="flex items-center justify-between mb-2">';
+        html += '<span class="font-medium text-sm">' + t.name + '</span>';
+        html += '<span class="flex gap-2">';
+        html += '<button onclick="adminRenameTeam(' + t.id + ', this)" class="text-slate-400 hover:text-white text-xs" title="Rename"><svg class="w-3.5 h-3.5 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg></button>';
+        html += '<button onclick="adminDeleteTeam(' + t.id + ')" class="text-red-400 hover:text-red-300 text-xs">Delete</button>';
+        html += '</span></div>';
+        html += '<ul class="text-xs text-slate-400 space-y-1 mb-2">';
+        if (t.members && t.members.length > 0) {
+            for (var j = 0; j < t.members.length; j++) {
+                var m = t.members[j];
+                html += '<li class="flex items-center justify-between">';
+                html += '<span>' + m.steamName + '</span>';
+                html += '<button onclick="removeMember(' + t.id + ',' + m.id + ',this)" class="bg-red-600 hover:bg-red-700 rounded px-1.5 py-1" title="Remove player"><img src="/static/icons/ui/friendremove.svg" class="w-4 h-4"></button>';
+                html += '</li>';
+            }
+        } else {
+            html += '<li class="text-slate-500">No members</li>';
+        }
+        html += '</ul>';
+        html += '<form onsubmit="return addMember(' + t.id + ', this)" class="flex gap-1">';
+        html += '<input type="text" name="steam_name" placeholder="Steam name" required class="flex-1 bg-slate-600 border border-slate-500 rounded px-2 py-1 text-xs text-white focus:outline-none">';
+        html += '<button type="submit" class="bg-slate-600 hover:bg-slate-500 rounded px-1.5 py-1" title="Add player"><img src="/static/icons/ui/addplayer.svg" class="w-4 h-4"></button>';
+        html += '</form></div>';
+    }
+    html += '</div>';
+    el.innerHTML = html;
+}
+
 function removeMember(teamId, memberId, btn) {
     fetch('/admin/tournament/teams/' + teamId + '/members/' + memberId + '/delete', {
         method: 'POST',
@@ -1424,7 +1499,7 @@ function removeMember(teamId, memberId, btn) {
 }
 
 function renderAdminBracket(matches) {
-    renderBracketLayout(document.querySelector('.bracket-container'), matches, renderBracketMatch, 240);
+    renderBracketLayout(document.querySelector('.bracket-container'), matches, renderBracketMatch, 340);
 }
 
 function renderBracketMatch(m) {
@@ -1432,6 +1507,8 @@ function renderBracketMatch(m) {
     var t2class = m.winner && m.winner === m.team2.id ? 'text-green-400 font-bold' : m.winner && m.winner !== m.team2.id ? 'text-slate-500' : 'text-slate-200';
     var t1name = m.team1.name || (m.isBye ? '' : 'TBD');
     var t2name = m.team2.name || (m.isBye ? '' : 'TBD');
+    if (!m.team1.name && !m.isBye) t1class = 'text-slate-600 italic';
+    if (!m.team2.name && !m.isBye) t2class = 'text-slate-600 italic';
 
     if (m.isBye) {
         var byeTeam = m.team1.name || m.team2.name || 'BYE';
@@ -1457,7 +1534,7 @@ function renderBracketMatch(m) {
         html += '<div class="border-t border-slate-600/50">';
         for (var g = 0; g < m.games.length; g++) {
             var game = m.games[g];
-            html += '<div class="px-3 py-1.5 flex items-center gap-2 text-xs' + (g > 0 ? ' border-t border-slate-600/30' : '') + '">';
+            html += '<div class="px-3 py-1.5 flex items-center gap-2 text-xs flex-nowrap whitespace-nowrap' + (g > 0 ? ' border-t border-slate-600/30' : '') + '">';
             if (game.status === 'completed') {
                 html += '<span class="text-slate-400">' + (mapDisplayName(game.map) || 'Game ' + game.num) + '</span>';
                 html += '<span class="text-slate-300 font-mono">' + game.t1 + '-' + game.t2 + '</span>';
@@ -1554,8 +1631,6 @@ var _adminBracketRetries = 0;
 var _lastAdminBracketJSON = '';
 function connectAdminBracketWS() {
     if (_adminBracketWS) { try { _adminBracketWS.close(); } catch(e) {} }
-    var container = document.querySelector('.bracket-container');
-    if (!container) return;
 
     var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     var ws = new WebSocket(protocol + '//' + location.host + '/ws');
@@ -1565,11 +1640,16 @@ function connectAdminBracketWS() {
         try {
             _adminBracketRetries = 0;
             var data = JSON.parse(e.data);
-            if (data.type === 'bracket' && data.bracket) {
-                var key = JSON.stringify(data.bracket);
-                if (key !== _lastAdminBracketJSON) {
-                    _lastAdminBracketJSON = key;
-                    renderAdminBracket(data.bracket);
+            if (data.type === 'bracket') {
+                if (data.bracket) {
+                    var key = JSON.stringify(data.bracket);
+                    if (key !== _lastAdminBracketJSON) {
+                        _lastAdminBracketJSON = key;
+                        renderAdminBracket(data.bracket);
+                    }
+                }
+                if (data.teams) {
+                    renderAdminTeams(data.teams);
                 }
             }
         } catch(err) { console.error('[bracket-ws] parse error:', err); }

@@ -21,7 +21,7 @@
         </div>
         <div>
             <label class="block text-sm text-slate-400 mb-1">Port</label>
-            <input type="number" name="port" required placeholder="27015" value="{{if .Form}}{{.Form.Port}}{{end}}"
+            <input type="number" name="port" required placeholder="27015" value="{{if .Form}}{{.Form.Port}}{{else}}{{.NextPort}}{{end}}"
                 class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm">
         </div>
         <div>

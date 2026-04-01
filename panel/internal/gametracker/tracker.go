@@ -1203,7 +1203,7 @@ func parseLine(line string, state *ServerState) {
 			}
 			state.halfRound = playedRounds
 			state.maxRounds = playedRounds * 2
-			log.Printf("gametracker: half time at round %d, max rounds %d", playedRounds, state.maxRounds)
+			log.Printf("gametracker %s: half time (round %d/%d)", state.serverName, playedRounds, state.maxRounds)
 		}
 		state.mu.Unlock()
 		state.addSystemMessage("Half Time")
@@ -1219,7 +1219,7 @@ func parseLine(line string, state *ServerState) {
 	// Game Over: detect mode and add to killfeed
 	// e.g. "Game Over: scrimcomp2v2 mg_active de_dust2 score 2:2 after 3 min"
 	if strings.Contains(line, "Game Over:") {
-		log.Printf("gametracker %s: detected Game Over line: %q", state.serverName, line)
+		log.Printf("gametracker %s: game over", state.serverName)
 		parts := strings.Fields(line)
 		for i, p := range parts {
 			if p == "Over:" && i+1 < len(parts) {
@@ -1246,7 +1246,7 @@ func parseLine(line string, state *ServerState) {
 		if state.gameOverFn != nil {
 			score := state.GetScore()
 			scoreboard := state.GetScoreboard()
-			log.Printf("gametracker %s: Game Over — CT %d : %d T, %d rounds, %d players, firing callback",
+			log.Printf("gametracker %s: game over CT %d : %d T (%d rounds, %d players)",
 				state.serverName, score.CT, score.T, len(score.Rounds), len(scoreboard))
 			go state.gameOverFn(GameOverInfo{
 				ServerName: state.serverName,
@@ -1254,7 +1254,7 @@ func parseLine(line string, state *ServerState) {
 				Players:    scoreboard,
 			})
 		} else {
-			log.Printf("gametracker %s: Game Over — no callback registered", state.serverName)
+			log.Printf("gametracker %s: game over (no callback)", state.serverName)
 		}
 		return
 	}

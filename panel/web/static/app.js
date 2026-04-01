@@ -7,6 +7,8 @@ function renderPublicMatch(m) {
     var t2class = m.winner && m.winner === m.team2.id ? 'text-green-400 font-bold' : m.winner && m.winner !== m.team2.id ? 'text-slate-500' : 'text-slate-200';
     var t1name = m.team1.name || (m.isBye ? '' : 'TBD');
     var t2name = m.team2.name || (m.isBye ? '' : 'TBD');
+    if (!m.team1.name && !m.isBye) t1class = 'text-slate-600 italic';
+    if (!m.team2.name && !m.isBye) t2class = 'text-slate-600 italic';
 
     if (m.isBye) {
         var byeTeam = m.team1.name || m.team2.name || 'BYE';
@@ -108,6 +110,142 @@ function copyConnect(btn, cmd) {
     });
 }
 
+// ── Public Team AJAX Actions ──
+
+function publicCreateTeam(form) {
+    var data = new URLSearchParams(new FormData(form));
+    fetch('/teams', {
+        method: 'POST',
+        headers: {'X-Requested-With': 'XMLHttpRequest'},
+        body: data
+    });
+    form.querySelector('input[name="name"]').value = '';
+    return false;
+}
+
+function publicAddMember(teamId, form) {
+    var data = new URLSearchParams(new FormData(form));
+    fetch('/teams/' + teamId + '/members', {
+        method: 'POST',
+        headers: {'X-Requested-With': 'XMLHttpRequest'},
+        body: data
+    });
+    form.querySelector('input[name="steam_name"]').value = '';
+    return false;
+}
+
+function publicRemoveMember(teamId, memberId) {
+    fetch('/teams/' + teamId + '/members/' + memberId + '/delete', {
+        method: 'POST',
+        headers: {'X-Requested-With': 'XMLHttpRequest'}
+    });
+}
+
+function publicRenameTeam(teamId, btn) {
+    var row = btn.closest('.flex.justify-between');
+    var span = row.querySelector('.font-medium');
+    var current = span.textContent;
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.value = current;
+    input.className = 'bg-slate-600 border border-slate-500 rounded px-1 py-0.5 text-sm text-white flex-1 min-w-0 focus:outline-none';
+    span.replaceWith(input);
+    input.focus();
+    input.select();
+    function save() {
+        var name = input.value.trim();
+        if (!name || name === current) {
+            var s = document.createElement('span');
+            s.className = 'font-medium text-sm truncate';
+            s.textContent = current;
+            input.replaceWith(s);
+            return;
+        }
+        fetch('/teams/' + teamId + '/rename', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest'},
+            body: 'name=' + encodeURIComponent(name)
+        });
+    }
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } if (e.key === 'Escape') { input.value = current; input.blur(); } });
+}
+
+function renderPublicTeams(teams, teamSize, canRegister, status) {
+    var container = document.getElementById('public-teams-container');
+    if (!container) return;
+
+    if ((!teams || teams.length === 0) && !canRegister) {
+        container.innerHTML = '';
+        return;
+    }
+
+    var html = '<div class="bg-slate-800 border border-slate-700 rounded-lg p-6">';
+
+    if (canRegister) {
+        // Registration mode
+        html += '<h2 class="text-lg font-semibold mb-4">Register a Team</h2>';
+        html += '<form onsubmit="return publicCreateTeam(this)" class="flex gap-2 mb-6">';
+        html += '<input type="text" name="name" placeholder="Team name" required class="flex-1 bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">';
+        html += '<button type="submit" class="bg-orange-600 hover:bg-orange-700 text-white font-medium rounded px-4 py-2 text-sm">Create Team</button>';
+        html += '</form>';
+
+        if (teams && teams.length > 0) {
+            html += '<h3 class="text-sm font-medium text-slate-400 mb-3">Teams (' + teams.length + ')</h3>';
+            html += '<div class="space-y-3">';
+            for (var i = 0; i < teams.length; i++) {
+                var t = teams[i];
+                html += '<div class="bg-slate-700/50 rounded p-3">';
+                html += '<div class="flex items-center justify-between mb-2">';
+                html += '<span class="font-medium text-sm">' + t.name + '</span>';
+                html += '<span class="flex items-center gap-2">';
+                html += '<button onclick="publicRenameTeam(' + t.id + ', this)" class="text-slate-400 hover:text-white text-xs" title="Rename"><svg class="w-3.5 h-3.5 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg></button>';
+                html += '<span class="text-xs text-slate-500">' + (t.members ? t.members.length : 0) + '/' + teamSize + ' players</span>';
+                html += '</span></div>';
+                if (t.members && t.members.length > 0) {
+                    html += '<ul class="text-xs text-slate-400 space-y-1 mb-2">';
+                    for (var j = 0; j < t.members.length; j++) {
+                        var m = t.members[j];
+                        html += '<li class="flex items-center justify-between"><span>' + m.steamName + '</span>';
+                        html += '<button onclick="publicRemoveMember(' + t.id + ',' + m.id + ')" class="bg-red-600 hover:bg-red-700 rounded px-1.5 py-1" title="Remove player"><img src="/static/icons/ui/friendremove.svg" class="w-4 h-4"></button></li>';
+                    }
+                    html += '</ul>';
+                }
+                html += '<form onsubmit="return publicAddMember(' + t.id + ', this)" class="flex gap-1">';
+                html += '<input type="text" name="steam_name" placeholder="Steam name" required class="flex-1 bg-slate-600 border border-slate-500 rounded px-2 py-1 text-xs text-white focus:outline-none">';
+                html += '<button type="submit" class="bg-slate-600 hover:bg-slate-500 rounded px-1.5 py-1" title="Add player"><img src="/static/icons/ui/addplayer.svg" class="w-4 h-4"></button>';
+                html += '</form></div>';
+            }
+            html += '</div>';
+        } else {
+            html += '<p class="text-slate-500 text-sm">No teams registered yet. Be the first!</p>';
+        }
+    } else if (teams && teams.length > 0) {
+        // Read-only collapsed mode
+        var collapsed = status === 'active' || status === 'completed' || status === 'locked';
+        html += '<button onclick="var c=this.nextElementSibling;c.classList.toggle(\'hidden\');this.querySelector(\'.arrow\').textContent=c.classList.contains(\'hidden\')?\'\\u25B8\':\'\\u25BE\'" class="flex items-center gap-2 w-full text-left">';
+        html += '<h2 class="text-lg font-semibold">Teams (' + teams.length + ')</h2>';
+        html += '<span class="arrow text-slate-400">' + (collapsed ? '\u25B8' : '\u25BE') + '</span></button>';
+        html += '<div class="' + (collapsed ? 'hidden ' : '') + 'mt-4"><div class="grid grid-cols-1 sm:grid-cols-2 gap-3">';
+        for (var i = 0; i < teams.length; i++) {
+            var t = teams[i];
+            html += '<div class="bg-slate-700/50 rounded p-3"><span class="font-medium text-sm">' + t.name + '</span>';
+            if (t.members && t.members.length > 0) {
+                html += '<ul class="text-xs text-slate-400 mt-1">';
+                for (var j = 0; j < t.members.length; j++) {
+                    html += '<li>' + t.members[j].steamName + '</li>';
+                }
+                html += '</ul>';
+            }
+            html += '</div>';
+        }
+        html += '</div></div>';
+    }
+
+    html += '</div>';
+    container.innerHTML = html;
+}
+
 // ── Bracket Live Updates via WebSocket ──
 
 var _bracketWS = null;
@@ -143,10 +281,12 @@ function connectBracketWS() {
                     }
                 }
 
-                // Update connect info if provided
-                if (data.connectInfo !== undefined) {
-                    _serverIP = '';
-                    _serverPassword = '';
+                // Update teams
+                if (data.teams !== undefined) {
+                    var ts = (typeof _teamSize !== 'undefined') ? _teamSize : (data.teamSize || 5);
+                    var cr = data.canRegister || false;
+                    var st = data.status || '';
+                    renderPublicTeams(data.teams, ts, cr, st);
                 }
             }
         } catch(err) { console.error('[bracket-ws] error:', err); }

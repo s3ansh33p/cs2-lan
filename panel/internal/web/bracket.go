@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"html"
 	"log"
@@ -83,8 +84,15 @@ func (h *Handler) PublicCreateTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.db.CreateTeam(tournament.ID, name); err != nil {
+	teamID, err := h.db.CreateTeam(tournament.ID, name)
+	if err != nil {
 		log.Printf("public create team: %v", err)
+	}
+	h.notifyBracket()
+	if isAJAX(r) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"id": teamID, "name": name})
+		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -104,15 +112,21 @@ func (h *Handler) PublicAddMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce team size limit
 	members, _ := h.db.ListMembers(teamID)
 	if len(members) >= tournament.TeamSize {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 
-	if _, err := h.db.AddMember(teamID, steamName); err != nil {
-		log.Printf("public add member: %v", err)
+	mid, addErr := h.db.AddMember(teamID, steamName)
+	if addErr != nil {
+		log.Printf("public add member: %v", addErr)
+	}
+	h.notifyBracket()
+	if isAJAX(r) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"id": mid, "team_id": teamID, "name": steamName})
+		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -128,6 +142,41 @@ func (h *Handler) PublicRemoveMember(w http.ResponseWriter, r *http.Request) {
 	mid, _ := strconv.ParseInt(r.PathValue("mid"), 10, 64)
 	if err := h.db.RemoveMember(mid); err != nil {
 		log.Printf("public remove member: %v", err)
+	}
+	h.notifyBracket()
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// Public rename team (during registration window)
+func (h *Handler) PublicRenameTeam(w http.ResponseWriter, r *http.Request) {
+	tournament, err := h.db.GetTournament()
+	if err != nil || tournament == nil || !tournament.CanRegister() {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+
+	teamID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	name := sanitize(r.FormValue("name"))
+	if name == "" {
+		if isAJAX(r) {
+			http.Error(w, "Name required", http.StatusBadRequest)
+		} else {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+		}
+		return
+	}
+
+	if err := h.db.UpdateTeam(teamID, name); err != nil {
+		log.Printf("public rename team: %v", err)
+	}
+	h.notifyBracket()
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -276,6 +325,28 @@ func (h *Handler) sendBracketState(conn *websocket.Conn) error {
 		matches = append(matches, mj)
 	}
 
+	// Build teams list
+	type memberJSON struct {
+		ID        int64  `json:"id"`
+		TeamID    int64  `json:"teamId"`
+		SteamName string `json:"steamName"`
+	}
+	type teamJSON struct {
+		ID      int64        `json:"id"`
+		Name    string       `json:"name"`
+		Members []memberJSON `json:"members"`
+	}
+	var teamsOut []teamJSON
+	if teams, err := h.db.ListTeams(tournament.ID); err == nil {
+		for _, t := range teams {
+			tj := teamJSON{ID: t.ID, Name: t.Name}
+			for _, m := range t.Members {
+				tj.Members = append(tj.Members, memberJSON{ID: m.ID, TeamID: m.TeamID, SteamName: m.SteamName})
+			}
+			teamsOut = append(teamsOut, tj)
+		}
+	}
+
 	// Build tournament metadata for status-aware clients
 	var connectInfo string
 	if tournament.ServerIP != "" {
@@ -288,6 +359,8 @@ func (h *Handler) sendBracketState(conn *websocket.Conn) error {
 	msg := struct {
 		Type        string      `json:"type"`
 		Bracket     []matchJSON `json:"bracket"`
+		Teams       []teamJSON  `json:"teams"`
+		TeamSize    int         `json:"teamSize"`
 		Status      string      `json:"status"`
 		Name        string      `json:"name"`
 		CanRegister bool        `json:"canRegister"`
@@ -295,6 +368,8 @@ func (h *Handler) sendBracketState(conn *websocket.Conn) error {
 	}{
 		Type:        "bracket",
 		Bracket:     matches,
+		Teams:       teamsOut,
+		TeamSize:    tournament.TeamSize,
 		Status:      tournament.Status,
 		Name:        tournament.Name,
 		CanRegister: tournament.CanRegister(),
@@ -328,30 +403,70 @@ func (h *Handler) PublicGameStats(w http.ResponseWriter, r *http.Request) {
 		renderRoundHistoryHTML(w, rounds, halfRound, maxRounds)
 	}
 
-	// Player stats table
+	// Player stats table — split by team
 	if len(stats) > 0 {
-		fmt.Fprint(w, `<table class="w-full text-sm mt-4"><thead><tr class="text-slate-500 border-b border-slate-700">`)
-		fmt.Fprint(w, `<th class="text-left px-3 py-2">Player</th>`)
-		fmt.Fprint(w, `<th class="px-2 py-2">K</th><th class="px-2 py-2">D</th><th class="px-2 py-2">A</th>`)
-		fmt.Fprint(w, `<th class="px-2 py-2">MVPs</th><th class="px-2 py-2">HS%</th>`)
-		fmt.Fprint(w, `<th class="px-2 py-2">KDR</th><th class="px-2 py-2">ADR</th>`)
-		fmt.Fprint(w, `<th class="px-2 py-2">EF</th><th class="px-2 py-2">UD</th>`)
-		fmt.Fprint(w, `</tr></thead><tbody>`)
-		for _, s := range stats {
-			fmt.Fprintf(w, `<tr class="text-slate-300 border-b border-slate-700/50">`)
-			fmt.Fprintf(w, `<td class="px-3 py-1.5 font-medium">%s</td>`, html.EscapeString(s.PlayerName))
-			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.Kills)
-			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.Deaths)
-			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.Assists)
-			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.MVPs)
-			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.0f%%</td>`, s.HSPercent)
-			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.2f</td>`, s.KDR)
-			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.0f</td>`, s.ADR)
-			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.EF)
-			fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.0f</td>`, s.UD)
-			fmt.Fprint(w, `</tr>`)
+		// Build team ID -> name lookup from the tournament teams table
+		teamNames := make(map[int64]string)
+		rows, _ := h.db.Query(`SELECT id, name FROM teams`)
+		if rows != nil {
+			for rows.Next() {
+				var id int64
+				var name string
+				rows.Scan(&id, &name)
+				teamNames[id] = name
+			}
+			rows.Close()
 		}
-		fmt.Fprint(w, `</tbody></table>`)
+
+		// Split stats into two groups by team
+		var group1, group2 []db.PlayerStat
+		var firstTeamID int64
+		for _, s := range stats {
+			if firstTeamID == 0 {
+				firstTeamID = s.TeamID
+			}
+			if s.TeamID == firstTeamID {
+				group1 = append(group1, s)
+			} else {
+				group2 = append(group2, s)
+			}
+		}
+
+		name1 := teamNames[firstTeamID]
+		name2 := ""
+		if len(group2) > 0 {
+			name2 = teamNames[group2[0].TeamID]
+		}
+
+		writeStatsRows := func(players []db.PlayerStat, teamName string) {
+			if len(players) == 0 { return }
+			label := html.EscapeString(teamName)
+			if label == "" { label = "Player" }
+			fmt.Fprintf(w, `<tr class="text-slate-500 border-b border-slate-700"><th class="text-left px-3 py-2">%s</th>`, label)
+			fmt.Fprint(w, `<th class="px-2 py-2">K</th><th class="px-2 py-2">D</th><th class="px-2 py-2">A</th>`)
+			fmt.Fprint(w, `<th class="px-2 py-2">MVPs</th><th class="px-2 py-2">HS%</th>`)
+			fmt.Fprint(w, `<th class="px-2 py-2">KDR</th><th class="px-2 py-2">ADR</th>`)
+			fmt.Fprint(w, `<th class="px-2 py-2">EF</th><th class="px-2 py-2">UD</th></tr>`)
+			for _, s := range players {
+				fmt.Fprintf(w, `<tr class="text-slate-300 border-b border-slate-700/50">`)
+				fmt.Fprintf(w, `<td class="px-3 py-1.5 font-medium">%s</td>`, html.EscapeString(s.PlayerName))
+				fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.Kills)
+				fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.Deaths)
+				fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.Assists)
+				fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.MVPs)
+				fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.0f%%</td>`, s.HSPercent)
+				fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.2f</td>`, s.KDR)
+				fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.0f</td>`, s.ADR)
+				fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.EF)
+				fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.0f</td>`, s.UD)
+				fmt.Fprint(w, `</tr>`)
+			}
+		}
+
+		fmt.Fprint(w, `<table class="w-full text-sm mt-4">`)
+		writeStatsRows(group1, name1)
+		writeStatsRows(group2, name2)
+		fmt.Fprint(w, `</table>`)
 	}
 }
 

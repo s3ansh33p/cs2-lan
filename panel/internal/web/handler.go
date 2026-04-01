@@ -272,9 +272,22 @@ func (h *Handler) ServersPartial(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) LaunchPage(w http.ResponseWriter, r *http.Request) {
+	// Find next available port starting from 27015
+	nextPort := 27015
+	servers, _ := h.docker.ListServers(r.Context())
+	usedPorts := make(map[int]bool)
+	for _, s := range servers {
+		usedPorts[s.Port] = true
+		usedPorts[s.TVPort] = true
+	}
+	for usedPorts[nextPort] || usedPorts[nextPort+5] {
+		nextPort++
+	}
+
 	h.render(w, "launch.html", map[string]any{
 		"Title":       "Launch Server",
 		"DefaultRCON": h.defaultRCON,
+		"NextPort":    nextPort,
 	})
 }
 
@@ -344,6 +357,7 @@ func (h *Handler) LaunchServer(w http.ResponseWriter, r *http.Request) {
 			if gameID > 0 {
 				h.db.LinkGameToServer(gameID, req.Name)
 				log.Printf("linked server %s to game %d (match %d, game %d)", req.Name, gameID, mid, gn)
+				h.notifyBracket()
 			}
 		}
 	}

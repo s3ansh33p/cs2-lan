@@ -4,6 +4,7 @@
     <div class="flex items-center gap-6">
         <span class="text-lg font-bold text-orange-400">CS2 Tournament</span>
     </div>
+    <a href="/admin" class="text-slate-400 hover:text-white text-sm">Admin</a>
 </nav>
 {{end}}
 {{define "content"}}
@@ -29,78 +30,18 @@
     {{end}}
 </div>
 
-{{if .CanRegister}}
-<!-- Team Registration -->
-<div class="max-w-2xl mx-auto mb-8">
-    <div class="bg-slate-800 border border-slate-700 rounded-lg p-6">
-        <h2 class="text-lg font-semibold mb-4">Register a Team</h2>
-        <form method="POST" action="/teams" class="flex gap-2 mb-6">
-            <input type="text" name="name" placeholder="Team name" required
-                class="flex-1 bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
-            <button type="submit" class="bg-orange-600 hover:bg-orange-700 text-white font-medium rounded px-4 py-2 text-sm">
-                Create Team
-            </button>
-        </form>
-
-        {{if .Teams}}
-        <h3 class="text-sm font-medium text-slate-400 mb-3">Teams ({{len .Teams}})</h3>
-        <div class="space-y-3">
-            {{range .Teams}}
-            <div class="bg-slate-700/50 rounded p-3">
-                <div class="flex items-center justify-between mb-2">
-                    <span class="font-medium text-sm">{{.Name}}</span>
-                    <span class="text-xs text-slate-500">{{len .Members}}/{{$.Tournament.TeamSize}} players</span>
-                </div>
-                {{if .Members}}
-                <ul class="text-xs text-slate-400 space-y-1 mb-2">
-                    {{range .Members}}
-                    <li class="flex items-center justify-between">
-                        <span>{{.SteamName}}</span>
-                        <form method="POST" action="/teams/{{.TeamID}}/members/{{.ID}}/delete" class="inline">
-                            <button type="submit" class="text-red-400 hover:text-red-300">&times;</button>
-                        </form>
-                    </li>
-                    {{end}}
-                </ul>
-                {{end}}
-                <form method="POST" action="/teams/{{.ID}}/members" class="flex gap-1">
-                    <input type="text" name="steam_name" placeholder="Steam name" required
-                        class="flex-1 bg-slate-600 border border-slate-500 rounded px-2 py-1 text-xs text-white focus:outline-none">
-                    <button type="submit" class="bg-slate-600 hover:bg-slate-500 text-white rounded px-2 py-1 text-xs">Add Player</button>
-                </form>
-            </div>
-            {{end}}
-        </div>
-        {{else}}
-        <p class="text-slate-500 text-sm">No teams registered yet. Be the first!</p>
-        {{end}}
-    </div>
-</div>
-{{else if .Teams}}
-<!-- Team List (read-only, registration closed) -->
-<div id="teams-section" class="max-w-2xl mx-auto mb-8">
-    <div class="bg-slate-800 border border-slate-700 rounded-lg p-6">
-        <button onclick="var c=document.getElementById('public-teams');c.classList.toggle('hidden');this.querySelector('.arrow').textContent=c.classList.contains('hidden')?'\u25B8':'\u25BE'" class="flex items-center gap-2 w-full text-left">
-            <h2 class="text-lg font-semibold">Teams ({{len .Teams}})</h2>
-            <span class="arrow text-slate-400">&#x25B8;</span>
-        </button>
-        <div id="public-teams" class="hidden mt-4">
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {{range .Teams}}
-                <div class="bg-slate-700/50 rounded p-3">
-                    <span class="font-medium text-sm">{{.Name}}</span>
-                    {{if .Members}}
-                    <ul class="text-xs text-slate-400 mt-1">
-                        {{range .Members}}<li>{{.SteamName}}</li>{{end}}
-                    </ul>
-                    {{end}}
-                </div>
-                {{end}}
-            </div>
-        </div>
-    </div>
-</div>
+{{if .Tournament}}
+<div id="public-teams-container" class="max-w-2xl mx-auto mb-8"></div>
 {{end}}
+<script>
+var _publicTeamsData = [
+{{range .Teams}}{id:{{.ID}}, name:"{{.Name}}", members:[{{range .Members}}{id:{{.ID}}, teamId:{{.TeamID}}, steamName:"{{.SteamName}}"},{{end}}]},{{end}}
+];
+var _teamSize = {{if .Tournament}}{{.Tournament.TeamSize}}{{else}}5{{end}};
+var _canRegister = {{if .CanRegister}}true{{else}}false{{end}};
+var _tournamentStatus = "{{if .Tournament}}{{.Tournament.Status}}{{end}}";
+renderPublicTeams(_publicTeamsData, _teamSize, _canRegister, _tournamentStatus);
+</script>
 
 {{if .Bracket}}
 <div class="bg-slate-800 border border-slate-700 rounded-lg p-6 mb-8">

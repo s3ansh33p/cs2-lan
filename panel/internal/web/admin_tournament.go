@@ -148,8 +148,21 @@ func (h *Handler) AdminCreateTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.db.CreateTeam(tournament.ID, name); err != nil {
+	teamID, err := h.db.CreateTeam(tournament.ID, name)
+	if err != nil {
 		log.Printf("create team: %v", err)
+		if isAJAX(r) {
+			http.Error(w, "Failed", http.StatusInternalServerError)
+		} else {
+			http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+		}
+		return
+	}
+	h.notifyBracket()
+	if isAJAX(r) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"id": teamID, "name": name})
+		return
 	}
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 }
@@ -162,6 +175,11 @@ func (h *Handler) AdminDeleteTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.db.DeleteTeam(id); err != nil {
 		log.Printf("delete team: %v", err)
+	}
+	h.notifyBracket()
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
 	}
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 }
@@ -191,6 +209,7 @@ func (h *Handler) AdminAddMember(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	h.notifyBracket()
 	if isAJAX(r) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
@@ -212,6 +231,33 @@ func (h *Handler) AdminRemoveMember(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.RemoveMember(id); err != nil {
 		log.Printf("remove member: %v", err)
 	}
+	h.notifyBracket()
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+}
+
+func (h *Handler) AdminRenameTeam(w http.ResponseWriter, r *http.Request) {
+	teamID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid team ID", http.StatusBadRequest)
+		return
+	}
+	name := sanitize(r.FormValue("name"))
+	if name == "" {
+		if isAJAX(r) {
+			http.Error(w, "Name required", http.StatusBadRequest)
+		} else {
+			http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+		}
+		return
+	}
+	if err := h.db.UpdateTeam(teamID, name); err != nil {
+		log.Printf("rename team: %v", err)
+	}
+	h.notifyBracket()
 	if isAJAX(r) {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -224,6 +270,19 @@ func isAJAX(r *http.Request) bool {
 }
 
 // Bracket generation — takes comma-separated team IDs in seed order
+func (h *Handler) AdminDeleteBracket(w http.ResponseWriter, r *http.Request) {
+	tournament, err := h.db.GetTournament()
+	if err != nil || tournament == nil {
+		http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+		return
+	}
+	if err := h.db.DeleteBracket(tournament.ID); err != nil {
+		log.Printf("delete bracket: %v", err)
+	}
+	h.notifyBracket()
+	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+}
+
 func (h *Handler) AdminSeedBracket(w http.ResponseWriter, r *http.Request) {
 	tournament, err := h.db.GetTournament()
 	if err != nil || tournament == nil {

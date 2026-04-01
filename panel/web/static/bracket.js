@@ -96,7 +96,7 @@ function renderBracketLayout(container, matches, renderFn, cardMinWidth) {
         var containerRect = container.getBoundingClientRect();
         var lbl = document.createElement('div');
         lbl.className = 'text-xs text-slate-500';
-        lbl.style.cssText = 'position:absolute;top:0;width:' + minW + 'px;text-align:center;left:' +
+        lbl.style.cssText = 'position:absolute;top:0;width:' + cardRect.width + 'px;text-align:center;left:' +
             (cardRect.left - containerRect.left) + 'px';
         lbl.textContent = roundLabel(parseInt(rd));
         labelsRow.appendChild(lbl);

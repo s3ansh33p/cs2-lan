@@ -32,6 +32,7 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	mux.HandleFunc("POST /teams", h.PublicCreateTeam)
 	mux.HandleFunc("POST /teams/{id}/members", h.PublicAddMember)
 	mux.HandleFunc("POST /teams/{id}/members/{mid}/delete", h.PublicRemoveMember)
+	mux.HandleFunc("POST /teams/{id}/rename", h.PublicRenameTeam)
 	mux.HandleFunc("GET /game/{gid}/stats", h.PublicGameStats)
 	mux.HandleFunc("GET /ws", h.BracketWebSocket)
 
@@ -62,7 +63,9 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	protected.HandleFunc("POST /admin/tournament/teams/{id}/delete", h.AdminDeleteTeam)
 	protected.HandleFunc("POST /admin/tournament/teams/{id}/members", h.AdminAddMember)
 	protected.HandleFunc("POST /admin/tournament/teams/{id}/members/{mid}/delete", h.AdminRemoveMember)
+	protected.HandleFunc("POST /admin/tournament/teams/{id}/rename", h.AdminRenameTeam)
 	protected.HandleFunc("POST /admin/bracket/seed", h.AdminSeedBracket)
+	protected.HandleFunc("POST /admin/bracket/delete", h.AdminDeleteBracket)
 	protected.HandleFunc("POST /admin/bracket/bestof", h.AdminSetBestOf)
 	protected.HandleFunc("POST /admin/bracket/winner", h.AdminSetWinner)
 	protected.HandleFunc("POST /admin/bracket/swap", h.AdminSwapTeams)

@@ -152,6 +152,31 @@ func (db *DB) GenerateBracket(tournamentID int64, teamIDs []int64) error {
 	return tx.Commit()
 }
 
+// DeleteBracket removes all matches and their associated games, rounds, and stats.
+func (db *DB) DeleteBracket(tournamentID int64) error {
+	// Delete game data (rounds + stats) for all games in this tournament's matches
+	_, err := db.Exec(`DELETE FROM game_rounds WHERE game_id IN (
+		SELECT g.id FROM games g JOIN matches m ON g.match_id = m.id WHERE m.tournament_id = ?)`, tournamentID)
+	if err != nil {
+		return fmt.Errorf("delete game rounds: %w", err)
+	}
+	_, err = db.Exec(`DELETE FROM game_player_stats WHERE game_id IN (
+		SELECT g.id FROM games g JOIN matches m ON g.match_id = m.id WHERE m.tournament_id = ?)`, tournamentID)
+	if err != nil {
+		return fmt.Errorf("delete game stats: %w", err)
+	}
+	_, err = db.Exec(`DELETE FROM games WHERE match_id IN (
+		SELECT id FROM matches WHERE tournament_id = ?)`, tournamentID)
+	if err != nil {
+		return fmt.Errorf("delete games: %w", err)
+	}
+	_, err = db.Exec(`DELETE FROM matches WHERE tournament_id = ?`, tournamentID)
+	if err != nil {
+		return fmt.Errorf("delete matches: %w", err)
+	}
+	return nil
+}
+
 // advanceToNext places the winner into the appropriate slot of the next match.
 func (db *DB) advanceToNext(matchID int64, winnerID int64) error {
 	var nextMatchID *int64
