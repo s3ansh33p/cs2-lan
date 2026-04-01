@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -30,6 +31,7 @@ type ServerInfo struct {
 	TVEnabled    bool
 	TVPort       int
 	IsTTY        bool
+	ExtraCfg     string
 }
 
 type Client struct {
@@ -97,6 +99,7 @@ func (c *Client) InspectServer(ctx context.Context, nameOrID string) (ServerInfo
 		TVEnabled:    tvEnabled,
 		TVPort:       tvPort,
 		IsTTY:        ctr.Config.Tty,
+		ExtraCfg:     env["CS2_EXTRA_CFG"],
 	}, nil
 }
 
@@ -210,6 +213,44 @@ func (c *Client) StreamLogLines(ctx context.Context, name string) (<-chan string
 	}
 
 	return lines, cleanup, nil
+}
+
+// ContainerResourceStats holds CPU and memory usage for a container.
+type ContainerResourceStats struct {
+	CPUPercent float64
+	MemUsageMB float64
+	MemLimitMB float64
+}
+
+// GetContainerStats returns a one-shot CPU/memory snapshot for a container.
+func (c *Client) GetContainerStats(ctx context.Context, containerID string) (ContainerResourceStats, error) {
+	resp, err := c.docker.ContainerStats(ctx, containerID, false)
+	if err != nil {
+		return ContainerResourceStats{}, err
+	}
+	defer resp.Body.Close()
+
+	var stats container.StatsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		return ContainerResourceStats{}, err
+	}
+
+	// CPU%: (container CPU delta / system CPU delta) * num CPUs * 100
+	var cpuPercent float64
+	cpuDelta := float64(stats.CPUStats.CPUUsage.TotalUsage - stats.PreCPUStats.CPUUsage.TotalUsage)
+	sysDelta := float64(stats.CPUStats.SystemUsage - stats.PreCPUStats.SystemUsage)
+	if sysDelta > 0 && cpuDelta >= 0 {
+		cpuPercent = (cpuDelta / sysDelta) * float64(stats.CPUStats.OnlineCPUs) * 100.0
+	}
+
+	memUsage := float64(stats.MemoryStats.Usage) / (1024 * 1024)
+	memLimit := float64(stats.MemoryStats.Limit) / (1024 * 1024)
+
+	return ContainerResourceStats{
+		CPUPercent: cpuPercent,
+		MemUsageMB: memUsage,
+		MemLimitMB: memLimit,
+	}, nil
 }
 
 func parseEnvVars(env []string) map[string]string {

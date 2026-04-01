@@ -171,23 +171,27 @@ type RoundResult struct {
 
 // ServerState holds the parsed game state for one server.
 type ServerState struct {
-	mu         sync.RWMutex
-	kills      []Kill
-	killSeq    int // monotonically increasing kill counter
-	stats      map[string]*PlayerStats
-	maxKills   int
-	round      int
-	ctScore    int
-	tScore     int
-	rounds     []RoundResult // round history
-	gameMode   string
-	currentMap string
-	halfRound  int // round number where half-time occurred
-	maxRounds  int // halfRound * 2 — for overtime detection
-	inWarmup   bool
-	isPaused   bool
-	gameType   int // for tracking mode changes via rcon
+	mu          sync.RWMutex
+	kills       []Kill
+	killSeq     int // monotonically increasing kill counter
+	stats       map[string]*PlayerStats
+	maxKills    int
+	round       int
+	ctScore     int
+	tScore      int
+	rounds      []RoundResult // round history
+	gameMode    string
+	currentMap  string
+	halfRound   int // round number where half-time occurred
+	maxRounds   int // halfRound * 2 — for overtime detection
+	inWarmup    bool
+	isPaused    bool
+	gameType    int // for tracking mode changes via rcon
 	gameModeNum int
+
+	// Bomb defuse tracking
+	defuser     string // player currently defusing
+	defuserTeam string // their team
 
 	// JSON block accumulator for round_stats
 	jsonBuf []string
@@ -199,6 +203,11 @@ type ServerState struct {
 
 	// Server lifecycle: "", "restarting", "stopped"
 	status string
+
+	// Callbacks (set by Manager)
+	serverName string
+	gameOverFn GameOverFunc
+	roundEndFn RoundEndFunc
 
 	// Change notification
 	subMu sync.Mutex
@@ -822,12 +831,34 @@ type LogStreamFunc func(ctx context.Context, name string) (<-chan string, func()
 type RCONFunc func(addr, password, command string) (string, error)
 
 // Manager manages game trackers for all servers.
+// GameOverInfo contains the final state of a match when Game Over is detected.
+type GameOverInfo struct {
+	ServerName string
+	Score      ScoreInfo
+	Players    []PlayerStats
+}
+
+// GameOverFunc is called when a game ends, before stats are reset.
+type GameOverFunc func(info GameOverInfo)
+
+// RoundEndInfo contains the score after a round ends.
+type RoundEndInfo struct {
+	ServerName string
+	CT         int
+	T          int
+}
+
+// RoundEndFunc is called after each round win.
+type RoundEndFunc func(info RoundEndInfo)
+
 type Manager struct {
-	mu       sync.Mutex
-	servers  map[string]*ServerState
-	cancels  map[string]context.CancelFunc
-	streamFn LogStreamFunc
-	rconFn   RCONFunc
+	mu         sync.Mutex
+	servers    map[string]*ServerState
+	cancels    map[string]context.CancelFunc
+	streamFn   LogStreamFunc
+	rconFn     RCONFunc
+	gameOverFn GameOverFunc
+	roundEndFn RoundEndFunc
 }
 
 func NewManager(streamFn LogStreamFunc, rconFn RCONFunc) *Manager {
@@ -837,6 +868,20 @@ func NewManager(streamFn LogStreamFunc, rconFn RCONFunc) *Manager {
 		streamFn: streamFn,
 		rconFn:   rconFn,
 	}
+}
+
+// OnGameOver registers a callback that fires when any tracked server's game ends.
+func (m *Manager) OnGameOver(fn GameOverFunc) {
+	m.mu.Lock()
+	m.gameOverFn = fn
+	m.mu.Unlock()
+}
+
+// OnRoundEnd registers a callback that fires after each round win.
+func (m *Manager) OnRoundEnd(fn RoundEndFunc) {
+	m.mu.Lock()
+	m.roundEndFn = fn
+	m.mu.Unlock()
 }
 
 func (m *Manager) TrackServer(name string, gamePort int, rconPassword, gameMode, initialMap string) *ServerState {
@@ -849,6 +894,9 @@ func (m *Manager) TrackServer(name string, gamePort int, rconPassword, gameMode,
 	s := newServerState()
 	s.gameMode = gameMode
 	s.currentMap = initialMap
+	s.serverName = name
+	s.gameOverFn = m.gameOverFn
+	s.roundEndFn = m.roundEndFn
 	m.servers[name] = s
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancels[name] = cancel
@@ -1053,7 +1101,8 @@ var (
 	// Also handles: triggered "Killed_A_Hostage", blinded by, etc.
 
 	// Player triggered: Got_The_Bomb, Dropped_The_Bomb, Planted_The_Bomb, Defused_The_Bomb
-	bombActionRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)>" triggered "(Got_The_Bomb|Dropped_The_Bomb|Planted_The_Bomb|Defused_The_Bomb)"`)
+	bombActionRe  = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)>" triggered "(Got_The_Bomb|Dropped_The_Bomb|Planted_The_Bomb|Defused_The_Bomb)"`)
+	beginDefuseRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)>" triggered "Begin_Bomb_Defuse_(With|Without)_Kit"`)
 
 	// Threw grenade
 	threwRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)>" threw\s+(\w+)`)
@@ -1168,7 +1217,8 @@ func parseLine(line string, state *ServerState) {
 
 	// Game Over: detect mode and add to killfeed
 	// e.g. "Game Over: scrimcomp2v2 mg_active de_dust2 score 2:2 after 3 min"
-	if strings.HasPrefix(strings.TrimSpace(line), "Game Over:") {
+	if strings.Contains(line, "Game Over:") {
+		log.Printf("gametracker %s: detected Game Over line: %q", state.serverName, line)
 		parts := strings.Fields(line)
 		for i, p := range parts {
 			if p == "Over:" && i+1 < len(parts) {
@@ -1190,6 +1240,21 @@ func parseLine(line string, state *ServerState) {
 			}
 		}
 		state.addSystemMessage(msg)
+
+		// Fire game-over callback before stats are reset
+		if state.gameOverFn != nil {
+			score := state.GetScore()
+			scoreboard := state.GetScoreboard()
+			log.Printf("gametracker %s: Game Over — CT %d : %d T, %d rounds, %d players, firing callback",
+				state.serverName, score.CT, score.T, len(score.Rounds), len(scoreboard))
+			go state.gameOverFn(GameOverInfo{
+				ServerName: state.serverName,
+				Score:      score,
+				Players:    scoreboard,
+			})
+		} else {
+			log.Printf("gametracker %s: Game Over — no callback registered", state.serverName)
+		}
 		return
 	}
 
@@ -1273,21 +1338,35 @@ func parseLine(line string, state *ServerState) {
 		state.rounds = append(state.rounds, RoundResult{
 			Round: ct + t, Winner: winner, Reason: reason,
 		})
+		if reason == "defuse" && state.defuser != "" {
+			state.appendKill(Kill{
+				Time: time.Now(), Killer: state.defuser, KillerTeam: state.defuserTeam,
+				Weapon: "defuser", IsSystem: false,
+				Message: "defused the bomb",
+			})
+			state.defuser = ""
+			state.defuserTeam = ""
+		}
 		state.mu.Unlock()
 		state.addSystemMessage(fmt.Sprintf("%s wins — Score: CT %d - %d T", winner, ct, t))
+
+		// Fire round-end callback for live bracket updates
+		if state.roundEndFn != nil {
+			go state.roundEndFn(RoundEndInfo{
+				ServerName: state.serverName, CT: ct, T: t,
+			})
+		}
 		return
 	}
 
-	// MatchStatus: authoritative score and round count
+	// MatchStatus: authoritative score (round count tracked by Round_Start only)
 	if m := matchStatusRe.FindStringSubmatch(line); m != nil {
-		ct, t, rounds := 0, 0, 0
+		ct, t := 0, 0
 		fmt.Sscanf(m[1], "%d", &ct)
 		fmt.Sscanf(m[2], "%d", &t)
-		fmt.Sscanf(m[3], "%d", &rounds)
 		state.mu.Lock()
 		state.ctScore = ct
 		state.tScore = t
-		state.round = rounds
 		state.mu.Unlock()
 		state.notify()
 		return
@@ -1325,8 +1404,9 @@ func parseLine(line string, state *ServerState) {
 			state.resetWithMessage("Warmup Ended - Stats Reset")
 		case "Round_Start":
 			state.mu.Lock()
-			state.round++
 			state.isPaused = false
+			state.defuser = ""
+			state.defuserTeam = ""
 			round := state.round
 			state.mu.Unlock()
 			state.clearWeaponsOnRound()
@@ -1440,6 +1520,15 @@ func parseLine(line string, state *ServerState) {
 	}
 
 	// Bomb actions
+	// Begin defuse — track who is defusing so we can attribute it on SFUI_Notice_Bomb_Defused
+	if m := beginDefuseRe.FindStringSubmatch(line); m != nil {
+		state.mu.Lock()
+		state.defuser = m[1]
+		state.defuserTeam = m[2]
+		state.mu.Unlock()
+		return
+	}
+
 	if m := bombActionRe.FindStringSubmatch(line); m != nil {
 		name, team, action := m[1], m[2], m[3]
 		state.mu.Lock()
@@ -1456,7 +1545,7 @@ func parseLine(line string, state *ServerState) {
 			p.HasBomb = false
 			state.appendKill(Kill{
 				Time: time.Now(), Killer: name, KillerTeam: team,
-				Weapon: "planted_c4", IsSystem: false,
+				Weapon: "c4", IsSystem: false,
 				Message: "planted the bomb",
 			})
 		case "Defused_The_Bomb":

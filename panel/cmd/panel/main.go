@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"cs2-panel/internal/auth"
+	"cs2-panel/internal/db"
 	"cs2-panel/internal/docker"
 	"cs2-panel/internal/gametracker"
 	"cs2-panel/internal/rcon"
@@ -32,6 +33,7 @@ func main() {
 	password := flag.String("password", "", "Panel access password (required)")
 	composeFile := flag.String("compose-file", "./docker-compose.yml", "Path to docker-compose.yml")
 	defaultRCON := flag.String("rcon-default", "changeme", "Default RCON password for new servers")
+	dbPath := flag.String("db", "tournament.db", "Path to SQLite database file")
 	tlsEnabled := flag.Bool("tls", false, "Enable HTTPS with auto-generated self-signed certificate")
 	tlsCert := flag.String("tls-cert", "", "Path to TLS certificate file (optional, auto-generated if not set)")
 	tlsKey := flag.String("tls-key", "", "Path to TLS key file (optional, auto-generated if not set)")
@@ -69,9 +71,15 @@ func main() {
 	)
 	defer tm.StopAll()
 
+	database, err := db.Open(*dbPath)
+	if err != nil {
+		log.Fatalf("database: %v", err)
+	}
+	defer database.Close()
+
 	a := auth.New(*password)
 
-	h, err := web.NewHandler(dc, rm, tm, absCompose, *defaultRCON)
+	h, err := web.NewHandler(dc, rm, tm, database, absCompose, *defaultRCON)
 	if err != nil {
 		log.Fatalf("handler: %v", err)
 	}

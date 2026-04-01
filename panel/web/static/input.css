@@ -1,3 +1,4 @@
 @import "tailwindcss";
 @source "../../web/templates";
 @source "../../web/static/app.js";
+@source "../../web/static/admin.js";

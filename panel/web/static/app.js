@@ -1,1270 +1,198 @@
-// Server status indicator (next to title)
-function setServerStatus(status) {
-    var el = document.getElementById('server-status');
-    if (!el) return;
-    if (!status) {
-        el.classList.add('hidden');
-        el.textContent = '';
-        return;
+// ── Public Bracket Rendering ──
+
+function renderBracketLayout(container, matches, renderFn) {
+    if (!container || !matches.length) return;
+
+    var rounds = {};
+    var maxRound = 0;
+    for (var i = 0; i < matches.length; i++) {
+        var m = matches[i];
+        if (!rounds[m.round]) rounds[m.round] = [];
+        rounds[m.round].push(m);
+        if (m.round > maxRound) maxRound = m.round;
     }
-    el.classList.remove('hidden');
-    el.className = 'text-xs font-medium rounded px-2 py-0.5';
-    if (status === 'stopped') {
-        el.className += ' bg-red-500/20 text-red-400';
-        el.textContent = 'Stopped';
-    } else if (status === 'restarting') {
-        el.className += ' bg-orange-500/20 text-orange-400';
-        el.textContent = 'Restarting\u2026';
-    }
-}
 
-// Log viewer WebSocket
-var _logServerName = null;
-var _logPaused = false;
-var _logBuffer = []; // buffer lines while paused
-var _logShowEvents = false; // show game event lines in log viewer
-var _logRetries = 0;
-var _logMaxRetries = 3;
-
-function connectLogWS(serverName) {
-    if (_serverStopped) return;
-    _logServerName = serverName;
-    _logPaused = false;
-    _logBuffer = [];
-    _lastLogLine = null;
-    updatePauseButton();
-
-    var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var ws = new WebSocket(protocol + '//' + location.host + '/server/' + serverName + '/logs/ws');
-    var output = document.getElementById('log-output');
-    var status = document.getElementById('log-status');
-    var reconnectBtn = document.getElementById('log-reconnect');
-    var _gotError = false;
-
-    if (reconnectBtn) reconnectBtn.classList.add('hidden');
-
-    ws.onopen = function() {
-        console.log('[log-ws] connected to', serverName);
-        _logRetries = 0;
-        if (status) {
-            status.textContent = 'Connected';
-            status.className = 'text-xs text-green-400';
+    var html = '<div class="bracket-grid" style="display:flex;align-items:stretch;gap:0;min-width:max-content">';
+    for (var r = 1; r <= maxRound; r++) {
+        var roundMatches = rounds[r] || [];
+        var roundLabel = r === maxRound ? 'Final' : r === maxRound - 1 ? 'Semis' : 'Round ' + r;
+        html += '<div style="display:flex;flex-direction:column;min-width:220px">';
+        html += '<div class="text-xs text-slate-500 text-center mb-2">' + roundLabel + '</div>';
+        html += '<div style="display:flex;flex-direction:column;justify-content:space-around;flex:1;gap:8px">';
+        for (var j = 0; j < roundMatches.length; j++) {
+            html += renderFn(roundMatches[j]);
         }
-    };
-
-    ws.onmessage = function(e) {
-        // Server sent an error (e.g. container not found) — stop retrying
-        if (typeof e.data === 'string' && e.data.indexOf('Error:') === 0) {
-            console.log('[log-ws] server error:', e.data);
-            _gotError = true;
-            _logRetries = _logMaxRetries;
-            if (status) {
-                status.textContent = 'Disconnected';
-                status.className = 'text-xs text-red-400';
+        html += '</div></div>';
+        // Connector lines between rounds
+        if (r < maxRound) {
+            html += '<div style="display:flex;flex-direction:column;justify-content:space-around;flex:1;width:24px;min-width:24px">';
+            var nextRound = rounds[r + 1] || [];
+            for (var k = 0; k < nextRound.length; k++) {
+                html += '<div style="flex:1;display:flex;flex-direction:column;justify-content:center;position:relative">';
+                html += '<svg style="position:absolute;inset:0;width:100%;height:100%" preserveAspectRatio="none">';
+                html += '<line x1="0" y1="25%" x2="50%" y2="25%" stroke="#475569" stroke-width="1"/>';
+                html += '<line x1="0" y1="75%" x2="50%" y2="75%" stroke="#475569" stroke-width="1"/>';
+                html += '<line x1="50%" y1="25%" x2="50%" y2="75%" stroke="#475569" stroke-width="1"/>';
+                html += '<line x1="50%" y1="50%" x2="100%" y2="50%" stroke="#475569" stroke-width="1"/>';
+                html += '</svg>';
+                html += '</div>';
             }
-            if (reconnectBtn) reconnectBtn.classList.remove('hidden');
-            return;
+            html += '</div>';
         }
-        if (_logPaused) {
-            _logBuffer.push(e.data);
-            if (_logBuffer.length > 2000) _logBuffer.shift();
-            updatePauseButton();
-            return;
-        }
-        appendLogLine(e.data);
-    };
-
-    ws.onclose = function() {
-        if (_serverStopped || _gotError) return;
-        console.log('[log-ws] disconnected, retries=' + _logRetries);
-        if (_logRetries < _logMaxRetries) {
-            _logRetries++;
-            if (status) {
-                status.textContent = 'Reconnecting (' + _logRetries + '/' + _logMaxRetries + ')...';
-                status.className = 'text-xs text-yellow-400';
-            }
-            setTimeout(function() { connectLogWS(serverName); }, 5000);
-        } else {
-            if (status) {
-                status.textContent = 'Disconnected';
-                status.className = 'text-xs text-red-400';
-            }
-            if (reconnectBtn) reconnectBtn.classList.remove('hidden');
-        }
-    };
-
-    ws.onerror = function() {
-        console.log('[log-ws] error');
-    };
-}
-
-function resetLogRetries() {
-    _logRetries = 0;
-}
-
-function setLogStatus(text, className) {
-    var status = document.getElementById('log-status');
-    if (status) {
-        status.textContent = text;
-        status.className = className;
-    }
-}
-
-var _lastLogLine = null; // track last line element for dedup
-
-function appendLogLine(text) {
-    var output = document.getElementById('log-output');
-    if (!output) return;
-
-    // Check for game event prefix
-    var isEvent = false;
-    if (text.substring(0, 2) === 'E:') {
-        isEvent = true;
-        text = text.substring(2);
-    }
-
-    // Hide game events unless toggled on
-    if (isEvent && !_logShowEvents) return;
-
-    // Strip timestamp prefix for dedup comparison (L MM/DD/YYYY - HH:MM:SS: )
-    function stripLogTs(s) {
-        if (s.length > 25 && s.charAt(0) === 'L' && s.charAt(1) === ' ') return s.substring(25);
-        return s;
-    }
-
-    // Deduplicate consecutive identical lines (ignoring timestamps)
-    if (_lastLogLine && stripLogTs(_lastLogLine._logText) === stripLogTs(text)) {
-        _lastLogLine._logCount = (_lastLogLine._logCount || 1) + 1;
-        var badge = _lastLogLine.querySelector('.log-count');
-        if (!badge) {
-            badge = document.createElement('span');
-            badge.className = 'log-count text-yellow-400 ml-2';
-            _lastLogLine.appendChild(badge);
-        }
-        badge.textContent = '[x' + _lastLogLine._logCount + ']';
-        output.scrollTop = output.scrollHeight;
-        return;
-    }
-
-    var line = document.createElement('div');
-    line.textContent = text;
-    line._logText = text;
-    line._logCount = 1;
-    if (isEvent) line.className = 'text-slate-500';
-    output.appendChild(line);
-    _lastLogLine = line;
-
-    while (output.children.length > 5000) {
-        output.removeChild(output.firstChild);
-    }
-    output.scrollTop = output.scrollHeight;
-}
-
-function toggleLogEvents() {
-    _logShowEvents = !_logShowEvents;
-    var btn = document.getElementById('log-events');
-    if (btn) {
-        btn.textContent = _logShowEvents ? 'Hide Events' : 'Raw';
-        btn.className = _logShowEvents
-            ? 'text-xs bg-orange-600 hover:bg-orange-500 text-white rounded px-2 py-1'
-            : 'text-xs bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1';
-    }
-}
-
-function toggleLogPause() {
-    _logPaused = !_logPaused;
-    if (!_logPaused && _logBuffer.length > 0) {
-        // Flush buffered lines
-        for (var i = 0; i < _logBuffer.length; i++) {
-            appendLogLine(_logBuffer[i]);
-        }
-        _logBuffer = [];
-    }
-    updatePauseButton();
-}
-
-function updatePauseButton() {
-    var btn = document.getElementById('log-pause');
-    if (!btn) return;
-    if (_logPaused) {
-        btn.textContent = 'Resume' + (_logBuffer.length > 0 ? ' (' + _logBuffer.length + ')' : '');
-        btn.className = 'text-xs bg-orange-600 hover:bg-orange-500 text-white rounded px-2 py-1';
-    } else {
-        btn.textContent = 'Pause';
-        btn.className = 'text-xs bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1';
-    }
-}
-
-function clearLogs() {
-    var output = document.getElementById('log-output');
-    if (output) output.innerHTML = '';
-    _lastLogLine = null;
-}
-
-function reconnectLogs() {
-    if (_logServerName) {
-        resetLogRetries();
-        appendLogLine('--- Reconnecting... ---');
-        connectLogWS(_logServerName);
-    }
-}
-
-// Dashboard WebSocket
-var _lastDashJSON = '';
-function connectDashboardWS() {
-    var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var ws = new WebSocket(protocol + '//' + location.host + '/api/dashboard/ws');
-
-    ws.onmessage = function(e) {
-        try {
-            var data = JSON.parse(e.data);
-            if (data.type === 'dashboard') {
-                    var key = JSON.stringify(data.servers);
-                    if (key !== _lastDashJSON) {
-                        _lastDashJSON = key;
-                        renderDashboard(data.servers);
-                    }
-                }
-        } catch(err) {}
-    };
-
-    ws.onclose = function() {
-        setTimeout(connectDashboardWS, 3000);
-    };
-}
-
-function renderDashboard(servers) {
-    var el = document.getElementById('dashboard-servers');
-    if (!el) return;
-
-    if (!servers || !servers.length) {
-        el.innerHTML = '<div class="bg-slate-800 border border-slate-700 rounded-lg px-4 py-12 text-center text-slate-500">' +
-            'No servers running. <a href="/launch" class="text-orange-400 hover:underline">Launch one</a>.</div>';
-        return;
-    }
-
-    var html = '';
-    for (var i = 0; i < servers.length; i++) {
-        var s = servers[i];
-        var statusText;
-        if (s.status === 'running') {
-            statusText = '<span class="text-green-400 text-xs">Running</span>';
-        } else if (s.status === 'restarting') {
-            statusText = '<span class="text-orange-400 text-xs">Restarting</span>';
-        } else {
-            statusText = '<span class="text-slate-400 text-xs">' + s.status + '</span>';
-        }
-
-        var mapName = s.map || '-';
-        var scoreHtml = '';
-        if (s.score && (s.score.round > 0 || s.score.ct > 0 || s.score.t > 0)) {
-            scoreHtml = '<div class="flex items-center gap-2 text-xs">' +
-                '<span class="text-blue-400 font-bold">CT ' + s.score.ct + '</span>' +
-                '<span class="text-slate-500">-</span>' +
-                '<span class="text-yellow-400 font-bold">' + s.score.t + ' T</span>' +
-                '<span class="text-slate-500">R' + s.score.round + '</span>' +
-                '</div>';
-        }
-
-        var modeLabel = s.mode ? s.mode.charAt(0).toUpperCase() + s.mode.slice(1) : '-';
-
-        // Card layout (works on all screen sizes)
-        html += '<a href="/server/' + s.name + '" class="block bg-slate-800 border border-slate-700 rounded-lg p-4 hover:bg-slate-700/50 transition-colors">' +
-            '<div class="flex items-center justify-between mb-2">' +
-                '<div class="flex items-center gap-2">' +
-                    '<span class="text-orange-400 font-medium">' + (s.alias || s.name) + '</span>' +
-                    '<span class="text-slate-500 text-xs">:' + s.port + '</span>' +
-                '</div>' +
-                '<div class="flex items-center gap-3">' +
-                    statusText +
-                '</div>' +
-            '</div>' +
-            '<div class="flex items-center justify-between">' +
-                '<div class="flex items-center gap-3 text-xs text-slate-300">' +
-                    '<span>' + modeLabel + '</span>' +
-                    '<span class="flex items-center gap-1"><img src="/static/icons/map/' + mapName + '.svg" class="h-4 w-4 opacity-60 rounded" onerror="this.style.display=\'none\'">' + mapName + '</span>' +
-                    '<span>' + s.playerCount + '/' + s.maxPlayers + ' players</span>' +
-                '</div>' +
-                scoreHtml +
-            '</div>' +
-            '</a>';
-    }
-    el.innerHTML = html;
-}
-
-var _currentGameMode = '';
-var _lastScoreMap = '';
-var _inWarmup = true;
-var _statMode = 0; // 0 = K/D/A/MVP, 1 = HS%/KDR/ADR/EF/UD
-var _statModeLabels = ['Kills Deaths Assists MVPs', 'HS% KDR ADR UD EF'];
-
-// Game state WebSocket (players + killfeed) - renders from JSON client-side
-var _serverStopped = false;
-var _serverRestarting = false;
-
-function connectGameWS(serverName) {
-    var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var ws = new WebSocket(protocol + '//' + location.host + '/server/' + serverName + '/game/ws');
-
-    var _wsConnected = false;
-
-    ws.onopen = function() {
-        _wsConnected = true;
-        console.log('[game-ws] connected to', serverName);
-        if (_serverRestarting) {
-            _serverRestarting = false;
-            setServerStatus(null);
-            // Reconnect log WS too
-            if (_logServerName) connectLogWS(_logServerName);
-        }
-    };
-
-    ws.onmessage = function(e) {
-        try {
-            var data = JSON.parse(e.data);
-            console.log('[game-ws] received:', data.type, data.status || '');
-            switch (data.type) {
-                case 'players':
-                    if (data.score) renderScore(data.score);
-                    renderPlayers(data.players);
-                    break;
-                case 'killfeed':
-                    renderKillfeed(data.killfeed);
-                    break;
-                case 'kill':
-                    appendKills(data.kills);
-                    break;
-                case 'server_status':
-                    if (data.status === 'stopped') {
-                        _serverStopped = true;
-                        setServerStatus('stopped');
-                        setLogStatus('Disconnected', 'text-xs text-red-400');
-                    } else if (data.status === 'restarting') {
-                        _serverRestarting = true;
-                        resetLogRetries();
-                        setServerStatus('restarting');
-                    }
-                    break;
-            }
-        } catch(err) {}
-    };
-
-    ws.onclose = function() {
-        if (_serverStopped) return;
-        // If WS never connected and not restarting, server doesn't exist — redirect
-        if (!_wsConnected && !_serverRestarting) {
-            console.log('[game-ws] server not found, redirecting to dashboard');
-            window.location.href = '/';
-            return;
-        }
-        console.log('[game-ws] closed, reconnecting in 3s...');
-        setTimeout(function() { connectGameWS(serverName); }, 3000);
-    };
-
-    ws.onerror = function(e) {
-        console.log('[game-ws] error:', e);
-    };
-}
-
-function renderScore(score) {
-    var bar = document.getElementById('score-bar');
-    if (!bar) return;
-
-    var modeEl = document.getElementById('score-mode');
-    if (modeEl && score.mode) {
-        modeEl.textContent = score.mode.charAt(0).toUpperCase() + score.mode.slice(1);
-        if (score.mode !== _currentGameMode) {
-            _currentGameMode = score.mode;
-            updateRconMapDropdown(score.mode);
-        }
-    }
-    var mapEl = document.getElementById('score-map');
-    if (mapEl && score.map && score.map !== _lastScoreMap) {
-        _lastScoreMap = score.map;
-        mapEl.innerHTML = '<img src="/static/icons/map/' + score.map + '.svg" class="h-4 w-4 opacity-60 rounded" onerror="this.style.display=\'none\'">' + score.map;
-    }
-    _inWarmup = !!score.warmup;
-
-    var noRounds = _currentGameMode === 'deathmatch' || _currentGameMode === 'armsrace';
-
-    // Show/hide round-based elements
-    var ctEl = document.getElementById('score-ct-wrap');
-    var tEl = document.getElementById('score-t-wrap');
-    var roundEl = document.getElementById('score-round-wrap');
-    if (ctEl) ctEl.style.display = noRounds ? 'none' : '';
-    if (tEl) tEl.style.display = noRounds ? 'none' : '';
-    if (roundEl) roundEl.style.display = noRounds ? 'none' : '';
-
-    if (!noRounds) {
-        document.getElementById('score-ct').textContent = score.ct;
-        document.getElementById('score-t').textContent = score.t;
-        document.getElementById('score-round').textContent = score.round;
-    }
-
-    // Paused badge
-    var pauseEl = document.getElementById('score-paused');
-    if (pauseEl) {
-        pauseEl.style.display = score.paused ? '' : 'none';
-    }
-
-    // Round history bar
-    var histEl = document.getElementById('round-history');
-    if (!histEl) return;
-    if (noRounds || !score.rounds || !score.rounds.length) {
-        histEl.innerHTML = '';
-        histEl.classList.add('hidden');
-        return;
-    }
-    histEl.classList.remove('hidden');
-
-    function roundIcon(r) {
-        var icon = '';
-        switch (r.rs) {
-            case 'elimination': icon = '/static/icons/ui/kill.svg'; break;
-            case 'bomb': icon = '/static/icons/equipment/planted_c4.svg'; break;
-            case 'defuse': icon = '/static/icons/equipment/defuser.svg'; break;
-            case 'time': icon = '/static/icons/ui/timer.svg'; break;
-        }
-        var color = r.w === 'CT' ? 'ct' : 't';
-        var filter = color === 'ct'
-            ? 'filter: brightness(0) saturate(100%) invert(55%) sepia(90%) saturate(500%) hue-rotate(190deg);'
-            : 'filter: brightness(0) saturate(100%) invert(70%) sepia(90%) saturate(400%) hue-rotate(5deg);';
-        return '<img src="' + icon + '" class="h-4 w-4" style="' + filter + '" title="Round ' + r.r + ': ' + r.w + ' (' + r.rs + ')">';
-    }
-
-    var half = score.half || 0;
-    var maxR = score.maxRounds || (half * 2);
-    var blank = '<span class="inline-block w-4 h-4"></span>';
-    var noHalves = _currentGameMode === 'demolition';
-
-    function getPeriod(roundNum) {
-        // Demolition: single section, no halves
-        if (noHalves) return { section: 'reg', idx: 0 };
-        // No half time detected yet — all rounds in first half
-        if (half === 0) return { section: 'reg', idx: 0 };
-        if (roundNum <= half) return { section: 'reg', idx: 0 };
-        if (maxR > 0 && roundNum <= maxR) return { section: 'reg', idx: 1 };
-        // Overtime
-        var otRound = roundNum - maxR; // 1-based within all OT
-        var otNum = Math.ceil(otRound / 6); // which OT (1-based)
-        var withinOT = otRound - (otNum - 1) * 6; // 1-6 within this OT
-        var otHalf = withinOT <= 3 ? 0 : 1; // first or second half of this OT
-        return { section: 'ot', otNum: otNum, idx: otHalf };
-    }
-
-    function ctOnTop(period) {
-        if (noHalves) return true; // Demolition: CT always on top
-        if (period.section === 'reg') return period.idx === 0;
-        return period.idx === 0;
-    }
-
-    // Collect periods in order for rendering
-    var sections = []; // [{label, top, bottom}]
-    var sectionMap = {}; // key -> {top:'', bottom:''}
-
-    function sectionKey(period) {
-        if (period.section === 'reg') return 'reg_' + period.idx;
-        return 'ot' + period.otNum + '_' + period.idx;
-    }
-
-    function ensureSection(period) {
-        var key = sectionKey(period);
-        if (!sectionMap[key]) {
-            var label = '';
-            if (period.section === 'reg' && period.idx === 0 && !noHalves) label = 'First Half';
-            else if (period.section === 'reg' && period.idx === 1) label = 'Second Half';
-            else if (period.section === 'ot' && period.idx === 0) label = 'OT' + period.otNum;
-            sectionMap[key] = { key: key, label: label, top: '', bottom: '' };
-            sections.push(sectionMap[key]);
-        }
-        return sectionMap[key];
-    }
-
-    // Create regulation sections
-    ensureSection({ section: 'reg', idx: 0 });
-    if (!noHalves) ensureSection({ section: 'reg', idx: 1 });
-
-    for (var i = 0; i < score.rounds.length; i++) {
-        var r = score.rounds[i];
-        var period = getPeriod(r.r);
-        var sec = ensureSection(period);
-        var icon = roundIcon(r);
-        var isTop = (r.w === 'CT') === ctOnTop(period);
-
-        if (isTop) {
-            sec.top += icon;
-            sec.bottom += blank;
-        } else {
-            sec.top += blank;
-            sec.bottom += icon;
-        }
-    }
-
-    // Build grid: each section is a column pair (top+bottom), with dividers between
-    var cols = [];
-    for (var s = 0; s < sections.length; s++) {
-        if (s > 0) cols.push('auto'); // divider column
-        cols.push('1fr');
-    }
-    var html = '<div class="grid grid-rows-[auto_1fr_1fr] gap-0.5" style="grid-template-columns:' + cols.join(' ') + '">';
-
-    // Row 0: labels
-    for (var s = 0; s < sections.length; s++) {
-        if (s > 0) html += '<div class="row-span-3 w-px bg-slate-500 mx-0.5"></div>';
-        html += '<div class="text-center text-xs text-slate-500 font-medium px-1">' + (sections[s].label || '') + '</div>';
-    }
-    // Row 1: top (CT started)
-    for (var s = 0; s < sections.length; s++) {
-        var rounding = s === 0 ? ' rounded-tl' : (s === sections.length - 1 ? ' rounded-tr' : '');
-        html += '<div class="flex items-center gap-0.5 px-1.5 py-1 bg-slate-700/30 min-h-6' + rounding + '">' + sections[s].top + '</div>';
-    }
-    // Row 2: bottom (T started)
-    for (var s = 0; s < sections.length; s++) {
-        var rounding = s === 0 ? ' rounded-bl' : (s === sections.length - 1 ? ' rounded-br' : '');
-        html += '<div class="flex items-center gap-0.5 px-1.5 py-1 bg-slate-700/30 min-h-6' + rounding + '">' + sections[s].bottom + '</div>';
     }
     html += '</div>';
-    histEl.innerHTML = html;
+    container.innerHTML = html;
 }
 
-function playerTeamBadge(team) {
-    if (team === 'CT') return '<span class="inline-block px-1.5 py-0.5 rounded text-xs font-bold bg-blue-500/20 text-blue-400">CT</span>';
-    if (team === 'T') return '<span class="inline-block px-1.5 py-0.5 rounded text-xs font-bold bg-yellow-500/20 text-yellow-400">T</span>';
-    return '<span class="text-slate-600 text-xs">-</span>';
+// Format half-time score splits with CT/T coloring
+function formatHalfScores(game) {
+    if (!game.h1ct && !game.h1t && !game.h2ct && !game.h2t) return '';
+    var t1ct = game.t1ct;
+    var h1_t1 = t1ct ? game.h1ct : game.h1t;
+    var h1_t2 = t1ct ? game.h1t : game.h1ct;
+    var h2_t1 = t1ct ? game.h2t : game.h2ct;
+    var h2_t2 = t1ct ? game.h2ct : game.h2t;
+    var ct = 'color:#60a5fa', t = 'color:#facc15';
+    var h1_t1_c = t1ct ? ct : t;
+    var h1_t2_c = t1ct ? t : ct;
+    var h2_t1_c = t1ct ? t : ct;
+    var h2_t2_c = t1ct ? ct : t;
+    return '<span class="text-slate-500 font-mono">(' +
+        '<span style="' + h1_t1_c + '">' + h1_t1 + '</span>:<span style="' + h1_t2_c + '">' + h1_t2 + '</span>' +
+        ' ; ' +
+        '<span style="' + h2_t1_c + '">' + h2_t1 + '</span>:<span style="' + h2_t2_c + '">' + h2_t2 + '</span>' +
+        ')</span>';
 }
 
-function playerEquipIcons(p) {
-    var html = '';
-    if (p.bomb) html += '<img src="/static/icons/equipment/c4.svg" class="h-5 opacity-80" title="C4">';
-    if (p.helmet) html += '<img src="/static/icons/equipment/helmet.svg" class="h-5 opacity-80" title="Helmet">';
-    if (p.armor) html += '<img src="/static/icons/equipment/kevlar.svg" class="h-5 opacity-80" title="Kevlar">';
-    if (p.defuser) html += '<img src="/static/icons/equipment/defuser.svg" class="h-5 opacity-80" title="Defuse Kit">';
-    if (p.weapons) {
-        for (var w = 0; w < p.weapons.length; w++) {
-            html += weaponIcon(p.weapons[w]);
-        }
+function renderPublicBracket(matches) {
+    renderBracketLayout(document.querySelector('.bracket-container'), matches, renderPublicMatch);
+}
+
+function renderPublicMatch(m) {
+    var t1class = m.winner && m.winner === m.team1.id ? 'text-green-400 font-bold' : m.winner && m.winner !== m.team1.id ? 'text-slate-500' : 'text-slate-200';
+    var t2class = m.winner && m.winner === m.team2.id ? 'text-green-400 font-bold' : m.winner && m.winner !== m.team2.id ? 'text-slate-500' : 'text-slate-200';
+    var t1name = m.team1.name || (m.isBye ? '' : 'TBD');
+    var t2name = m.team2.name || (m.isBye ? '' : 'TBD');
+
+    if (m.isBye) {
+        var byeTeam = m.team1.name || m.team2.name || 'BYE';
+        return '<div class="bg-slate-700/30 border border-slate-600/50 rounded p-2 text-xs text-slate-500 text-center italic">' +
+            byeTeam + ' (bye)</div>';
     }
-    if (p.grenades) {
-        for (var g = 0; g < p.grenades.length; g++) {
-            html += '<img src="/static/icons/equipment/' + p.grenades[g] + '.svg" class="h-4 opacity-60" title="' + p.grenades[g] + '" onerror="this.style.display=\'none\'">';
+
+    var boLabel = m.bestOf > 1 ? '<span class="text-xs text-yellow-500">Bo' + m.bestOf + '</span>' : '';
+
+    var html = '<div class="bg-slate-700 border border-slate-600 rounded overflow-hidden">';
+    // Team rows
+    html += '<div class="flex items-center justify-between px-3 py-1.5 border-b border-slate-600/50">';
+    html += '<span class="text-sm ' + t1class + '">' + t1name + '</span>' + boLabel;
+    html += '</div>';
+    html += '<div class="flex items-center justify-between px-3 py-1.5">';
+    html += '<span class="text-sm ' + t2class + '">' + t2name + '</span>';
+    html += '</div>';
+
+    // Game scores
+    if (m.games && m.games.length > 0) {
+        html += '<div class="border-t border-slate-600/50">';
+        for (var g = 0; g < m.games.length; g++) {
+            var game = m.games[g];
+            html += '<div class="px-3 py-1 flex items-center gap-2 text-xs">';
+            html += '<span class="text-slate-400">' + (game.map || 'Game ' + game.num) + '</span>';
+            html += '<span class="text-slate-300 font-mono">' + game.t1 + '-' + game.t2 + '</span>';
+            if (game.status === 'completed') html += formatHalfScores(game);
+            if (game.status === 'live') {
+                html += '<span class="text-orange-400">LIVE</span>';
+                // Connect button for live games
+                var connectCmd = buildConnectCmd(game);
+                if (connectCmd) {
+                    html += '<button onclick="copyConnect(this, \'' + connectCmd.replace(/'/g, "\\'") + '\')" class="ml-auto bg-slate-600 hover:bg-slate-500 text-white rounded px-2 py-0.5 text-xs">Connect</button>';
+                }
+            }
+            if (game.status === 'completed') html += '<span class="text-green-500">&#10003;</span>';
+            // Stats link for completed games
+            if (game.status === 'completed' && game.id) {
+                var statsLabel = (game.map || 'Game ' + game.num) + ' — ' + game.t1 + ':' + game.t2;
+                html += '<button onclick="showMatchStats(' + game.id + ', \'' + statsLabel.replace(/'/g, "\\'") + '\')" class="text-slate-400 hover:text-white ml-auto">Stats</button>';
+            }
+            html += '</div>';
         }
+        html += '</div>';
     }
+    html += '</div>';
     return html;
 }
 
-function renderPlayers(players) {
-    _lastPlayers = players;
-    var el = document.getElementById('player-list');
-    if (!el) return;
+// Show match stats in the section below the bracket
+function showMatchStats(gameId, title) {
+    var section = document.getElementById('match-stats-section');
+    var titleEl = document.getElementById('match-stats-title');
+    var contentEl = document.getElementById('match-stats-content');
+    if (!section || !contentEl) return;
 
-    // Update player count and stat toggle visibility
-    var countEl = document.getElementById('player-count');
-    if (countEl) {
-        var online = 0;
-        for (var c = 0; c < players.length; c++) {
-            var pc = players[c];
-            if (pc.online && pc.team !== 'S' && pc.name !== 'SourceTV' && (!pc.name || pc.name.indexOf('CSTV') === -1)) online++;
-        }
-        countEl.textContent = '(' + online + ')';
-    }
-    var toggleEl = document.getElementById('stat-toggle');
-    if (toggleEl) {
-        toggleEl.style.display = (_currentGameMode === 'armsrace' || _currentGameMode === 'deathmatch') ? 'none' : '';
-    }
+    titleEl.textContent = title || 'Match Stats';
+    contentEl.innerHTML = '<div class="text-sm text-slate-500">Loading...</div>';
+    section.classList.remove('hidden');
+    section.scrollIntoView({behavior: 'smooth', block: 'nearest'});
 
-    if (!players.length) {
-        el.innerHTML = '<div class="px-4 py-8 text-center text-slate-500 text-sm">No players connected</div>';
-        return;
-    }
-
-    // Split players by team
-    var ctPlayers = [], tPlayers = [], spectators = [];
-    for (var i = 0; i < players.length; i++) {
-        var p = players[i];
-        if (p.team === 'CT') ctPlayers.push(p);
-        else if (p.team === 'T') tPlayers.push(p);
-        else spectators.push(p);
-    }
-
-    var showAlive = !_inWarmup && _currentGameMode && _currentGameMode !== 'deathmatch' && _currentGameMode !== 'armsrace';
-
-    var isArmsRace = _currentGameMode === 'armsrace';
-    var isDeathmatch = _currentGameMode === 'deathmatch';
-
-    // Arms race sort moved below after activePlayers is built
-    var statHeaders, statCols, extraHeaders, extraCols;
-
-    if (isArmsRace) {
-        // Arms race: K D A KDR HS% ZeusK KnifeK Lvl — no money or equipment
-        statHeaders = '<th class="px-4 py-2 font-medium text-center" title="Kills">K</th>' +
-            '<th class="px-4 py-2 font-medium text-center" title="Deaths">D</th>' +
-            '<th class="px-4 py-2 font-medium text-center" title="Assists">A</th>' +
-            '<th class="px-4 py-2 font-medium text-center" title="Kill/Death Ratio">KDR</th>' +
-            '<th class="px-4 py-2 font-medium text-center" title="Headshot Percentage">HS%</th>' +
-            '<th class="px-4 py-2 font-medium text-center" title="Zeus Kills">Zeus</th>' +
-            '<th class="px-4 py-2 font-medium text-center" title="Knife Kills">Knife</th>' +
-            '<th class="px-4 py-2 font-medium text-center" title="Level (every 2 kills)">Lvl</th>';
-        statCols = '<col style="width:50px"><col style="width:50px"><col style="width:50px"><col style="width:60px"><col style="width:65px"><col style="width:55px"><col style="width:55px"><col style="width:50px">';
-        extraHeaders = '';
-        extraCols = '';
-    } else if (isDeathmatch) {
-        // Deathmatch: K D A KDR HS% — no money or equipment
-        statHeaders = '<th class="px-4 py-2 font-medium text-center" title="Kills">K</th>' +
-            '<th class="px-4 py-2 font-medium text-center" title="Deaths">D</th>' +
-            '<th class="px-4 py-2 font-medium text-center" title="Assists">A</th>' +
-            '<th class="px-4 py-2 font-medium text-center" title="Kill/Death Ratio">KDR</th>' +
-            '<th class="px-4 py-2 font-medium text-center" title="Headshot Percentage">HS%</th>';
-        statCols = '<col style="width:50px"><col style="width:50px"><col style="width:50px"><col style="width:60px"><col style="width:65px">';
-        extraHeaders = '';
-        extraCols = '';
-    } else if (_statMode === 0) {
-        statHeaders = '<th class="px-4 py-2 font-medium text-center" title="Kills">K</th>' +
-            '<th class="px-4 py-2 font-medium text-center" title="Deaths">D</th>' +
-            '<th class="px-4 py-2 font-medium text-center" title="Assists">A</th>' +
-            '<th class="px-4 py-2 font-medium text-center" title="Most Valuable Player">MVPs</th>';
-        statCols = '<col style="width:50px"><col style="width:50px"><col style="width:50px"><col style="width:50px">';
-        extraHeaders = '<th class="px-4 py-2 font-medium text-right">Money</th><th class="px-4 py-2 font-medium">Equipment</th>';
-        extraCols = '<col style="width:80px"><col>';
-    } else {
-        statHeaders = '<th class="px-4 py-2 font-medium text-center" title="Headshot Percentage">HS%</th>' +
-            '<th class="px-4 py-2 font-medium text-center" title="Kill/Death Ratio">KDR</th>' +
-            '<th class="px-4 py-2 font-medium text-center" title="Average Damage per Round">ADR</th>' +
-            '<th class="px-4 py-2 font-medium text-center" title="Enemies Flashed">EF</th>' +
-            '<th class="px-4 py-2 font-medium text-center" title="Utility Damage">UD</th>';
-        statCols = '<col style="width:75px"><col style="width:60px"><col style="width:60px"><col style="width:50px"><col style="width:50px">';
-        extraHeaders = '<th class="px-4 py-2 font-medium text-right">Money</th><th class="px-4 py-2 font-medium">Equipment</th>';
-        extraCols = '<col style="width:80px"><col>';
-    }
-
-    var tableHeader = '<colgroup><col>' + statCols + extraCols +
-        '<col style="width:60px"></colgroup>' +
-        '<tr class="border-b border-slate-700 text-slate-400 text-left">' +
-        '<th class="px-4 py-2 font-medium">Name</th>' +
-        statHeaders + extraHeaders +
-        '<th class="px-4 py-2 font-medium">Ping</th>' +
-        '</tr>';
-
-    function statCells(p) {
-        if (isArmsRace) {
-            var lvl = p.level || 0;
-            return '<td class="px-4 py-2 text-green-400 text-center">' + p.k + '</td>' +
-                '<td class="px-4 py-2 text-red-400 text-center">' + p.d + '</td>' +
-                '<td class="px-4 py-2 text-yellow-400 text-center">' + p.a + '</td>' +
-                '<td class="px-4 py-2 text-slate-300 text-center">' + (p.kdr ? p.kdr.toFixed(2) : '-') + '</td>' +
-                '<td class="px-4 py-2 text-slate-300 text-center">' + (p.hsp ? p.hsp.toFixed(1) + '%' : '-') + '</td>' +
-                '<td class="px-4 py-2 text-slate-300 text-center">' + (p.zeusk || 0) + '</td>' +
-                '<td class="px-4 py-2 text-slate-300 text-center">' + (p.knifek || 0) + '</td>' +
-                '<td class="px-4 py-2 text-orange-400 text-center font-medium">' + lvl + '</td>';
-        }
-        if (isDeathmatch) {
-            return '<td class="px-4 py-2 text-green-400 text-center">' + p.k + '</td>' +
-                '<td class="px-4 py-2 text-red-400 text-center">' + p.d + '</td>' +
-                '<td class="px-4 py-2 text-yellow-400 text-center">' + p.a + '</td>' +
-                '<td class="px-4 py-2 text-slate-300 text-center">' + (p.kdr ? p.kdr.toFixed(2) : '-') + '</td>' +
-                '<td class="px-4 py-2 text-slate-300 text-center">' + (p.hsp ? p.hsp.toFixed(1) + '%' : '-') + '</td>';
-        }
-        if (_statMode === 0) {
-            return '<td class="px-4 py-2 text-green-400 text-center">' + p.k + '</td>' +
-                '<td class="px-4 py-2 text-red-400 text-center">' + p.d + '</td>' +
-                '<td class="px-4 py-2 text-yellow-400 text-center">' + p.a + '</td>' +
-                '<td class="px-4 py-2 text-slate-300 text-center">' + (p.mvp || 0) + '</td>';
-        }
-        return '<td class="px-4 py-2 text-slate-300 text-center">' + (p.hsp ? p.hsp.toFixed(1) + '%' : '-') + '</td>' +
-            '<td class="px-4 py-2 text-slate-300 text-center">' + (p.kdr ? p.kdr.toFixed(2) : '-') + '</td>' +
-            '<td class="px-4 py-2 text-slate-300 text-center">' + (p.adr ? p.adr.toFixed(0) : '-') + '</td>' +
-            '<td class="px-4 py-2 text-slate-300 text-center">' + (p.ef || 0) + '</td>' +
-            '<td class="px-4 py-2 text-slate-300 text-center">' + (p.ud ? p.ud.toFixed(0) : '0') + '</td>';
-    }
-
-    function extraCells(p) {
-        if (isArmsRace || isDeathmatch) return '';
-        var money = p.money ? '$' + p.money.toLocaleString() : '';
-        var equip = playerEquipIcons(p);
-        return '<td class="px-4 py-2 text-green-300 text-right font-mono text-xs">' + money + '</td>' +
-            '<td class="px-4 py-2"><div class="flex flex-wrap items-center gap-1.5">' + equip + '</div></td>';
-    }
-
-    function playerRow(p) {
-        var isDead = showAlive && p.online && !p.alive;
-        var opacity = !p.online ? ' opacity-50' : (isDead ? ' opacity-40' : '');
-        var name = p.name;
-        if (p.bot) name = '<span class="text-slate-400">(BOT)</span> ' + name;
-        if (!p.online) name += ' <span class="text-slate-500 text-xs">(offline)</span>';
-        if (isDead) name += ' <img src="/static/icons/ui/kill.svg" class="h-3.5 inline-block opacity-50" title="Dead">';
-        var ping = !p.online ? '-' : (p.bot ? '-' : p.ping + 'ms');
-        var noTeamSplit = isArmsRace || isDeathmatch;
-        var rowClasses = noTeamSplit ? '' : 'border-b border-slate-700/50';
-        var nameColor = noTeamSplit ? teamColor(p.team) : 'text-white';
-        return '<tr class="' + rowClasses + opacity + '">' +
-            '<td class="px-4 py-2 ' + nameColor + '">' + name + '</td>' +
-            statCells(p) + extraCells(p) +
-            '<td class="px-4 py-2 text-slate-300">' + ping + '</td>' +
-            '</tr>';
-    }
-
-    function playerCard(p) {
-        var isDead = showAlive && p.online && !p.alive;
-        var opacity = !p.online ? ' opacity-50' : (isDead ? ' opacity-40' : '');
-        var name = p.name;
-        if (p.bot) name = '<span class="text-slate-400">(BOT)</span> ' + name;
-        if (!p.online) name += ' <span class="text-slate-500 text-xs">(offline)</span>';
-        if (isDead) name += ' <img src="/static/icons/ui/kill.svg" class="h-3.5 inline-block opacity-50" title="Dead">';
-        var noEconMode = isArmsRace || isDeathmatch;
-        var money = !noEconMode && p.money ? '$' + p.money.toLocaleString() : '';
-        var ping = !p.online ? '-' : (p.bot ? '-' : p.ping + 'ms');
-        var equip = noEconMode ? '' : playerEquipIcons(p);
-        var borderColor = noEconMode ? '' : (p.team === 'CT' ? ' border-l-2 border-blue-400' : (p.team === 'T' ? ' border-l-2 border-yellow-400' : ''));
-        var cardNameColor = noEconMode ? teamColor(p.team) : 'text-white';
-
-        var statsHtml;
-        if (isDeathmatch) {
-            statsHtml = '<span class="text-green-400">K: ' + p.k + '</span>' +
-                '<span class="text-red-400">D: ' + p.d + '</span>' +
-                '<span class="text-yellow-400">A: ' + p.a + '</span>' +
-                '<span class="text-slate-300">KDR: ' + (p.kdr ? p.kdr.toFixed(2) : '-') + '</span>' +
-                '<span class="text-slate-300">HS: ' + (p.hsp ? p.hsp.toFixed(1) + '%' : '-') + '</span>';
-        } else if (isArmsRace) {
-            statsHtml = '<span class="text-green-400">K: ' + p.k + '</span>' +
-                '<span class="text-red-400">D: ' + p.d + '</span>' +
-                '<span class="text-yellow-400">A: ' + p.a + '</span>' +
-                '<span class="text-slate-300">KDR: ' + (p.kdr ? p.kdr.toFixed(2) : '-') + '</span>' +
-                '<span class="text-slate-300">HS: ' + (p.hsp ? p.hsp.toFixed(1) + '%' : '-') + '</span>' +
-                '<span class="text-slate-300">Zeus: ' + (p.zeusk || 0) + '</span>' +
-                '<span class="text-slate-300">Knife: ' + (p.knifek || 0) + '</span>' +
-                '<span class="text-orange-400">Lvl: ' + (p.level || 0) + '</span>';
-        } else if (_statMode === 0) {
-            statsHtml = '<span class="text-green-400">K: ' + p.k + '</span>' +
-                '<span class="text-red-400">D: ' + p.d + '</span>' +
-                '<span class="text-yellow-400">A: ' + p.a + '</span>' +
-                '<span class="text-slate-300">MVP: ' + (p.mvp || 0) + '</span>';
-        } else {
-            statsHtml = '<span class="text-slate-300">HS: ' + (p.hsp ? p.hsp.toFixed(1) + '%' : '-') + '</span>' +
-                '<span class="text-slate-300">KDR: ' + (p.kdr ? p.kdr.toFixed(2) : '-') + '</span>' +
-                '<span class="text-slate-300">ADR: ' + (p.adr ? p.adr.toFixed(0) : '-') + '</span>' +
-                '<span class="text-slate-300">EF: ' + (p.ef || 0) + '</span>' +
-                '<span class="text-slate-300">UD: ' + (p.ud ? p.ud.toFixed(0) : '0') + '</span>';
-        }
-
-        return '<div class="bg-slate-700/30 rounded-lg p-3' + opacity + borderColor + '">' +
-            '<div class="flex items-center gap-2 mb-1.5">' +
-                '<span class="' + cardNameColor + ' text-sm font-medium flex-1">' + name + '</span>' +
-                (money ? '<span class="text-green-300 font-mono text-xs">' + money + '</span>' : '') +
-                '<span class="text-slate-400 text-xs">' + ping + '</span>' +
-            '</div>' +
-            '<div class="flex items-center gap-3 mb-2 text-xs">' + statsHtml + '</div>' +
-            (equip ? '<div class="flex flex-wrap items-center gap-1.5">' + equip + '</div>' : '') +
-            '</div>';
-    }
-
-    // Desktop: single table
-    var html = '<table class="w-full text-sm hidden sm:table" style="table-layout:fixed">' + tableHeader + '<tbody>';
-
-    var totalCols = isArmsRace ? 10 : (isDeathmatch ? 7 : (_statMode === 0 ? 8 : 9));
-
-    var activePlayers = ctPlayers.concat(tPlayers);
-    if (isArmsRace) {
-        activePlayers.sort(function(a, b) {
-            var la = a.level || 0, lb = b.level || 0;
-            if (la !== lb) return lb - la;
-            return b.k - a.k;
+    fetch('/bracket/game/' + gameId + '/stats')
+        .then(function(r) { return r.text(); })
+        .then(function(html) {
+            contentEl.innerHTML = html;
+        })
+        .catch(function() {
+            contentEl.innerHTML = '<div class="text-sm text-red-400">Failed to load stats.</div>';
         });
-    } else if (isDeathmatch) {
-        activePlayers.sort(function(a, b) {
-            // Sort by kills desc, then deaths asc, then assists desc
-            if (a.k !== b.k) return b.k - a.k;
-            if (a.d !== b.d) return a.d - b.d;
-            return b.a - a.a;
-        });
-    }
-    if (isArmsRace || isDeathmatch) {
-        // Flat list, team color on player name
-        for (var i = 0; i < activePlayers.length; i++) html += playerRow(activePlayers[i]);
-    } else {
-        if (ctPlayers.length) {
-            html += '<tr><td colspan="' + totalCols + '" class="px-4 py-1.5 text-xs font-bold text-blue-400 bg-blue-500/5 border-l-2 border-blue-400">Counter-Terrorists</td></tr>';
-            for (var i = 0; i < ctPlayers.length; i++) html += playerRow(ctPlayers[i]);
-        }
-
-        if (tPlayers.length) {
-            html += '<tr><td colspan="' + totalCols + '" class="px-4 py-1.5 text-xs font-bold text-yellow-400 bg-yellow-500/5 border-l-2 border-yellow-400">Terrorists</td></tr>';
-            for (var i = 0; i < tPlayers.length; i++) html += playerRow(tPlayers[i]);
-        }
-
-    }
-
-    if (spectators.length) {
-        html += '<tr><td colspan="' + totalCols + '" class="px-4 py-1.5 text-xs font-medium text-slate-500 bg-slate-700/20">Spectators (' + spectators.length + ')</td></tr>';
-        for (var i = 0; i < spectators.length; i++) {
-            var sp = spectators[i];
-            var ping = !sp.online ? '-' : (sp.bot ? '-' : sp.ping + 'ms');
-            html += '<tr class="opacity-50"><td class="px-4 py-2 text-slate-400">' + sp.name + '</td>' +
-                '<td colspan="' + (totalCols - 2) + '"></td>' +
-                '<td class="px-4 py-2 text-slate-500">' + ping + '</td></tr>';
-        }
-    }
-
-    html += '</tbody></table>';
-
-    // Mobile cards
-    html += '<div class="sm:hidden space-y-2 p-3">';
-    if (isArmsRace || isDeathmatch) {
-        for (var i = 0; i < activePlayers.length; i++) html += playerCard(activePlayers[i]);
-    } else {
-        if (ctPlayers.length) {
-            html += '<div class="text-xs font-bold text-blue-400 px-1 pb-1">Counter-Terrorists</div>';
-            for (var i = 0; i < ctPlayers.length; i++) html += playerCard(ctPlayers[i]);
-        }
-        if (tPlayers.length) {
-            if (ctPlayers.length) html += '<div class="border-t border-slate-700 my-2"></div>';
-            html += '<div class="text-xs font-bold text-yellow-400 px-1 pb-1">Terrorists</div>';
-            for (var i = 0; i < tPlayers.length; i++) html += playerCard(tPlayers[i]);
-        }
-    }
-    if (spectators.length) {
-        html += '<div class="border-t border-slate-700 my-2"></div>';
-        html += '<div class="text-xs font-medium text-slate-500 px-1 pb-1">Spectators (' + spectators.length + ')</div>';
-        for (var i = 0; i < spectators.length; i++) {
-            var sp = spectators[i];
-            var ping = !sp.online ? '-' : (sp.bot ? '-' : sp.ping + 'ms');
-            html += '<div class="bg-slate-700/20 rounded-lg p-3 opacity-50">' +
-                '<div class="flex items-center gap-2">' +
-                    '<span class="text-slate-400 text-sm flex-1">' + sp.name + '</span>' +
-                    '<span class="text-slate-500 text-xs">' + ping + '</span>' +
-                '</div></div>';
-        }
-    }
-    html += '</div>';
-
-    el.innerHTML = html;
 }
 
-function renderKillfeed(killfeed) {
-    var el = document.getElementById('killfeed');
-    if (!el) return;
-
-    if (!killfeed.length) {
-        el.innerHTML = '<div class="px-4 py-8 text-center text-slate-500 text-sm">No kills yet</div>';
-        return;
-    }
-
-    var html = '<div class="space-y-1.5 p-4 text-sm killfeed-inner">';
-    for (var i = 0; i < killfeed.length; i++) {
-        html += renderKillEntry(killfeed[i]);
-    }
-    html += '</div>';
-    el.innerHTML = html;
+function closeMatchStats() {
+    var section = document.getElementById('match-stats-section');
+    if (section) section.classList.add('hidden');
 }
 
-var _weaponAliases = {'c4': 'planted_c4', 'weapon_c4': 'planted_c4'};
-
-function weaponIcon(weapon) {
-    if (!weapon) return '';
-    var file = _weaponAliases[weapon] || weapon;
-    return '<img src="/static/icons/equipment/' + file + '.svg" alt="' + weapon + '" class="h-4 inline-block opacity-80" onerror="this.style.display=\'none\'">';
+// Build connect command string for a live game
+function buildConnectCmd(game) {
+    var ip = (typeof _serverIP !== 'undefined') ? _serverIP : '';
+    var pw = (typeof _serverPassword !== 'undefined') ? _serverPassword : '';
+    if (!ip || !game.port) return '';
+    var cmd = 'connect ' + ip + ':' + game.port;
+    if (pw) cmd += '; password ' + pw;
+    return cmd;
 }
 
-function teamColor(team) {
-    if (team === 'CT') return 'text-blue-400';
-    if (team === 'T') return 'text-yellow-400';
-    return 'text-white';
+// Copy connect command and show "Copied!" feedback
+function copyConnect(btn, cmd) {
+    navigator.clipboard.writeText(cmd);
+    var orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    btn.classList.remove('bg-slate-600');
+    btn.classList.add('bg-green-600');
+    setTimeout(function() {
+        btn.textContent = orig;
+        btn.classList.remove('bg-green-600');
+        btn.classList.add('bg-slate-600');
+    }, 2000);
 }
 
-function renderKillEntry(k) {
-    if (k.sys) {
-        return '<div class="flex items-center gap-2 py-1">' +
-            '<span class="flex-1 border-t border-slate-600"></span>' +
-            '<span class="text-orange-400 text-xs font-medium">' + k.msg + '</span>' +
-            '<span class="flex-1 border-t border-slate-600"></span>' +
-            '<span class="text-slate-600 text-xs">' + k.time + '</span>' +
-            '</div>';
-    }
-    // Action event (bomb plant, defuse) — has killer + message + weapon icon, no victim
-    if (k.msg && k.killer && !k.victim) {
-        return '<div class="flex items-center gap-2">' +
-            '<span class="' + teamColor(k.kt) + ' text-xs">' + k.killer + '</span>' +
-            '<span class="flex items-center gap-1">' + weaponIcon(k.weapon) + '</span>' +
-            '<span class="text-slate-400 text-xs">' + k.msg + '</span>' +
-            '<span class="text-slate-600 text-xs ml-auto">' + k.time + '</span>' +
-            '</div>';
-    }
-    // No killer (bomb kill, world kill)
-    if (!k.killer) {
-        return '<div class="flex items-center gap-2">' +
-            '<span class="flex items-center gap-1">' + weaponIcon(k.weapon) + '</span>' +
-            '<span class="' + teamColor(k.vt) + ' text-xs">' + k.victim + '</span>' +
-            '<span class="text-slate-600 text-xs ml-auto">' + k.time + '</span>' +
-            '</div>';
-    }
-    if (k.killer && k.killer === k.victim) {
-        var tc = teamColor(k.vt);
-        return '<div class="flex items-center gap-2">' +
-            '<span class="' + tc + ' text-xs">' + k.victim + '</span>' +
-            '<img src="/static/icons/deathnotice/icon_suicide.svg" class="h-4 inline-block opacity-80" alt="suicide">' +
-            '<span class="flex items-center gap-1">' + weaponIcon(k.weapon) + '</span>' +
-            '<span class="text-slate-600 text-xs ml-auto">' + k.time + '</span>' +
-            '</div>';
-    }
-    function dnIcon(src, alt) { return '<img src="/static/icons/deathnotice/' + src + '" class="h-3.5 inline-block opacity-80" alt="' + alt + '">'; }
+// ── Bracket Live Updates via WebSocket ──
 
-    // [blind] killer + [flash assist] assist [in air] weapon [noscope] [through smoke] [wallbang] [headshot] victim
-    var blindIcon = k.bk ? dnIcon('blind_kill.svg', 'Blind Kill') + ' ' : '';
-    var flashAssistIcon = (k.assist && k.fa) ? '<img src="/static/icons/equipment/flashbang_assist.svg" class="h-3.5 inline-block opacity-80" alt="Flash Assist"> ' : '';
-    var killerSide = blindIcon + '<span class="' + teamColor(k.kt) + ' text-xs">' + k.killer + '</span>';
-    if (k.assist) {
-        killerSide += '<span class="text-slate-500 text-xs"> + </span>' + flashAssistIcon + '<span class="' + teamColor(k.at) + ' text-xs">' + k.assist + '</span>';
-    }
+function connectBracketWS() {
+    var container = document.querySelector('.bracket-container');
+    if (!container) return;
 
-    var inAirIcon = k.ia ? dnIcon('inairkill.svg', 'In Air') + ' ' : '';
-    var weaponHtml = inAirIcon + weaponIcon(k.weapon);
-    if (k.ns) weaponHtml += ' ' + dnIcon('noscope.svg', 'Noscope');
-    if (k.ts) weaponHtml += ' ' + dnIcon('smoke_kill.svg', 'Through Smoke');
-    if (k.wb) weaponHtml += ' ' + dnIcon('penetrate.svg', 'Wallbang');
-    if (k.hs) weaponHtml += ' ' + dnIcon('icon_headshot.svg', 'Headshot');
+    var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var ws = new WebSocket(protocol + '//' + location.host + '/bracket/ws');
 
-    return '<div class="flex items-center gap-2">' +
-        '<span class="flex items-center gap-1">' + killerSide + '</span>' +
-        '<span class="flex items-center gap-1">' + weaponHtml + '</span>' +
-        (k.victim === 'chicken'
-            ? '<img src="/static/icons/ui/zoo.svg" class="h-4 inline-block opacity-80" title="Chicken">'
-            : '<span class="' + teamColor(k.vt) + ' text-xs">' + k.victim + '</span>') +
-        '<span class="text-slate-600 text-xs ml-auto">' + k.time + '</span>' +
-        '</div>';
-}
-
-function appendKills(kills) {
-    var el = document.getElementById('killfeed');
-    if (!el) return;
-
-    var container = el.querySelector('.killfeed-inner');
-    if (!container) {
-        el.innerHTML = '<div class="space-y-1.5 p-4 text-sm killfeed-inner"></div>';
-        container = el.querySelector('.killfeed-inner');
-    }
-
-    for (var i = 0; i < kills.length; i++) {
-        var wrapper = document.createElement('div');
-        wrapper.innerHTML = renderKillEntry(kills[i]);
-        var entry = wrapper.firstChild;
-        container.insertBefore(entry, container.firstChild);
-    }
-
-    // Cap at 20 entries
-    while (container.children.length > 20) {
-        container.removeChild(container.lastChild);
-    }
-}
-
-
-// RCON quick action buttons
-var _rconServerName = '';
-
-function rconQuick(cmds) {
-    if (!_rconServerName) return;
-    var commands = cmds.split(';');
-    var output = document.getElementById('rcon-output');
-
-    function sendNext(i) {
-        if (i >= commands.length) return;
-        var cmd = commands[i].trim();
-        if (!cmd) { sendNext(i + 1); return; }
-
-        fetch('/server/' + _rconServerName + '/rcon', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'command=' + encodeURIComponent(cmd)
-        }).then(function(r) { return r.text(); }).then(function(html) {
-            if (output) {
-                output.insertAdjacentHTML('beforeend', html);
-                output.scrollTop = output.scrollHeight;
+    ws.onmessage = function(e) {
+        try {
+            var data = JSON.parse(e.data);
+            if (data.type === 'bracket' && data.bracket) {
+                renderPublicBracket(data.bracket);
             }
-            sendNext(i + 1);
-        });
-    }
-    sendNext(0);
-}
-
-function rconQuickMode() {
-    var modeSel = document.getElementById('rcon-mode-select');
-    var mapSel = document.getElementById('rcon-map-select');
-    if (!modeSel || !modeSel.value || !mapSel || !mapSel.value) return;
-    // Set game_type/game_mode cvars then changelevel to apply
-    var modes = {
-        competitive: 'game_type 0;game_mode 1',
-        casual:      'game_type 0;game_mode 0',
-        wingman:     'game_type 0;game_mode 2',
-        armsrace:    'game_type 1;game_mode 0',
-        demolition:  'game_type 1;game_mode 1',
-        deathmatch:  'game_type 1;game_mode 2'
+        } catch(err) {}
     };
-    var cvars = modes[modeSel.value];
-    if (cvars) rconQuick(cvars + ';changelevel ' + mapSel.value);
+
+    ws.onclose = function() {
+        setTimeout(connectBracketWS, 5000);
+    };
 }
 
-function rconQuickMap() {
-    var sel = document.getElementById('rcon-map-select');
-    if (sel && sel.value) rconQuick('changelevel ' + sel.value);
-}
-
-function updateRconMapDropdown(mode) {
-    var sel = document.getElementById('rcon-map-select');
-    if (!sel) return;
-    var current = sel.value;
-    var preferred = _mapPools[mode || _currentGameMode] || _allMaps;
-    var preferredSet = {};
-    for (var i = 0; i < preferred.length; i++) preferredSet[preferred[i]] = true;
-
-    // Other maps not in the preferred pool
-    var others = [];
-    for (var j = 0; j < _allMaps.length; j++) {
-        if (!preferredSet[_allMaps[j]]) others.push(_allMaps[j]);
-    }
-
-    sel.innerHTML = '';
-    // Preferred maps first
-    for (var i = 0; i < preferred.length; i++) {
-        var opt = document.createElement('option');
-        opt.value = preferred[i];
-        opt.textContent = preferred[i];
-        if (preferred[i] === current) opt.selected = true;
-        sel.appendChild(opt);
-    }
-    // Divider + other maps
-    if (others.length) {
-        var divider = document.createElement('option');
-        divider.disabled = true;
-        divider.textContent = '───────────';
-        sel.appendChild(divider);
-        for (var k = 0; k < others.length; k++) {
-            var opt = document.createElement('option');
-            opt.value = others[k];
-            opt.textContent = others[k];
-            if (others[k] === current) opt.selected = true;
-            sel.appendChild(opt);
-        }
-    }
-}
-
-function initRconMapDropdown() {
-    updateRconMapDropdown();
-    // Update map list when mode dropdown changes
-    var modeSel = document.getElementById('rcon-mode-select');
-    if (modeSel) {
-        modeSel.addEventListener('change', function() {
-            updateRconMapDropdown(modeSel.value);
-        });
-    }
-}
-
-// Map pools by game mode
-var _mapPools = {
-    competitive: ['de_ancient', 'de_anubis', 'de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_overpass', 'de_vertigo'],
-    casual: ['de_ancient', 'de_anubis', 'de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_overpass', 'de_vertigo', 'cs_italy', 'cs_office'],
-    deathmatch: ['de_ancient', 'de_anubis', 'de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_overpass', 'de_vertigo'],
-    armsrace: ['ar_baggage', 'ar_pool_day', 'ar_shoots'],
-    demolition: ['ar_baggage', 'ar_pool_day', 'ar_shoots'],
-    wingman: ['de_ancient', 'de_anubis', 'de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_overpass', 'de_vertigo']
-};
-var _allMaps = ['de_ancient', 'de_anubis', 'de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_overpass', 'de_vertigo',
-    'cs_alpine', 'cs_italy', 'cs_office', 'ar_baggage', 'ar_pool_day', 'ar_shoots',
-    'de_ancient_night', 'ar_shoots_night', 'de_poseidon', 'de_sanctum', 'de_stronghold', 'de_warden'];
-
-// RCON autocomplete
-var _rconCommands = [
-    // Server management
-    'status', 'stats', 'quit', 'restart', 'mp_restartgame 1',
-    // Map
-    'changelevel', 'maps *',
-    // Players
-    'kick', 'kickid', 'banid', 'users',
-    // Bots
-    'bot_add', 'bot_add_ct', 'bot_add_t', 'bot_kick', 'bot_kill',
-    'bot_difficulty 0', 'bot_difficulty 1', 'bot_difficulty 2', 'bot_difficulty 3',
-    'bot_quota', 'bot_stop 1', 'bot_stop 0', 'bot_knives_only',
-    // Match
-    'mp_restartgame 1', 'mp_warmup_end', 'mp_warmup_start',
-    'mp_warmuptime', 'mp_maxrounds', 'mp_overtime_enable 1',
-    'mp_halftime_pausetimer 1', 'mp_match_can_clinch 1',
-    // Gameplay
-    'mp_roundtime', 'mp_roundtime_defuse', 'mp_freezetime',
-    'mp_buytime', 'mp_buy_anywhere 1', 'mp_startmoney',
-    'mp_free_armor 1', 'mp_free_armor 0',
-    'mp_death_drop_gun 1', 'mp_death_drop_grenade 1',
-    'sv_cheats 1', 'sv_cheats 0', 'noclip', 'god',
-    'give weapon_ak47', 'give weapon_awp', 'give weapon_m4a1',
-    'mp_autoteambalance 0', 'mp_autoteambalance 1',
-    'mp_limitteams 0',
-    // Economy
-    'mp_startmoney 16000', 'mp_startmoney 800',
-    'mp_afterroundmoney 0', 'cash_team_bonus_shorthanded 0',
-    // Logging
-    'log on', 'log off', 'sv_logecho 1', 'sv_logecho 0', 'mp_logdetail 3',
-    // Practice
-    'sv_infinite_ammo 1', 'sv_infinite_ammo 0',
-    'sv_grenade_trajectory_prac_pipreview 1',
-    'mp_roundtime_defuse 60', 'mp_freezetime 0', 'mp_buytime 99999',
-    'sv_showimpacts 1', 'sv_showimpacts 0',
-    // Pause
-    'mp_pause_match', 'mp_unpause_match', 'pause', 'unpause',
-    // Say
-    'say', 'say_team',
-    // Exec
-    'exec', 'exec gamemode_competitive', 'exec gamemode_casual', 'exec gamemode_deathmatch',
-];
-// Add changelevel for all maps
-for (var mi = 0; mi < _allMaps.length; mi++) _rconCommands.push('changelevel ' + _allMaps[mi]);
-
-var _rconHistory = [];
-var _rconSelectedIdx = -1;
-
-function initRconAutocomplete() {
-    var input = document.getElementById('rcon-input');
-    var suggestions = document.getElementById('rcon-suggestions');
-    if (!input || !suggestions) return;
-
-    input.addEventListener('input', function() {
-        var val = input.value.trim().toLowerCase();
-        if (val.length === 0) {
-            suggestions.classList.add('hidden');
-            return;
-        }
-        var matches = getMatches(val);
-        if (matches.length === 0) {
-            suggestions.classList.add('hidden');
-            return;
-        }
-        renderSuggestions(matches);
-        suggestions.classList.remove('hidden');
-        _rconSelectedIdx = -1;
-    });
-
-    input.addEventListener('keydown', function(e) {
-        var items = suggestions.querySelectorAll('.rcon-suggestion');
-        if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            _rconSelectedIdx = Math.min(_rconSelectedIdx + 1, items.length - 1);
-            updateSelection(items);
-        } else if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            _rconSelectedIdx = Math.max(_rconSelectedIdx - 1, -1);
-            updateSelection(items);
-        } else if (e.key === 'Tab' || (e.key === 'Enter' && _rconSelectedIdx >= 0)) {
-            if (_rconSelectedIdx >= 0 && items.length > 0) {
-                e.preventDefault();
-                input.value = items[_rconSelectedIdx].dataset.cmd;
-                suggestions.classList.add('hidden');
-                _rconSelectedIdx = -1;
-                if (e.key === 'Tab') input.focus();
-            }
-        } else if (e.key === 'Escape') {
-            suggestions.classList.add('hidden');
-            _rconSelectedIdx = -1;
-        }
-    });
-
-    // Hide on blur (slight delay so clicks on suggestions register)
-    input.addEventListener('blur', function() {
-        setTimeout(function() { suggestions.classList.add('hidden'); }, 150);
-    });
-}
-
-function getMatches(query) {
-    var seen = {};
-    var results = [];
-    // History first (most recent)
-    for (var i = _rconHistory.length - 1; i >= 0; i--) {
-        var cmd = _rconHistory[i];
-        if (cmd.toLowerCase().indexOf(query) === 0 && !seen[cmd]) {
-            seen[cmd] = true;
-            results.push({cmd: cmd, isHistory: true});
-        }
-    }
-    // Then built-in commands
-    for (var j = 0; j < _rconCommands.length; j++) {
-        var c = _rconCommands[j];
-        if (c.toLowerCase().indexOf(query) === 0 && !seen[c]) {
-            seen[c] = true;
-            results.push({cmd: c, isHistory: false});
-        }
-    }
-    return results.slice(0, 12);
-}
-
-function renderSuggestions(matches) {
-    var suggestions = document.getElementById('rcon-suggestions');
-    suggestions.innerHTML = '';
-    for (var i = 0; i < matches.length; i++) {
-        var div = document.createElement('div');
-        div.className = 'rcon-suggestion px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-600 cursor-pointer flex items-center justify-between';
-        div.dataset.cmd = matches[i].cmd;
-        div.textContent = matches[i].cmd;
-        if (matches[i].isHistory) {
-            var badge = document.createElement('span');
-            badge.className = 'text-xs text-slate-500';
-            badge.textContent = 'recent';
-            div.appendChild(badge);
-        }
-        div.addEventListener('mousedown', function(e) {
-            e.preventDefault();
-            var input = document.getElementById('rcon-input');
-            input.value = this.dataset.cmd;
-            document.getElementById('rcon-suggestions').classList.add('hidden');
-            input.focus();
-        });
-        suggestions.appendChild(div);
-    }
-}
-
-function updateSelection(items) {
-    for (var i = 0; i < items.length; i++) {
-        if (i === _rconSelectedIdx) {
-            items[i].classList.add('bg-slate-600');
-        } else {
-            items[i].classList.remove('bg-slate-600');
-        }
-    }
-}
-
-// RCON: clear input after submit, save to history, scroll output
-document.addEventListener('htmx:afterRequest', function(e) {
-    if (e.detail.elt.id === 'rcon-form') {
-        var input = e.detail.elt.querySelector('input[name=command]');
-        if (input && input.value.trim()) {
-            // Add to history (dedup)
-            var cmd = input.value.trim();
-            var idx = _rconHistory.indexOf(cmd);
-            if (idx >= 0) _rconHistory.splice(idx, 1);
-            _rconHistory.push(cmd);
-            if (_rconHistory.length > 50) _rconHistory.shift();
-        }
-        if (input) input.value = '';
-        var output = document.getElementById('rcon-output');
-        if (output) output.scrollTop = output.scrollHeight;
-        document.getElementById('rcon-suggestions').classList.add('hidden');
-    }
-});
-
-var _lastPlayers = [];
-
-function cycleStatMode() {
-    _statMode = (_statMode + 1) % _statModeLabels.length;
-    var btn = document.getElementById('stat-toggle');
-    if (btn) btn.textContent = _statModeLabels[_statMode];
-    if (_lastPlayers.length) renderPlayers(_lastPlayers);
-}
-
-function renameServer(name) {
-    var current = document.getElementById('server-title').textContent;
-    var alias = prompt('Rename server:', current);
-    if (alias === null) return;
-    fetch('/server/' + name + '/rename', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: 'alias=' + encodeURIComponent(alias)
-    }).then(function() {
-        document.getElementById('server-title').textContent = alias || name;
-    });
-}
-
-document.addEventListener('DOMContentLoaded', function() {
-    initRconAutocomplete();
-});

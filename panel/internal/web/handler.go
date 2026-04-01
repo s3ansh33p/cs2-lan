@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"cs2-panel/internal/db"
 	"cs2-panel/internal/docker"
 	"cs2-panel/internal/gametracker"
 	"cs2-panel/internal/rcon"
@@ -23,6 +24,7 @@ type Handler struct {
 	docker      *docker.Client
 	rcon        *rcon.Manager
 	tracker     *gametracker.Manager
+	db          *db.DB
 	aliases     *AliasStore
 	composeFile string
 	defaultRCON string
@@ -36,9 +38,16 @@ type Handler struct {
 	// Servers currently being restarted (name -> last known info for dashboard)
 	restartMu      sync.RWMutex
 	restartServers map[string]docker.ServerInfo
+
+	// System stats sampler
+	sys sysSampler
+
+	// Bracket broadcast: push updates to public bracket viewers
+	bracketMu   sync.RWMutex
+	bracketSubs []chan struct{}
 }
 
-func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, composeFile, defaultRCON string) (*Handler, error) {
+func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, database *db.DB, composeFile, defaultRCON string) (*Handler, error) {
 	tmplFS, err := fs.Sub(webfs.Assets, "templates")
 	if err != nil {
 		return nil, fmt.Errorf("template fs: %w", err)
@@ -51,6 +60,19 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, co
 				return 0
 			}
 			return float64(a) / float64(b)
+		},
+		"seq": func(n int) []int {
+			s := make([]int, n)
+			for i := range s {
+				s[i] = i + 1
+			}
+			return s
+		},
+		"derefInt64": func(p *int64) int64 {
+			if p == nil {
+				return 0
+			}
+			return *p
 		},
 	}
 
@@ -65,7 +87,7 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, co
 
 	// Each page gets its own clone of base so {{define "content"}} doesn't collide
 	pages := make(map[string]*template.Template)
-	for _, page := range []string{"dashboard.html", "server.html", "launch.html"} {
+	for _, page := range []string{"dashboard.html", "server.html", "launch.html", "bracket.html", "admin_tournament.html"} {
 		t, err := template.Must(base.Clone()).ParseFS(tmplFS, page)
 		if err != nil {
 			return nil, fmt.Errorf("parse %s: %w", page, err)
@@ -91,6 +113,7 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, co
 		docker:         dc,
 		rcon:           rm,
 		tracker:        tm,
+		db:             database,
 		aliases:        NewAliasStore("server-aliases.json"),
 		composeFile:    composeFile,
 		defaultRCON:    defaultRCON,
@@ -98,6 +121,7 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, co
 		restartServers: make(map[string]docker.ServerInfo),
 	}
 	go h.dashboardPoller()
+	h.setupGameOverHook()
 	return h, nil
 }
 
@@ -112,7 +136,7 @@ func (h *Handler) render(w http.ResponseWriter, name string, data any) {
 	// For page templates that use layout, execute "layout"; for partials/login, execute the named define
 	execName := name
 	switch name {
-	case "dashboard.html", "server.html", "launch.html":
+	case "dashboard.html", "server.html", "launch.html", "bracket.html", "admin_tournament.html":
 		execName = "layout"
 	}
 
@@ -248,6 +272,7 @@ func (h *Handler) LaunchServer(w http.ResponseWriter, r *http.Request) {
 		Password: r.FormValue("password"),
 		RCON:     r.FormValue("rcon"),
 		TV:       r.FormValue("tv") == "on",
+		ExtraCfg: strings.TrimSpace(r.FormValue("extra_cfg")),
 	}
 
 	if req.Mode == "" {
@@ -272,6 +297,35 @@ func (h *Handler) LaunchServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.notifyDashboard()
+
+	// If launched from a bracket match, link the server to the game
+	if matchID := r.FormValue("match_id"); matchID != "" {
+		gameNum := r.FormValue("game_number")
+		if gameNum == "" {
+			gameNum = "1"
+		}
+		mid, _ := strconv.ParseInt(matchID, 10, 64)
+		gn, _ := strconv.Atoi(gameNum)
+		if mid > 0 {
+			// Create game if it doesn't exist, then link
+			games, _ := h.db.GetMatchGames(mid)
+			var gameID int64
+			for _, g := range games {
+				if g.GameNumber == gn {
+					gameID = g.ID
+					break
+				}
+			}
+			if gameID == 0 {
+				gameID, _ = h.db.CreateGame(mid, gn, req.Map, true)
+			}
+			if gameID > 0 {
+				h.db.LinkGameToServer(gameID, req.Name)
+				log.Printf("linked server %s to game %d (match %d, game %d)", req.Name, gameID, mid, gn)
+			}
+		}
+	}
+
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -473,6 +527,7 @@ func (h *Handler) RestartServer(w http.ResponseWriter, r *http.Request) {
 			Password: info.Password,
 			RCON:     info.RCONPassword,
 			TV:       tvEnabled == "1",
+			ExtraCfg: info.ExtraCfg,
 		}
 		if err := h.docker.Launch(context.Background(), req, h.composeFile); err != nil {
 			log.Printf("restart %s: launch failed: %v", name, err)

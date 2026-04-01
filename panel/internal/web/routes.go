@@ -11,14 +11,29 @@ import (
 func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	mux := http.NewServeMux()
 
-	// Static files (embedded)
+	// Static files (embedded) — public assets
 	staticFS, _ := fs.Sub(webfs.Assets, "static")
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
+	staticHandler := http.FileServer(http.FS(staticFS))
+	mux.HandleFunc("GET /static/admin.js", func(w http.ResponseWriter, r *http.Request) {
+		// Guard admin.js behind auth
+		a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.StripPrefix("/static/", staticHandler).ServeHTTP(w, r)
+		})).ServeHTTP(w, r)
+	})
+	mux.Handle("GET /static/", http.StripPrefix("/static/", staticHandler))
 
 	// Public routes
 	mux.HandleFunc("GET /login", h.LoginPage)
 	mux.HandleFunc("POST /login", a.HandleLogin)
 	mux.HandleFunc("POST /logout", a.HandleLogout)
+
+	// Public bracket routes (no auth)
+	mux.HandleFunc("GET /bracket", h.PublicBracket)
+	mux.HandleFunc("POST /bracket/teams", h.PublicCreateTeam)
+	mux.HandleFunc("POST /bracket/teams/{id}/members", h.PublicAddMember)
+	mux.HandleFunc("POST /bracket/teams/{id}/members/{mid}/delete", h.PublicRemoveMember)
+	mux.HandleFunc("GET /bracket/game/{gid}/stats", h.PublicGameStats)
+	mux.HandleFunc("GET /bracket/ws", h.BracketWebSocket)
 
 	// Protected routes
 	protected := http.NewServeMux()
@@ -36,6 +51,24 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	protected.HandleFunc("POST /server/{name}/rename", h.RenameServer)
 	protected.HandleFunc("POST /server/{name}/restart", h.RestartServer)
 	protected.HandleFunc("POST /server/{name}/stop", h.StopServer)
+
+	// Admin tournament routes
+	protected.HandleFunc("GET /admin/tournament", h.AdminTournament)
+	protected.HandleFunc("POST /admin/tournament/create", h.CreateTournament)
+	protected.HandleFunc("POST /admin/tournament/update", h.UpdateTournament)
+	protected.HandleFunc("POST /admin/tournament/delete", h.DeleteTournament)
+	protected.HandleFunc("POST /admin/tournament/status", h.SetTournamentStatus)
+	protected.HandleFunc("POST /admin/tournament/teams", h.AdminCreateTeam)
+	protected.HandleFunc("POST /admin/tournament/teams/{id}/delete", h.AdminDeleteTeam)
+	protected.HandleFunc("POST /admin/tournament/teams/{id}/members", h.AdminAddMember)
+	protected.HandleFunc("POST /admin/tournament/teams/{id}/members/{mid}/delete", h.AdminRemoveMember)
+	protected.HandleFunc("POST /admin/bracket/seed", h.AdminSeedBracket)
+	protected.HandleFunc("POST /admin/bracket/bestof", h.AdminSetBestOf)
+	protected.HandleFunc("POST /admin/bracket/winner", h.AdminSetWinner)
+	protected.HandleFunc("POST /admin/bracket/swap", h.AdminSwapTeams)
+	protected.HandleFunc("POST /admin/match/{id}/game", h.AdminCreateGame)
+	protected.HandleFunc("POST /admin/match/{id}/game/{gid}", h.AdminUpdateGame)
+	protected.HandleFunc("GET /admin/match/{id}/launch", h.AdminLaunchMatch)
 
 	mux.Handle("/", a.Middleware(protected))
 

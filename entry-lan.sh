@@ -83,6 +83,18 @@ if [[ ! -z $CS2_LOG_HTTP_URL ]]; then
     printf 'logaddress_add_http "%s"\n' "${CS2_LOG_HTTP_URL}" >> "${STEAMAPPDIR}"/game/csgo/cfg/server.cfg
 fi
 
+# Apply LAN default config
+if [[ -f /home/steam/lan-default.cfg ]]; then
+    cp /home/steam/lan-default.cfg "${STEAMAPPDIR}/game/csgo/cfg/lan-default.cfg"
+    echo 'exec lan-default.cfg' >> "${STEAMAPPDIR}/game/csgo/cfg/server.cfg"
+fi
+
+# Apply per-server extra config
+if [[ ! -z "$CS2_EXTRA_CFG" ]]; then
+    printf '%s\n' "$CS2_EXTRA_CFG" > "${STEAMAPPDIR}/game/csgo/cfg/extra.cfg"
+    echo 'exec extra.cfg' >> "${STEAMAPPDIR}/game/csgo/cfg/server.cfg"
+fi
+
 if [[ ! -z $CS2_BOT_DIFFICULTY ]] ; then
     sed -i "s/bot_difficulty.*/bot_difficulty ${CS2_BOT_DIFFICULTY}/" "${STEAMAPPDIR}"/game/csgo/cfg/*
 fi

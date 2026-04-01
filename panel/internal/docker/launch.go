@@ -19,6 +19,7 @@ type LaunchRequest struct {
 	Password string
 	RCON     string
 	TV       bool
+	ExtraCfg string
 }
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
@@ -59,8 +60,13 @@ func (c *Client) Launch(ctx context.Context, req LaunchRequest, composeFile stri
 		"-e", "CS2_LOG=on",
 		"-e", "CS2_LOG_DETAIL=3",
 		"-e", "CS2_LOG_ECHO=1",
-		"cs2",
 	}
+
+	if req.ExtraCfg != "" {
+		args = append(args, "-e", "CS2_EXTRA_CFG="+req.ExtraCfg)
+	}
+
+	args = append(args, "cs2")
 
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	// Set working directory to the compose file's directory for relative path resolution

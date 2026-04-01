@@ -1,0 +1,308 @@
+package web
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+	"strconv"
+	"time"
+
+	"cs2-panel/internal/db"
+	"github.com/gorilla/websocket"
+)
+
+func (h *Handler) PublicBracket(w http.ResponseWriter, r *http.Request) {
+	tournament, err := h.db.GetTournament()
+	if err != nil {
+		log.Printf("get tournament: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	var teams []db.Team
+	var bracket []db.Match
+	var canRegister bool
+	var connectInfo string
+
+	// Map of server name -> port for live games
+	gamePorts := make(map[string]int)
+
+	if tournament != nil {
+		teams, _ = h.db.ListTeams(tournament.ID)
+		bracket, _ = h.db.GetBracket(tournament.ID)
+		canRegister = tournament.CanRegister()
+
+		if tournament.ServerIP != "" {
+			connectInfo = fmt.Sprintf("connect %s", tournament.ServerIP)
+			if tournament.ServerPassword != "" {
+				connectInfo += fmt.Sprintf("; password %s", tournament.ServerPassword)
+			}
+		}
+
+		// Look up ports for live games
+		for _, m := range bracket {
+			for _, g := range m.Games {
+				if g.Status == "live" && g.ServerName != "" {
+					if info, err := h.docker.InspectServer(r.Context(), "cs2-"+g.ServerName); err == nil {
+						gamePorts[g.ServerName] = info.Port
+					}
+				}
+			}
+		}
+	}
+
+	h.render(w, "bracket.html", map[string]any{
+		"Title":       "Bracket",
+		"Tournament":  tournament,
+		"Teams":       teams,
+		"Bracket":     bracket,
+		"CanRegister": canRegister,
+		"ConnectInfo": connectInfo,
+		"GamePorts":   gamePorts,
+	})
+}
+
+// Public team creation (during registration window)
+func (h *Handler) PublicCreateTeam(w http.ResponseWriter, r *http.Request) {
+	tournament, err := h.db.GetTournament()
+	if err != nil || tournament == nil || !tournament.CanRegister() {
+		http.Redirect(w, r, "/bracket", http.StatusSeeOther)
+		return
+	}
+
+	name := r.FormValue("name")
+	if name == "" {
+		http.Redirect(w, r, "/bracket", http.StatusSeeOther)
+		return
+	}
+
+	if _, err := h.db.CreateTeam(tournament.ID, name); err != nil {
+		log.Printf("public create team: %v", err)
+	}
+	http.Redirect(w, r, "/bracket", http.StatusSeeOther)
+}
+
+// Public add member (during registration window)
+func (h *Handler) PublicAddMember(w http.ResponseWriter, r *http.Request) {
+	tournament, err := h.db.GetTournament()
+	if err != nil || tournament == nil || !tournament.CanRegister() {
+		http.Redirect(w, r, "/bracket", http.StatusSeeOther)
+		return
+	}
+
+	teamID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	steamName := r.FormValue("steam_name")
+	if steamName == "" {
+		http.Redirect(w, r, "/bracket", http.StatusSeeOther)
+		return
+	}
+
+	// Enforce team size limit
+	members, _ := h.db.ListMembers(teamID)
+	if len(members) >= tournament.TeamSize {
+		http.Redirect(w, r, "/bracket", http.StatusSeeOther)
+		return
+	}
+
+	if _, err := h.db.AddMember(teamID, steamName); err != nil {
+		log.Printf("public add member: %v", err)
+	}
+	http.Redirect(w, r, "/bracket", http.StatusSeeOther)
+}
+
+// Public remove member (during registration window)
+func (h *Handler) PublicRemoveMember(w http.ResponseWriter, r *http.Request) {
+	tournament, err := h.db.GetTournament()
+	if err != nil || tournament == nil || !tournament.CanRegister() {
+		http.Redirect(w, r, "/bracket", http.StatusSeeOther)
+		return
+	}
+
+	mid, _ := strconv.ParseInt(r.PathValue("mid"), 10, 64)
+	if err := h.db.RemoveMember(mid); err != nil {
+		log.Printf("public remove member: %v", err)
+	}
+	http.Redirect(w, r, "/bracket", http.StatusSeeOther)
+}
+
+// notifyBracket pushes an update signal to all bracket WS subscribers.
+func (h *Handler) notifyBracket() {
+	h.bracketMu.RLock()
+	subs := make([]chan struct{}, len(h.bracketSubs))
+	copy(subs, h.bracketSubs)
+	h.bracketMu.RUnlock()
+	for _, ch := range subs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (h *Handler) subscribeBracket() (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	h.bracketMu.Lock()
+	h.bracketSubs = append(h.bracketSubs, ch)
+	h.bracketMu.Unlock()
+	return ch, func() {
+		h.bracketMu.Lock()
+		defer h.bracketMu.Unlock()
+		for i, c := range h.bracketSubs {
+			if c == ch {
+				h.bracketSubs = append(h.bracketSubs[:i], h.bracketSubs[i+1:]...)
+				break
+			}
+		}
+	}
+}
+
+// BracketWebSocket pushes bracket updates to public viewers.
+func (h *Handler) BracketWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, done, err := setupWSConn(w, r)
+	if err != nil {
+		log.Printf("ws bracket upgrade: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	updates, unsub := h.subscribeBracket()
+	defer unsub()
+
+	pingTicker := time.NewTicker(pingInterval)
+	defer pingTicker.Stop()
+
+	// Send initial bracket state
+	h.sendBracketState(conn)
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-pingTicker.C:
+			conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		case <-updates:
+			if err := h.sendBracketState(conn); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (h *Handler) sendBracketState(conn *websocket.Conn) error {
+	tournament, err := h.db.GetTournament()
+	if err != nil || tournament == nil {
+		return nil
+	}
+	bracket, err := h.db.GetBracket(tournament.ID)
+	if err != nil {
+		return nil
+	}
+
+	type gameJSON struct {
+		ID       int64  `json:"id"`
+		Num      int    `json:"num"`
+		Map      string `json:"map"`
+		T1       int    `json:"t1"`
+		T2       int    `json:"t2"`
+		Status   string `json:"status"`
+		Server   string `json:"server,omitempty"`
+		Port     int    `json:"port,omitempty"`
+		T1CT     bool   `json:"t1ct"`
+		H1CT     int    `json:"h1ct"`
+		H1T      int    `json:"h1t"`
+		H2CT     int    `json:"h2ct"`
+		H2T      int    `json:"h2t"`
+	}
+	type teamRef struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	}
+	type matchJSON struct {
+		ID     int64      `json:"id"`
+		Round  int        `json:"round"`
+		Pos    int        `json:"pos"`
+		BestOf int        `json:"bestOf"`
+		Team1  teamRef    `json:"team1"`
+		Team2  teamRef    `json:"team2"`
+		Winner int64      `json:"winner"`
+		IsBye  bool       `json:"isBye"`
+		Games  []gameJSON `json:"games"`
+	}
+
+	var matches []matchJSON
+	for _, m := range bracket {
+		mj := matchJSON{
+			ID: m.ID, Round: m.Round, Pos: m.Position, BestOf: m.BestOf, IsBye: m.IsBye,
+			Team1: teamRef{Name: m.Team1Name}, Team2: teamRef{Name: m.Team2Name},
+		}
+		if m.Team1ID != nil {
+			mj.Team1.ID = *m.Team1ID
+		}
+		if m.Team2ID != nil {
+			mj.Team2.ID = *m.Team2ID
+		}
+		if m.WinnerID != nil {
+			mj.Winner = *m.WinnerID
+		}
+		for _, g := range m.Games {
+			gj := gameJSON{ID: g.ID, Num: g.GameNumber, Map: g.MapName, T1: g.Team1Score, T2: g.Team2Score,
+				Status: g.Status, Server: g.ServerName, T1CT: g.Team1StartsCT,
+				H1CT: g.H1CT, H1T: g.H1T, H2CT: g.H2CT, H2T: g.H2T}
+			// Look up port for live games
+			if g.Status == "live" && g.ServerName != "" {
+				if info, err := h.docker.InspectServer(context.Background(), "cs2-"+g.ServerName); err == nil {
+					gj.Port = info.Port
+				}
+			}
+			mj.Games = append(mj.Games, gj)
+		}
+		matches = append(matches, mj)
+	}
+
+	msg := struct {
+		Type    string      `json:"type"`
+		Bracket []matchJSON `json:"bracket"`
+	}{Type: "bracket", Bracket: matches}
+
+	conn.SetWriteDeadline(time.Now().Add(writeWait))
+	return conn.WriteJSON(msg)
+}
+
+// Public game stats JSON endpoint
+func (h *Handler) PublicGameStats(w http.ResponseWriter, r *http.Request) {
+	gameID, _ := strconv.ParseInt(r.PathValue("gid"), 10, 64)
+	stats, err := h.db.GetGameStats(gameID)
+	if err != nil || len(stats) == 0 {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<p class="text-sm text-slate-500">No player stats available for this game.</p>`)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html")
+	fmt.Fprint(w, `<table class="w-full text-sm"><thead><tr class="text-slate-500 border-b border-slate-700">`)
+	fmt.Fprint(w, `<th class="text-left px-3 py-2">Player</th>`)
+	fmt.Fprint(w, `<th class="px-2 py-2">K</th><th class="px-2 py-2">D</th><th class="px-2 py-2">A</th>`)
+	fmt.Fprint(w, `<th class="px-2 py-2">MVPs</th><th class="px-2 py-2">HS%</th>`)
+	fmt.Fprint(w, `<th class="px-2 py-2">KDR</th><th class="px-2 py-2">ADR</th>`)
+	fmt.Fprint(w, `<th class="px-2 py-2">EF</th><th class="px-2 py-2">UD</th>`)
+	fmt.Fprint(w, `</tr></thead><tbody>`)
+	for _, s := range stats {
+		fmt.Fprintf(w, `<tr class="text-slate-300 border-b border-slate-700/50">`)
+		fmt.Fprintf(w, `<td class="px-3 py-1.5 font-medium">%s</td>`, s.PlayerName)
+		fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.Kills)
+		fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.Deaths)
+		fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.Assists)
+		fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.MVPs)
+		fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.0f%%</td>`, s.HSPercent)
+		fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.2f</td>`, s.KDR)
+		fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.0f</td>`, s.ADR)
+		fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%d</td>`, s.EF)
+		fmt.Fprintf(w, `<td class="px-2 py-1.5 text-center">%.0f</td>`, s.UD)
+		fmt.Fprint(w, `</tr>`)
+	}
+	fmt.Fprint(w, `</tbody></table>`)
+}

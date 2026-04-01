@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"cs2-panel/internal/docker"
@@ -446,6 +447,15 @@ func (h *Handler) DashboardWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type dashHostJSON struct {
+	CPUPercent float64   `json:"cpu"`
+	Cores      int       `json:"cores"`
+	CorePcts   []float64 `json:"corePcts,omitempty"`
+	MemUsedMB  float64   `json:"memUsedMB"`
+	MemTotalMB float64   `json:"memTotalMB"`
+	PanelMemMB float64   `json:"panelMemMB"`
+}
+
 type dashServerJSON struct {
 	Name        string     `json:"name"`
 	Alias       string     `json:"alias"`
@@ -455,6 +465,8 @@ type dashServerJSON struct {
 	Map         string     `json:"map"`
 	MaxPlayers  int        `json:"maxPlayers"`
 	PlayerCount int        `json:"playerCount"`
+	CPUPercent  float64    `json:"cpu"`
+	MemUsageMB  float64    `json:"memMB"`
 	Score       *scoreJSON `json:"score,omitempty"`
 }
 
@@ -484,6 +496,31 @@ func (h *Handler) buildDashboardJSON() []byte {
 		runningNames[name] = true
 	}
 	h.tracker.StopNotIn(runningNames)
+
+	// Fetch container stats in parallel (each call blocks ~1s)
+	type containerStats struct {
+		cpu   float64
+		memMB float64
+	}
+	statsMap := make(map[string]containerStats)
+	var statsMu sync.Mutex
+	var statsWg sync.WaitGroup
+	statsCtx, statsCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer statsCancel()
+	for _, s := range servers {
+		if s.Status == "running" {
+			statsWg.Add(1)
+			go func(id string) {
+				defer statsWg.Done()
+				if cs, err := h.docker.GetContainerStats(statsCtx, id); err == nil {
+					statsMu.Lock()
+					statsMap[id] = containerStats{cpu: cs.CPUPercent, memMB: cs.MemUsageMB}
+					statsMu.Unlock()
+				}
+			}(s.ContainerID)
+		}
+	}
+	statsWg.Wait()
 
 	// Build set of servers we've already seen from Docker
 	seen := make(map[string]bool)
@@ -526,6 +563,12 @@ func (h *Handler) buildDashboardJSON() []byte {
 			}
 		}
 
+		// Container resource stats
+		if cs, ok := statsMap[s.ContainerID]; ok {
+			ds.CPUPercent = cs.cpu
+			ds.MemUsageMB = cs.memMB
+		}
+
 		result = append(result, ds)
 	}
 
@@ -546,10 +589,24 @@ func (h *Handler) buildDashboardJSON() []byte {
 	}
 	h.restartMu.RUnlock()
 
+	hs := h.sys.sample()
+
 	msg := struct {
 		Type    string           `json:"type"`
 		Servers []dashServerJSON `json:"servers"`
-	}{Type: "dashboard", Servers: result}
+		Host    dashHostJSON     `json:"host"`
+	}{
+		Type:    "dashboard",
+		Servers: result,
+		Host: dashHostJSON{
+			CPUPercent: hs.CPUPercent,
+			Cores:      hs.NumCPU,
+			CorePcts:   hs.CorePcts,
+			MemUsedMB:  hs.MemUsedMB,
+			MemTotalMB: hs.MemTotalMB,
+			PanelMemMB: hs.PanelMemMB,
+		},
+	}
 
 	data, _ := json.Marshal(msg)
 	return data

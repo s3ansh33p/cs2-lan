@@ -11,6 +11,8 @@
 {{end}}
 
 <form method="POST" action="/launch" class="bg-slate-800 border border-slate-700 rounded-lg p-6 max-w-2xl">
+    <input type="hidden" name="match_id" id="launch-match-id">
+    <input type="hidden" name="game_number" id="launch-game-number">
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
             <label class="block text-sm text-slate-400 mb-1">Server Name</label>
@@ -64,6 +66,12 @@
         </div>
     </div>
 
+    <div class="mt-4">
+        <label class="block text-sm text-slate-400 mb-1">Extra Config <span class="text-slate-500">(optional, one cvar per line)</span></label>
+        <textarea name="extra_cfg" rows="3" placeholder="e.g. mp_freezetime 10&#10;sv_alltalk 1"
+            class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm font-mono">{{if .Form}}{{.Form.ExtraCfg}}{{end}}</textarea>
+    </div>
+
     <div class="mt-6 flex gap-3">
         <button type="submit"
             class="bg-orange-500 hover:bg-orange-600 text-white font-medium rounded px-6 py-2 text-sm transition-colors">
@@ -90,6 +98,26 @@ function updateMapOptions() {
         mapSelect.appendChild(opt);
     }
 }
-document.addEventListener('DOMContentLoaded', updateMapOptions);
+document.addEventListener('DOMContentLoaded', function() {
+    // Pre-fill from query params (e.g. from bracket match launch)
+    var params = new URLSearchParams(window.location.search);
+    var fields = {name: 'name', port: 'port', mode: 'launch-mode', map: null, players: 'players', password: 'password'};
+    for (var key in fields) {
+        var val = params.get(key);
+        if (!val) continue;
+        var el = fields[key] ? document.querySelector('[name="' + key + '"]') : null;
+        if (key === 'mode') el = document.getElementById('launch-mode');
+        if (el) el.value = val;
+    }
+    updateMapOptions();
+    // Set map after options are built
+    var mapParam = params.get('map');
+    if (mapParam) document.getElementById('launch-map').value = mapParam;
+    // Pass match linkage through hidden fields
+    var matchId = params.get('match_id');
+    var gameNum = params.get('game_number');
+    if (matchId) document.getElementById('launch-match-id').value = matchId;
+    if (gameNum) document.getElementById('launch-game-number').value = gameNum;
+});
 </script>
 {{end}}
