@@ -1408,6 +1408,9 @@ func parseLine(line string, state *ServerState) {
 			state.defuser = ""
 			state.defuserTeam = ""
 			round := state.round
+			if round == 0 {
+				round = 1
+			}
 			state.mu.Unlock()
 			state.clearWeaponsOnRound()
 			state.addSystemMessage(fmt.Sprintf("Round %d", round))

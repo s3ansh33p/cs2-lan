@@ -204,3 +204,38 @@ func (db *DB) UpdateGameHalfRound(id int64, halfRound int) error {
 	_, err := db.Exec(`UPDATE games SET half_round=? WHERE id=?`, halfRound, id)
 	return err
 }
+
+// ResetGame clears a game's results and cascades: deletes rounds/stats,
+// undoes match winner if set, and removes pending Bo3 follow-up games.
+func (db *DB) ResetGame(gameID int64) error {
+	// Get game info
+	game, err := scanGame(db.QueryRow(`SELECT `+gameColumns+` FROM games WHERE id=?`, gameID))
+	if err != nil {
+		return err
+	}
+
+	// Reset the game record
+	_, err = db.Exec(`UPDATE games SET team1_score=0, team2_score=0, winner_id=NULL,
+		status='pending', server_name='', h1_ct=0, h1_t=0, h2_ct=0, h2_t=0,
+		half_round=0, started_at=NULL, completed_at=NULL WHERE id=?`, gameID)
+	if err != nil {
+		return err
+	}
+
+	// Delete associated rounds and stats
+	db.Exec(`DELETE FROM game_rounds WHERE game_id=?`, gameID)
+	db.Exec(`DELETE FROM game_player_stats WHERE game_id=?`, gameID)
+
+	// Check if match winner needs to be undone
+	var matchWinnerID *int64
+	db.QueryRow(`SELECT winner_id FROM matches WHERE id=?`, game.MatchID).Scan(&matchWinnerID)
+	if matchWinnerID != nil {
+		db.ClearMatchWinner(game.MatchID)
+	}
+
+	// Delete pending follow-up games in Bo3 (auto-created games after this one)
+	db.Exec(`DELETE FROM games WHERE match_id=? AND game_number>? AND status='pending'`,
+		game.MatchID, game.GameNumber)
+
+	return nil
+}

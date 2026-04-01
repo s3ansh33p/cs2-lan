@@ -306,6 +306,19 @@ func (h *Handler) AdminUpdateGame(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 }
 
+func (h *Handler) AdminResetGame(w http.ResponseWriter, r *http.Request) {
+	gameID, _ := strconv.ParseInt(r.PathValue("gid"), 10, 64)
+	if err := h.db.ResetGame(gameID); err != nil {
+		log.Printf("reset game: %v", err)
+	}
+	h.notifyBracket()
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+}
+
 func (h *Handler) AdminSetGameSide(w http.ResponseWriter, r *http.Request) {
 	gameID, _ := strconv.ParseInt(r.PathValue("gid"), 10, 64)
 	t1ct := r.FormValue("team1_starts_ct")

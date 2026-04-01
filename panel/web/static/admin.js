@@ -1,3 +1,18 @@
+// Map display names
+var _mapNames = {
+    'de_dust2': 'Dust II', 'de_inferno': 'Inferno', 'de_mirage': 'Mirage',
+    'de_nuke': 'Nuke', 'de_overpass': 'Overpass', 'de_vertigo': 'Vertigo',
+    'de_ancient': 'Ancient', 'de_anubis': 'Anubis', 'de_train': 'Train',
+    'cs_office': 'Office', 'cs_italy': 'Italy', 'cs_alpine': 'Alpine',
+    'ar_baggage': 'Baggage', 'ar_shoots': 'Shoots', 'ar_pool_day': 'Pool Day'
+};
+function mapDisplayName(m) {
+    if (!m) return '';
+    if (_mapNames[m]) return _mapNames[m];
+    var name = m.replace(/^(de|cs|ar)_/, '');
+    return name.charAt(0).toUpperCase() + name.slice(1).replace(/_/g, ' ');
+}
+
 // Server status indicator (next to title)
 function setServerStatus(status) {
     var el = document.getElementById('server-status');
@@ -1355,6 +1370,14 @@ function addMember(teamId, form) {
     return false;
 }
 
+function resetGame(matchId, gameId) {
+    if (!confirm('Reset this game? This will clear scores, stats, and undo any bracket advancement.')) return;
+    fetch('/admin/match/' + matchId + '/game/' + gameId + '/reset', {
+        method: 'POST',
+        headers: {'X-Requested-With': 'XMLHttpRequest'}
+    });
+}
+
 function swapSide(matchId, gameId, newVal, btn) {
     fetch('/admin/match/' + matchId + '/game/' + gameId + '/side', {
         method: 'POST',
@@ -1483,22 +1506,21 @@ function renderBracketMatch(m) {
             var game = m.games[g];
             html += '<div class="px-3 py-1.5 flex items-center gap-2 text-xs' + (g > 0 ? ' border-t border-slate-600/30' : '') + '">';
             if (game.status === 'completed') {
-                html += '<span class="text-slate-400">' + (game.map || 'Game ' + game.num) + '</span>';
+                html += '<span class="text-slate-400">' + (mapDisplayName(game.map) || 'Game ' + game.num) + '</span>';
                 html += '<span class="text-slate-300 font-mono">' + game.t1 + '-' + game.t2 + '</span>';
                 html += formatHalfScores(game);
-                html += '<span class="text-green-500">&#10003;</span>';
             } else if (game.status === 'live') {
-                html += '<span class="text-orange-400">' + (game.map || 'Game ' + game.num) + '</span>';
+                html += '<span class="text-orange-400">' + (mapDisplayName(game.map) || 'Game ' + game.num) + '</span>';
                 html += '<span class="text-orange-300 font-mono">' + game.t1 + '-' + game.t2 + '</span>';
                 if (game.server) {
-                    html += '<a href="/server/' + game.server + '" class="text-orange-400 hover:text-orange-300 font-bold">LIVE &#8599;</a>';
+                    html += '<a href="/server/' + game.server + '" class="bg-orange-500/20 text-orange-400 hover:bg-orange-500/30 font-bold rounded px-1.5 py-0.5">LIVE</a>';
                 } else {
-                    html += '<span class="text-orange-400">LIVE</span>';
+                    html += '<span class="bg-orange-500/20 text-orange-400 font-bold rounded px-1.5 py-0.5">LIVE</span>';
                 }
             } else {
                 // Pending — show score entry form
                 html += '<form method="POST" action="/admin/match/' + m.id + '/game/' + game.id + '" class="flex items-center gap-1">';
-                html += '<span class="text-slate-400">' + (game.map || 'Game ' + game.num) + '</span>';
+                html += '<span class="text-slate-400">' + (mapDisplayName(game.map) || 'Game ' + game.num) + '</span>';
                 html += '<input type="number" name="team1_score" value="' + game.t1 + '" min="0" class="w-8 bg-slate-600 border border-slate-500 rounded px-1 py-0.5 text-center text-white text-xs">';
                 html += '<span class="text-slate-500">-</span>';
                 html += '<input type="number" name="team2_score" value="' + game.t2 + '" min="0" class="w-8 bg-slate-600 border border-slate-500 rounded px-1 py-0.5 text-center text-white text-xs">';
@@ -1513,13 +1535,17 @@ function renderBracketMatch(m) {
             }
             // Launch server link for non-completed games
             if (game.status !== 'completed' && game.map) {
-                html += '<a href="/admin/match/' + m.id + '/launch?game_number=' + game.num + '&map_name=' + encodeURIComponent(game.map) + '" class="text-orange-400 hover:text-orange-300 ml-auto" title="Launch server">&#9654;</a>';
+                html += '<a href="/admin/match/' + m.id + '/launch?game_number=' + game.num + '&map_name=' + encodeURIComponent(game.map) + '" class="bg-slate-600 hover:bg-slate-500 text-white rounded px-1.5 py-0.5">Launch</a>';
             }
             // CT side indicator + swap
             var ctName = game.t1ct ? t1name : t2name;
             var newVal = game.t1ct ? '0' : '1';
-            html += '<button onclick="swapSide(' + m.id + ',' + game.id + ',\'' + newVal + '\',this)" class="text-blue-400 hover:text-blue-300 text-xs ml-auto" title="Click to swap sides">' +
+            html += '<button onclick="swapSide(' + m.id + ',' + game.id + ',\'' + newVal + '\',this)" class="text-blue-400 hover:text-blue-300 text-xs" title="Click to swap sides">' +
                 '<span class="text-blue-400">CT:</span>' + ctName + '</button>';
+            // Reset button for non-pending games
+            if (game.status !== 'pending') {
+                html += '<button onclick="resetGame(' + m.id + ',' + game.id + ')" class="text-red-400 hover:text-red-300 text-xs" title="Reset game results">&#8635;</button>';
+            }
             html += '</div>';
         }
         html += '</div>';

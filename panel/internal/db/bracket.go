@@ -227,6 +227,37 @@ func (db *DB) SetMatchWinner(matchID int64, winnerID int64) error {
 	return db.advanceToNext(matchID, winnerID)
 }
 
+// ClearMatchWinner removes the winner from a match and undoes the advancement
+// to the next round (one level only).
+func (db *DB) ClearMatchWinner(matchID int64) error {
+	var nextMatchID *int64
+	var position int
+	var winnerID *int64
+	err := db.QueryRow(`SELECT next_match_id, position, winner_id FROM matches WHERE id=?`, matchID).
+		Scan(&nextMatchID, &position, &winnerID)
+	if err != nil {
+		return err
+	}
+
+	// Clear winner on this match
+	if _, err := db.Exec(`UPDATE matches SET winner_id=NULL WHERE id=?`, matchID); err != nil {
+		return err
+	}
+
+	// Remove team from next round slot
+	if nextMatchID != nil {
+		col := "team1_id"
+		if position%2 == 1 {
+			col = "team2_id"
+		}
+		if _, err := db.Exec(fmt.Sprintf(`UPDATE matches SET %s=NULL WHERE id=?`, col), *nextMatchID); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // SwapTeams swaps two teams between bracket positions.
 // slot is "team1" or "team2" for each match.
 func (db *DB) SwapTeams(match1ID int64, slot1 string, match2ID int64, slot2 string) error {
