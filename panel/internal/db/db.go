@@ -130,4 +130,38 @@ CREATE TABLE IF NOT EXISTS game_player_stats (
 	ud REAL NOT NULL DEFAULT 0,
 	UNIQUE(game_id, player_name)
 );
+
+CREATE TABLE IF NOT EXISTS server_aliases (
+	server_name TEXT PRIMARY KEY,
+	alias TEXT NOT NULL
+);
 `
+
+func (db *DB) LoadAliases() (map[string]string, error) {
+	rows, err := db.Query("SELECT server_name, alias FROM server_aliases")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	m := make(map[string]string)
+	for rows.Next() {
+		var name, alias string
+		if err := rows.Scan(&name, &alias); err != nil {
+			return nil, err
+		}
+		m[name] = alias
+	}
+	return m, rows.Err()
+}
+
+func (db *DB) SetAlias(name, alias string) error {
+	if alias == "" {
+		_, err := db.Exec("DELETE FROM server_aliases WHERE server_name = ?", name)
+		return err
+	}
+	_, err := db.Exec(
+		"INSERT INTO server_aliases (server_name, alias) VALUES (?, ?) ON CONFLICT(server_name) DO UPDATE SET alias = excluded.alias",
+		name, alias,
+	)
+	return err
+}

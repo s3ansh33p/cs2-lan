@@ -125,7 +125,7 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, da
 		rcon:           rm,
 		tracker:        tm,
 		db:             database,
-		aliases:        NewAliasStore("server-aliases.json"),
+		aliases:        NewAliasStore(database),
 		composeFile:    composeFile,
 		defaultRCON:    defaultRCON,
 		pages:          pages,

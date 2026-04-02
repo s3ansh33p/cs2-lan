@@ -1,23 +1,29 @@
 package web
 
 import (
-	"encoding/json"
-	"os"
+	"log"
 	"sync"
+
+	"cs2-panel/internal/db"
 )
 
 type AliasStore struct {
 	mu      sync.RWMutex
 	aliases map[string]string // server name -> display alias
-	path    string
+	db      *db.DB
 }
 
-func NewAliasStore(path string) *AliasStore {
+func NewAliasStore(database *db.DB) *AliasStore {
 	s := &AliasStore{
 		aliases: make(map[string]string),
-		path:    path,
+		db:      database,
 	}
-	s.load()
+	loaded, err := database.LoadAliases()
+	if err != nil {
+		log.Printf("warning: failed to load aliases: %v", err)
+	} else {
+		s.aliases = loaded
+	}
 	return s
 }
 
@@ -33,27 +39,14 @@ func (s *AliasStore) Get(name string) string {
 func (s *AliasStore) Set(name, alias string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	effectiveAlias := alias
 	if alias == "" || alias == name {
+		effectiveAlias = ""
 		delete(s.aliases, name)
 	} else {
 		s.aliases[name] = alias
 	}
-	s.save()
-}
-
-func (s *AliasStore) load() {
-	data, err := os.ReadFile(s.path)
-	if err != nil {
-		return
+	if err := s.db.SetAlias(name, effectiveAlias); err != nil {
+		log.Printf("error: failed to persist alias for %q: %v", name, err)
 	}
-	json.Unmarshal(data, &s.aliases)
-}
-
-func (s *AliasStore) save() {
-	data, _ := json.MarshalIndent(s.aliases, "", "  ")
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		return
-	}
-	os.Rename(tmp, s.path)
 }
