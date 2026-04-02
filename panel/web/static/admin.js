@@ -463,6 +463,23 @@ function renderScore(score) {
         document.getElementById('score-ct').textContent = score.ct;
         document.getElementById('score-t').textContent = score.t;
         document.getElementById('score-round').textContent = score.round;
+
+        // Swap tournament team labels on side switch
+        if (typeof _team1Name !== 'undefined' && _team1Name) {
+            var team1IsCT = _team1StartsCT;
+            if (score.half > 0 && score.round > score.half) {
+                team1IsCT = !team1IsCT;
+                var maxR = score.maxRounds || (score.half * 2);
+                if (maxR > 0 && score.round > maxR) {
+                    var otHalf = Math.floor((score.round - maxR - 1) / 3) % 2;
+                    if (otHalf === 1) team1IsCT = !team1IsCT;
+                }
+            }
+            var ctLabel = document.getElementById('score-ct-label');
+            var tLabel = document.getElementById('score-t-label');
+            if (ctLabel) ctLabel.textContent = team1IsCT ? _team1Name : _team2Name;
+            if (tLabel) tLabel.textContent = team1IsCT ? _team2Name : _team1Name;
+        }
     }
 
     // Paused badge

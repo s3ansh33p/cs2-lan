@@ -401,30 +401,37 @@ func (h *Handler) ServerDetail(w http.ResponseWriter, r *http.Request) {
 	scoreJSON, _ := json.Marshal(initialScore)
 
 	// Check if server is linked to a tournament game for team name display
-	var ctTeamName, tTeamName string
+	var ctTeamName, tTeamName, team1Name, team2Name string
+	var team1StartsCT bool
 	if game, err := h.db.GetGameByServerAny(name); err == nil {
 		if match, err := h.db.GetMatchByID(game.MatchID); err == nil {
-			if game.Team1StartsCT {
-				ctTeamName = match.Team1Name
-				tTeamName = match.Team2Name
+			team1Name = match.Team1Name
+			team2Name = match.Team2Name
+			team1StartsCT = game.Team1StartsCT
+			if team1StartsCT {
+				ctTeamName = team1Name
+				tTeamName = team2Name
 			} else {
-				ctTeamName = match.Team2Name
-				tTeamName = match.Team1Name
+				ctTeamName = team2Name
+				tTeamName = team1Name
 			}
 		}
 	}
 
 	h.render(w, "server.html", map[string]any{
-		"Title":        h.aliases.Get(info.Name),
-		"Alias":        h.aliases.Get(info.Name),
-		"Server":       info,
-		"Status":       status,
-		"Scoreboard":   state.GetScoreboard(),
-		"Killfeed":     state.GetKillfeed(20),
-		"InitPlayers":  template.JS(playersJSON),
-		"InitScore":    template.JS(scoreJSON),
-		"CTTeamName":   ctTeamName,
-		"TTeamName":    tTeamName,
+		"Title":          h.aliases.Get(info.Name),
+		"Alias":          h.aliases.Get(info.Name),
+		"Server":         info,
+		"Status":         status,
+		"Scoreboard":     state.GetScoreboard(),
+		"Killfeed":       state.GetKillfeed(20),
+		"InitPlayers":    template.JS(playersJSON),
+		"InitScore":      template.JS(scoreJSON),
+		"CTTeamName":     ctTeamName,
+		"TTeamName":      tTeamName,
+		"Team1Name":      team1Name,
+		"Team2Name":      team2Name,
+		"Team1StartsCT":  team1StartsCT,
 	})
 }
 

@@ -146,6 +146,9 @@
     var _initGameMode = '{{.Server.GameMode}}';
     var _initScore = {{.InitScore}};
     var _initPlayers = {{.InitPlayers}};
+    var _team1Name = '{{.Team1Name}}';
+    var _team2Name = '{{.Team2Name}}';
+    var _team1StartsCT = {{if .Team1StartsCT}}true{{else}}false{{end}};
     document.addEventListener('DOMContentLoaded', function() {
         _currentGameMode = _initGameMode;
         _rconServerName = '{{.Server.Name}}';
