@@ -275,7 +275,8 @@ function renderDashboard(servers) {
                 '</div>';
         }
 
-        var modeLabel = s.mode ? s.mode.charAt(0).toUpperCase() + s.mode.slice(1) : '-';
+        var mode = (s.score && s.score.mode) ? s.score.mode : s.mode;
+        var modeLabel = mode ? mode.charAt(0).toUpperCase() + mode.slice(1) : '-';
 
         // Card layout (works on all screen sizes)
         html += '<a href="/admin/server/' + s.name + '" class="block bg-slate-800 border border-slate-700 rounded-lg p-4 hover:bg-slate-700/50 transition-colors">' +
