@@ -356,9 +356,10 @@ var _lastHostData = null;
 
 var _currentGameMode = '';
 var _lastScoreMap = '';
-var _inWarmup = true;
+var _inWarmup = false;
 var _statMode = 0; // 0 = K/D/A/MVP, 1 = HS%/KDR/ADR/EF/UD
 var _statModeLabels = ['Kills Deaths Assists MVPs', 'HS% KDR ADR UD EF'];
+var _showDeadEquip = false;
 
 // Game state WebSocket (players + killfeed) - renders from JSON client-side
 var _serverStopped = false;
@@ -616,6 +617,7 @@ function playerTeamBadge(team) {
 }
 
 function playerEquipIcons(p) {
+    if (!_showDeadEquip && !p.alive && p.online) return '';
     var html = '';
     if (p.bomb) html += '<img src="/static/icons/equipment/c4.svg" class="h-5 opacity-80" title="C4">';
     if (p.helmet) html += '<img src="/static/icons/equipment/helmet.svg" class="h-5 opacity-80" title="Helmet">';
@@ -1331,6 +1333,13 @@ function cycleStatMode() {
     _statMode = (_statMode + 1) % _statModeLabels.length;
     var btn = document.getElementById('stat-toggle');
     if (btn) btn.textContent = _statModeLabels[_statMode];
+    if (_lastPlayers.length) renderPlayers(_lastPlayers);
+}
+
+function toggleDeadEquip() {
+    _showDeadEquip = !_showDeadEquip;
+    var btn = document.getElementById('dead-equip-toggle');
+    if (btn) btn.textContent = _showDeadEquip ? 'Dead Equip: ON' : 'Dead Equip: OFF';
     if (_lastPlayers.length) renderPlayers(_lastPlayers);
 }
 

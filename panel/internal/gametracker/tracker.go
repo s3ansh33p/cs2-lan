@@ -242,7 +242,7 @@ func newServerState() *ServerState {
 		stats:      make(map[string]*PlayerStats),
 		accountMap: make(map[string]string),
 		slotMap:    make(map[int]string),
-		inWarmup:   true,
+		inWarmup:   false,
 		maxKills:   200,
 	}
 }
@@ -443,7 +443,6 @@ func (s *ServerState) recordKill(killer, killerTeam, victim, victimTeam, weapon 
 		p.Level--
 		p.LevelKills = 0
 	}
-	p.Weapons = make(map[string]bool)
 	s.mu.Unlock()
 	s.notify()
 }
@@ -463,7 +462,6 @@ func (s *ServerState) recordSuicide(name, team, weapon string) {
 	if team != "" {
 		p.Team = team
 	}
-	p.Weapons = make(map[string]bool)
 	s.mu.Unlock()
 	s.notify()
 }
@@ -481,7 +479,6 @@ func (s *ServerState) recordBombKill(name, team string) {
 	if team != "" {
 		p.Team = team
 	}
-	p.Weapons = make(map[string]bool)
 	s.mu.Unlock()
 	s.notify()
 }
