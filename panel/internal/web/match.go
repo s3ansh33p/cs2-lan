@@ -250,7 +250,7 @@ func (h *Handler) loadTeamNames(match *db.Match) (team1, team2 map[string]bool) 
 	return
 }
 
-// checkMatchDecided checks if a Bo1/Bo3 match is decided and advances the winner.
+// checkMatchDecided checks if a Bo1/Bo3/Bo5 match is decided and advances the winner.
 func (h *Handler) checkMatchDecided(match *db.Match, lastGameWinner int64) {
 	games, err := h.db.GetMatchGames(match.ID)
 	if err != nil {
@@ -264,7 +264,8 @@ func (h *Handler) checkMatchDecided(match *db.Match, lastGameWinner int64) {
 		return
 	}
 
-	// Bo3: need 2 wins
+	// Bo3/Bo5: need majority wins
+	winsNeeded := match.BestOf/2 + 1
 	wins := make(map[int64]int)
 	for _, g := range games {
 		if g.WinnerID != nil {
@@ -272,9 +273,9 @@ func (h *Handler) checkMatchDecided(match *db.Match, lastGameWinner int64) {
 		}
 	}
 	for teamID, w := range wins {
-		if w >= 2 {
+		if w >= winsNeeded {
 			if err := h.db.SetMatchWinner(match.ID, teamID); err != nil {
-				log.Printf("game-over: set bo3 winner: %v", err)
+				log.Printf("game-over: set bo%d winner: %v", match.BestOf, err)
 			}
 			return
 		}

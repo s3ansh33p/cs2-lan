@@ -276,8 +276,8 @@ func (db *DB) GetMatchByID(matchID int64) (*Match, error) {
 }
 
 func (db *DB) SetMatchBestOf(matchID int64, bestOf int) error {
-	if bestOf != 1 && bestOf != 3 {
-		return fmt.Errorf("bestOf must be 1 or 3, got %d", bestOf)
+	if bestOf != 1 && bestOf != 3 && bestOf != 5 {
+		return fmt.Errorf("bestOf must be 1, 3, or 5, got %d", bestOf)
 	}
 	_, err := db.Exec(`UPDATE matches SET best_of=? WHERE id=?`, bestOf, matchID)
 	return err

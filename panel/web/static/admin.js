@@ -1633,7 +1633,7 @@ function renderBracketMatch(m) {
 
     // Bo toggle — AJAX
     if (!m.winner) {
-        var nextBo = m.bestOf === 1 ? 3 : 1;
+        var nextBo = m.bestOf === 1 ? 3 : m.bestOf === 3 ? 5 : 1;
         html += '<button onclick="bracketAction(\'/admin/bracket/bestof\', {match_id:\'' + m.id + '\',best_of:\'' + nextBo + '\'})" class="bg-slate-600 hover:bg-slate-500 text-white rounded px-1.5 py-0.5">&rarr; Bo' + nextBo + '</button>';
     }
 
