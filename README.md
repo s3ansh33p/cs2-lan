@@ -83,7 +83,7 @@ Clicking into a server (`/admin/server/{name}`) gives you:
 
 **Live scoreboard** — Real-time player stats updated via WebSocket: kills, deaths, assists, ADR, headshot %, money, equipment (armor, helmet, defuser, bomb carrier), and purchased weapons/grenades with icons. Teams are split by CT/T side with round scores and half-time tracking. Warmup and pause states are detected and displayed. The columns are dependent on the game mode, e.g. Arms Race includes Knife and Zeus kills, Competitive modes include money and equipment etc.
 
-[SCREENSHOT OF THE LIVE SCOREBOARD DURING A MATCH TBA]
+![Scoreboard](docs/scoreboard-admin.png)
 
 **Killfeed** — A real-time feed of kills as they happen, showing killer, victim, weapon icon, and modifiers (headshot, wallbang, noscope, through smoke, blind kill, etc.). Bomb plants, defuses, and round end events also appear.
 

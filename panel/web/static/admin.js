@@ -44,7 +44,6 @@ function connectLogWS(serverName) {
     if (reconnectBtn) reconnectBtn.classList.add('hidden');
 
     ws.onopen = function() {
-        console.log('[log-ws] connected to', serverName);
         _logRetries = 0;
         if (status) {
             status.textContent = 'Connected';
@@ -55,7 +54,6 @@ function connectLogWS(serverName) {
     ws.onmessage = function(e) {
         // Server sent an error (e.g. container not found) — stop retrying
         if (typeof e.data === 'string' && e.data.indexOf('Error:') === 0) {
-            console.log('[log-ws] server error:', e.data);
             _gotError = true;
             _logRetries = _logMaxRetries;
             if (status) {
@@ -76,7 +74,6 @@ function connectLogWS(serverName) {
 
     ws.onclose = function() {
         if (_serverStopped || _gotError) return;
-        console.log('[log-ws] disconnected, retries=' + _logRetries);
         if (_logRetries < _logMaxRetries) {
             _logRetries++;
             if (status) {
@@ -93,9 +90,7 @@ function connectLogWS(serverName) {
         }
     };
 
-    ws.onerror = function() {
-        console.log('[log-ws] error');
-    };
+    ws.onerror = function() {};
 }
 
 function resetLogRetries() {
@@ -376,7 +371,6 @@ function connectGameWS(serverName) {
 
     ws.onopen = function() {
         _wsConnected = true;
-        console.log('[game-ws] connected to', serverName);
         if (_serverRestarting) {
             _serverRestarting = false;
             setServerStatus(null);
@@ -388,7 +382,6 @@ function connectGameWS(serverName) {
     ws.onmessage = function(e) {
         try {
             var data = JSON.parse(e.data);
-            console.log('[game-ws] received:', data.type, data.status || '');
             switch (data.type) {
                 case 'players':
                     if (data.score) renderScore(data.score);
@@ -419,17 +412,13 @@ function connectGameWS(serverName) {
         if (_serverStopped) return;
         // If WS never connected and not restarting, server doesn't exist — redirect
         if (!_wsConnected && !_serverRestarting) {
-            console.log('[game-ws] server not found, redirecting to dashboard');
             window.location.href = '/admin';
             return;
         }
-        console.log('[game-ws] closed, reconnecting in 3s...');
         setTimeout(function() { connectGameWS(serverName); }, 3000);
     };
 
-    ws.onerror = function(e) {
-        console.log('[game-ws] error:', e);
-    };
+    ws.onerror = function() {};
 }
 
 function renderScore(score) {
@@ -467,7 +456,7 @@ function renderScore(score) {
         document.getElementById('score-round').textContent = score.round;
 
         // Swap tournament team labels on side switch
-        if (typeof _team1Name !== 'undefined' && _team1Name) {
+        if (typeof _team1Name !== 'undefined' && _team1Name && _currentGameMode !== 'casual') {
             var team1IsCT = _team1StartsCT;
             if (score.half > 0 && score.round > score.half) {
                 team1IsCT = !team1IsCT;
@@ -518,7 +507,7 @@ function renderScore(score) {
     var half = score.half || 0;
     var maxR = score.maxRounds || (half * 2);
     var blank = '<span class="inline-block w-4 h-4"></span>';
-    var noHalves = _currentGameMode === 'demolition';
+    var noHalves = _currentGameMode === 'demolition' || _currentGameMode === 'casual';
 
     function getPeriod(roundNum) {
         // Demolition: single section, no halves
