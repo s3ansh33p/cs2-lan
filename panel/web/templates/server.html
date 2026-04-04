@@ -77,21 +77,21 @@
     <!-- RCON Console -->
     <div class="bg-slate-800 border border-slate-700 rounded-lg flex flex-col" style="height: 500px;">
         <div class="px-4 py-3 border-b border-slate-700 text-sm font-medium text-slate-300">RCON Console</div>
-        <div class="px-3 py-2 border-b border-slate-700/50 flex flex-wrap gap-1.5 text-xs">
+        <div class="px-3 py-2 border-b border-slate-700/50 flex flex-wrap items-center gap-1.5 text-xs">
             <span class="text-slate-500 py-1">Match:</span>
             <button onclick="rconQuick('mp_restartgame 1')" class="bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1">Restart</button>
             <button onclick="rconQuick('mp_warmup_end')" class="bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1">End Warmup</button>
             <button onclick="rconQuick('mp_pause_match')" class="bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1">Pause</button>
             <button onclick="rconQuick('mp_unpause_match')" class="bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1">Unpause</button>
-            <span class="text-slate-600">|</span>
+            <span class="text-slate-600" style="margin-top: -2.25px;">|</span>
             <span class="text-slate-500 py-1">Bots:</span>
             <button onclick="rconQuick('bot_add_ct')" class="bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1">+CT</button>
             <button onclick="rconQuick('bot_add_t')" class="bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1">+T</button>
             <button onclick="rconQuick('bot_kick')" class="bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1">Kick All</button>
-            <span class="text-slate-600">|</span>
+            <span class="text-slate-600" style="margin-top: -2.25px;">|</span>
             <select id="rcon-map-select" class="bg-slate-700 border-none text-white rounded px-2 py-1 text-xs"></select>
             <button onclick="rconQuickMap()" class="bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1">Change Map</button>
-            <span class="text-slate-600">|</span>
+            <span class="text-slate-600" style="margin-top: -2.25px;">|</span>
             <span class="text-slate-500 py-1">Mode:</span>
             <select id="rcon-mode-select" class="bg-slate-700 border-none text-white rounded px-2 py-1 text-xs">
                 <option value="competitive">Competitive</option>
@@ -102,10 +102,7 @@
                 <option value="wingman">Wingman</option>
             </select>
             <button onclick="rconQuickMode()" class="bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1">Switch</button>
-            <span class="text-slate-600">|</span>
-            <button onclick="rconQuick('sv_cheats 1; sv_enablebunnyhopping 1; sv_autobunnyhopping 1; sv_enablebunnyhopping 1; sv_staminamax 0; sv_staminajumpcost 0; sv_staminalandcost 0; sv_staminarecoveryrate 0; sv_airaccelerate 10000; sv_accelerate_use_weapon_speed 0; sv_maxvelocity 10000; ')" class="bg-emerald-700 hover:bg-emerald-600 text-white rounded px-2 py-1">BHop ON</button>
-            <button onclick="rconQuick('sv_enablebunnyhopping 0;sv_autobunnyhopping 0;sv_staminamax 80;sv_staminajumpcost 0.08;sv_staminalandcost 0.05;sv_staminarecoveryrate 60;sv_airaccelerate 12;sv_maxvelocity 3500;sv_cheats 0')" class="bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1">BHop OFF</button>
-            <span class="text-slate-600">|</span>
+            <span class="text-slate-600" style="margin-top: -2.25px;">|</span>
             <span class="text-slate-500 py-1">CSTV:</span>
             <button onclick="rconQuick('tv_enable 1; sv_deltaticks_enforce 0; tv_delaymapchange 1; tv_delay 90; mp_endmatch_votenextmap 1; mp_endmatch_votenextleveltime 120')" class="bg-emerald-700 hover:bg-emerald-600 text-white rounded px-2 py-1">Enable</button>
             <button onclick="rconQuick('tv_enable 0; tv_delay 0')" class="bg-slate-700 hover:bg-slate-600 text-white rounded px-2 py-1">Disable</button>
