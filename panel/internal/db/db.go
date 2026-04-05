@@ -40,9 +40,13 @@ func (db *DB) migrate() error {
 		`ALTER TABLE games ADD COLUMN h2_ct INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE games ADD COLUMN h2_t INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE games ADD COLUMN half_round INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE tournament ADD COLUMN deleted_at DATETIME`,
 	} {
 		db.Exec(q) // ignore errors (column already exists)
 	}
+
+	// Seed settings table with defaults if empty
+	db.Exec(`INSERT OR IGNORE INTO settings (key, value) VALUES ('active_tournament_id', '')`)
 	return nil
 }
 
@@ -130,6 +134,11 @@ CREATE TABLE IF NOT EXISTS game_player_stats (
 	ef INTEGER NOT NULL DEFAULT 0,
 	ud REAL NOT NULL DEFAULT 0,
 	UNIQUE(game_id, player_name)
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS server_aliases (

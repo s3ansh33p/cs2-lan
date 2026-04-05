@@ -27,7 +27,7 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	mux.HandleFunc("POST /login", a.HandleLogin)
 	mux.HandleFunc("POST /logout", a.HandleLogout)
 
-	// Public routes (bracket at root, no auth)
+	// Public routes — active tournament at root
 	mux.HandleFunc("GET /{$}", h.PublicBracket)
 	mux.HandleFunc("POST /teams", h.PublicCreateTeam)
 	mux.HandleFunc("POST /teams/{id}/members", h.PublicAddMember)
@@ -35,6 +35,12 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	mux.HandleFunc("POST /teams/{id}/rename", h.PublicRenameTeam)
 	mux.HandleFunc("GET /game/{gid}/stats", h.PublicGameStats)
 	mux.HandleFunc("GET /ws", h.BracketWebSocket)
+
+	// Public routes — specific tournament by ID
+	mux.HandleFunc("GET /tournaments", h.PublicTournamentList)
+	mux.HandleFunc("GET /tournament/{tid}", h.PublicTournamentBracket)
+	mux.HandleFunc("GET /tournament/{tid}/game/{gid}/stats", h.PublicGameStats)
+	mux.HandleFunc("GET /tournament/{tid}/ws", h.BracketWebSocket)
 
 	// Protected admin routes
 	protected := http.NewServeMux()
@@ -53,19 +59,27 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	protected.HandleFunc("POST /admin/server/{name}/restart", h.RestartServer)
 	protected.HandleFunc("POST /admin/server/{name}/stop", h.StopServer)
 
-	// Admin tournament routes
+	// Admin tournament routes — list/selector
 	protected.HandleFunc("GET /admin/tournament", h.AdminTournament)
+	protected.HandleFunc("GET /admin/tournament/{tid}", h.AdminTournamentDetail)
 	protected.HandleFunc("POST /admin/tournament/create", h.CreateTournament)
-	protected.HandleFunc("POST /admin/tournament/update", h.UpdateTournament)
-	protected.HandleFunc("POST /admin/tournament/delete", h.DeleteTournament)
-	protected.HandleFunc("POST /admin/tournament/status", h.SetTournamentStatus)
-	protected.HandleFunc("POST /admin/tournament/teams", h.AdminCreateTeam)
-	protected.HandleFunc("POST /admin/tournament/teams/{id}/delete", h.AdminDeleteTeam)
-	protected.HandleFunc("POST /admin/tournament/teams/{id}/members", h.AdminAddMember)
-	protected.HandleFunc("POST /admin/tournament/teams/{id}/members/{mid}/delete", h.AdminRemoveMember)
-	protected.HandleFunc("POST /admin/tournament/teams/{id}/rename", h.AdminRenameTeam)
-	protected.HandleFunc("POST /admin/bracket/seed", h.AdminSeedBracket)
-	protected.HandleFunc("POST /admin/bracket/delete", h.AdminDeleteBracket)
+
+	// Admin tournament routes — scoped by tournament ID
+	protected.HandleFunc("POST /admin/tournament/{tid}/update", h.UpdateTournament)
+	protected.HandleFunc("POST /admin/tournament/{tid}/delete", h.SoftDeleteTournament)
+	protected.HandleFunc("POST /admin/tournament/{tid}/restore", h.RestoreTournament)
+	protected.HandleFunc("POST /admin/tournament/{tid}/purge", h.PurgeTournament)
+	protected.HandleFunc("POST /admin/tournament/{tid}/status", h.SetTournamentStatus)
+	protected.HandleFunc("POST /admin/tournament/{tid}/active", h.SetActiveTournament)
+	protected.HandleFunc("POST /admin/tournament/{tid}/teams", h.AdminCreateTeam)
+	protected.HandleFunc("POST /admin/tournament/{tid}/teams/{id}/delete", h.AdminDeleteTeam)
+	protected.HandleFunc("POST /admin/tournament/{tid}/teams/{id}/members", h.AdminAddMember)
+	protected.HandleFunc("POST /admin/tournament/{tid}/teams/{id}/members/{mid}/delete", h.AdminRemoveMember)
+	protected.HandleFunc("POST /admin/tournament/{tid}/teams/{id}/rename", h.AdminRenameTeam)
+	protected.HandleFunc("POST /admin/tournament/{tid}/bracket/seed", h.AdminSeedBracket)
+	protected.HandleFunc("POST /admin/tournament/{tid}/bracket/delete", h.AdminDeleteBracket)
+
+	// Admin match/game routes — work by match/game ID (tournament-scoped via foreign keys)
 	protected.HandleFunc("POST /admin/bracket/bestof", h.AdminSetBestOf)
 	protected.HandleFunc("POST /admin/bracket/winner", h.AdminSetWinner)
 	protected.HandleFunc("POST /admin/bracket/swap", h.AdminSwapTeams)

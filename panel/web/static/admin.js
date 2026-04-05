@@ -1355,7 +1355,7 @@ function addMember(teamId, form) {
     var input = form.querySelector('[name="steam_name"]');
     var name = input.value.trim();
     if (!name) return false;
-    fetch('/admin/tournament/teams/' + teamId + '/members', {
+    fetch('/admin/tournament/' + _tournamentID + '/teams/' + teamId + '/members', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest'},
         body: 'steam_name=' + encodeURIComponent(name)
@@ -1413,7 +1413,7 @@ function bracketAction(url, params) {
 
 function adminAddTeam(form) {
     var data = new URLSearchParams(new FormData(form));
-    fetch('/admin/tournament/teams', {
+    fetch('/admin/tournament/' + _tournamentID + '/teams', {
         method: 'POST',
         headers: {'X-Requested-With': 'XMLHttpRequest'},
         body: data
@@ -1424,7 +1424,7 @@ function adminAddTeam(form) {
 
 function adminDeleteTeam(teamId) {
     if (!confirm('Delete team?')) return;
-    fetch('/admin/tournament/teams/' + teamId + '/delete', {
+    fetch('/admin/tournament/' + _tournamentID + '/teams/' + teamId + '/delete', {
         method: 'POST',
         headers: {'X-Requested-With': 'XMLHttpRequest'}
     });
@@ -1450,7 +1450,7 @@ function adminRenameTeam(teamId, btn) {
             input.replaceWith(s);
             return;
         }
-        fetch('/admin/tournament/teams/' + teamId + '/rename', {
+        fetch('/admin/tournament/' + _tournamentID + '/teams/' + teamId + '/rename', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest'},
             body: 'name=' + encodeURIComponent(name)
@@ -1505,7 +1505,7 @@ function renderAdminTeams(teams) {
 }
 
 function removeMember(teamId, memberId, btn) {
-    fetch('/admin/tournament/teams/' + teamId + '/members/' + memberId + '/delete', {
+    fetch('/admin/tournament/' + _tournamentID + '/teams/' + teamId + '/members/' + memberId + '/delete', {
         method: 'POST',
         headers: {'X-Requested-With': 'XMLHttpRequest'}
     }).then(function() {
@@ -1646,10 +1646,14 @@ var _adminBracketWS = null;
 var _adminBracketRetries = 0;
 var _lastAdminBracketJSON = '';
 function connectAdminBracketWS() {
+    // No live updates for completed tournaments
+    if (typeof _tournamentID === 'undefined' || !_tournamentID) return;
+    if (typeof _tournamentStatus !== 'undefined' && _tournamentStatus === 'completed') return;
+
     if (_adminBracketWS) { try { _adminBracketWS.close(); } catch(e) {} }
 
     var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var ws = new WebSocket(protocol + '//' + location.host + '/ws');
+    var ws = new WebSocket(protocol + '//' + location.host + '/tournament/' + _tournamentID + '/ws');
     _adminBracketWS = ws;
 
     ws.onmessage = function(e) {

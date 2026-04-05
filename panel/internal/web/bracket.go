@@ -15,7 +15,7 @@ import (
 )
 
 func (h *Handler) PublicBracket(w http.ResponseWriter, r *http.Request) {
-	tournament, err := h.db.GetTournament()
+	tournament, err := h.db.GetActiveTournament()
 	if err != nil {
 		log.Printf("get tournament: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -59,28 +59,132 @@ func (h *Handler) PublicBracket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var tournamentID int64
+	if tournament != nil {
+		tournamentID = tournament.ID
+	}
+
 	h.render(w, "bracket.html", map[string]any{
-		"Title":       "Bracket",
-		"Tournament":  tournament,
-		"Teams":       teams,
-		"Bracket":     bracket,
-		"CanRegister": canRegister,
-		"ConnectInfo": connectInfo,
-		"GamePorts":   gamePorts,
+		"Title":        "Bracket",
+		"Tournament":   tournament,
+		"Teams":        teams,
+		"Bracket":      bracket,
+		"CanRegister":  canRegister,
+		"ConnectInfo":  connectInfo,
+		"GamePorts":    gamePorts,
+		"TournamentID": tournamentID,
 	})
+}
+
+// PublicTournamentList shows all non-active, non-deleted tournaments.
+func (h *Handler) PublicTournamentList(w http.ResponseWriter, r *http.Request) {
+	tournaments, _ := h.db.ListTournaments()
+	activeID, _ := h.db.GetActiveTournamentID()
+
+	// Filter out the active tournament
+	var past []db.Tournament
+	for _, t := range tournaments {
+		if t.ID != activeID {
+			past = append(past, t)
+		}
+	}
+
+	h.render(w, "tournaments.html", map[string]any{
+		"Title":       "Past Tournaments",
+		"Tournaments": past,
+	})
+}
+
+// PublicTournamentBracket shows a specific tournament's bracket by ID.
+func (h *Handler) PublicTournamentBracket(w http.ResponseWriter, r *http.Request) {
+	tid, err := strconv.ParseInt(r.PathValue("tid"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
+		return
+	}
+
+	tournament, err := h.db.GetTournamentByID(tid)
+	if err != nil || tournament == nil || tournament.DeletedAt != nil {
+		http.Error(w, "Tournament not found", http.StatusNotFound)
+		return
+	}
+
+	var teams []db.Team
+	var bracket []db.Match
+	var canRegister bool
+	var connectInfo string
+
+	gamePorts := make(map[string]int)
+
+	teams, _ = h.db.ListTeams(tournament.ID)
+	bracket, _ = h.db.GetBracket(tournament.ID)
+	canRegister = tournament.CanRegister()
+
+	if tournament.ServerIP != "" {
+		connectInfo = fmt.Sprintf("connect %s", tournament.ServerIP)
+		if tournament.ServerPassword != "" {
+			connectInfo += fmt.Sprintf("; password %s", tournament.ServerPassword)
+		}
+	}
+
+	if tournament.Status != "completed" {
+		servers, _ := h.docker.ListServers(r.Context())
+		serverPorts := make(map[string]int)
+		for _, s := range servers {
+			serverPorts[s.Name] = s.Port
+		}
+		for _, m := range bracket {
+			for _, g := range m.Games {
+				if g.Status == "live" && g.ServerName != "" {
+					if port, ok := serverPorts[g.ServerName]; ok {
+						gamePorts[g.ServerName] = port
+					}
+				}
+			}
+		}
+	}
+
+	h.render(w, "bracket.html", map[string]any{
+		"Title":        tournament.Name,
+		"Tournament":   tournament,
+		"Teams":        teams,
+		"Bracket":      bracket,
+		"CanRegister":  canRegister,
+		"ConnectInfo":  connectInfo,
+		"GamePorts":    gamePorts,
+		"TournamentID": tournament.ID,
+	})
+}
+
+// publicTournament resolves the tournament from a form's tournament_id field,
+// falling back to the active tournament. Returns the tournament and the redirect URL.
+func (h *Handler) publicTournament(r *http.Request) (*db.Tournament, string) {
+	redirect := "/"
+	if tidStr := r.FormValue("tournament_id"); tidStr != "" {
+		tid, err := strconv.ParseInt(tidStr, 10, 64)
+		if err == nil && tid > 0 {
+			t, err := h.db.GetTournamentByID(tid)
+			if err == nil && t != nil {
+				redirect = fmt.Sprintf("/tournament/%d", tid)
+				return t, redirect
+			}
+		}
+	}
+	t, _ := h.db.GetActiveTournament()
+	return t, redirect
 }
 
 // Public team creation (during registration window)
 func (h *Handler) PublicCreateTeam(w http.ResponseWriter, r *http.Request) {
-	tournament, err := h.db.GetTournament()
-	if err != nil || tournament == nil || !tournament.CanRegister() {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+	tournament, redirect := h.publicTournament(r)
+	if tournament == nil || !tournament.CanRegister() {
+		http.Redirect(w, r, redirect, http.StatusSeeOther)
 		return
 	}
 
 	name := sanitize(r.FormValue("name"))
 	if name == "" {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		http.Redirect(w, r, redirect, http.StatusSeeOther)
 		return
 	}
 
@@ -94,27 +198,27 @@ func (h *Handler) PublicCreateTeam(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"id": teamID, "name": name})
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, redirect, http.StatusSeeOther)
 }
 
 // Public add member (during registration window)
 func (h *Handler) PublicAddMember(w http.ResponseWriter, r *http.Request) {
-	tournament, err := h.db.GetTournament()
-	if err != nil || tournament == nil || !tournament.CanRegister() {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+	tournament, redirect := h.publicTournament(r)
+	if tournament == nil || !tournament.CanRegister() {
+		http.Redirect(w, r, redirect, http.StatusSeeOther)
 		return
 	}
 
 	teamID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	steamName := sanitize(r.FormValue("steam_name"))
 	if steamName == "" {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		http.Redirect(w, r, redirect, http.StatusSeeOther)
 		return
 	}
 
 	members, _ := h.db.ListMembers(teamID)
 	if len(members) >= tournament.TeamSize {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		http.Redirect(w, r, redirect, http.StatusSeeOther)
 		return
 	}
 
@@ -128,14 +232,14 @@ func (h *Handler) PublicAddMember(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"id": mid, "team_id": teamID, "name": steamName})
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, redirect, http.StatusSeeOther)
 }
 
 // Public remove member (during registration window)
 func (h *Handler) PublicRemoveMember(w http.ResponseWriter, r *http.Request) {
-	tournament, err := h.db.GetTournament()
-	if err != nil || tournament == nil || !tournament.CanRegister() {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+	tournament, redirect := h.publicTournament(r)
+	if tournament == nil || !tournament.CanRegister() {
+		http.Redirect(w, r, redirect, http.StatusSeeOther)
 		return
 	}
 
@@ -148,14 +252,14 @@ func (h *Handler) PublicRemoveMember(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, redirect, http.StatusSeeOther)
 }
 
 // Public rename team (during registration window)
 func (h *Handler) PublicRenameTeam(w http.ResponseWriter, r *http.Request) {
-	tournament, err := h.db.GetTournament()
-	if err != nil || tournament == nil || !tournament.CanRegister() {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+	tournament, redirect := h.publicTournament(r)
+	if tournament == nil || !tournament.CanRegister() {
+		http.Redirect(w, r, redirect, http.StatusSeeOther)
 		return
 	}
 
@@ -165,7 +269,7 @@ func (h *Handler) PublicRenameTeam(w http.ResponseWriter, r *http.Request) {
 		if isAJAX(r) {
 			http.Error(w, "Name required", http.StatusBadRequest)
 		} else {
-			http.Redirect(w, r, "/", http.StatusSeeOther)
+			http.Redirect(w, r, redirect, http.StatusSeeOther)
 		}
 		return
 	}
@@ -178,16 +282,25 @@ func (h *Handler) PublicRenameTeam(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, redirect, http.StatusSeeOther)
 }
 
-// notifyBracket pushes an update signal to all bracket WS subscribers.
-func (h *Handler) notifyBracket() {
+// notifyBracket pushes an update signal to subscribers watching a specific tournament.
+func (h *Handler) notifyBracket(tournamentID ...int64) {
 	h.bracketMu.RLock()
-	subs := make([]chan struct{}, len(h.bracketSubs))
-	copy(subs, h.bracketSubs)
+	var allSubs []chan struct{}
+	if len(tournamentID) > 0 {
+		for _, tid := range tournamentID {
+			allSubs = append(allSubs, h.bracketSubs[tid]...)
+		}
+	} else {
+		// No ID specified — notify all (backward compat for match/game handlers)
+		for _, subs := range h.bracketSubs {
+			allSubs = append(allSubs, subs...)
+		}
+	}
 	h.bracketMu.RUnlock()
-	for _, ch := range subs {
+	for _, ch := range allSubs {
 		select {
 		case ch <- struct{}{}:
 		default:
@@ -195,17 +308,18 @@ func (h *Handler) notifyBracket() {
 	}
 }
 
-func (h *Handler) subscribeBracket() (<-chan struct{}, func()) {
+func (h *Handler) subscribeBracket(tournamentID int64) (<-chan struct{}, func()) {
 	ch := make(chan struct{}, 1)
 	h.bracketMu.Lock()
-	h.bracketSubs = append(h.bracketSubs, ch)
+	h.bracketSubs[tournamentID] = append(h.bracketSubs[tournamentID], ch)
 	h.bracketMu.Unlock()
 	return ch, func() {
 		h.bracketMu.Lock()
 		defer h.bracketMu.Unlock()
-		for i, c := range h.bracketSubs {
+		subs := h.bracketSubs[tournamentID]
+		for i, c := range subs {
 			if c == ch {
-				h.bracketSubs = append(h.bracketSubs[:i], h.bracketSubs[i+1:]...)
+				h.bracketSubs[tournamentID] = append(subs[:i], subs[i+1:]...)
 				break
 			}
 		}
@@ -214,6 +328,36 @@ func (h *Handler) subscribeBracket() (<-chan struct{}, func()) {
 
 // BracketWebSocket pushes bracket updates to public viewers.
 func (h *Handler) BracketWebSocket(w http.ResponseWriter, r *http.Request) {
+	// Resolve tournament ID: from URL path or active tournament
+	var tournamentID int64
+	if tidStr := r.PathValue("tid"); tidStr != "" {
+		var err error
+		tournamentID, err = strconv.ParseInt(tidStr, 10, 64)
+		if err != nil {
+			http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
+			return
+		}
+	} else {
+		id, _ := h.db.GetActiveTournamentID()
+		tournamentID = id
+	}
+
+	if tournamentID == 0 {
+		http.Error(w, "No tournament", http.StatusNotFound)
+		return
+	}
+
+	// Refuse WS for completed tournaments
+	tournament, err := h.db.GetTournamentByID(tournamentID)
+	if err != nil || tournament == nil {
+		http.Error(w, "Tournament not found", http.StatusNotFound)
+		return
+	}
+	if tournament.Status == "completed" {
+		http.Error(w, "Tournament completed, no live updates", http.StatusGone)
+		return
+	}
+
 	conn, done, err := setupWSConn(w, r)
 	if err != nil {
 		log.Printf("ws bracket upgrade: %v", err)
@@ -221,14 +365,14 @@ func (h *Handler) BracketWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	updates, unsub := h.subscribeBracket()
+	updates, unsub := h.subscribeBracket(tournamentID)
 	defer unsub()
 
 	pingTicker := time.NewTicker(pingInterval)
 	defer pingTicker.Stop()
 
 	// Send initial bracket state
-	h.sendBracketState(conn)
+	h.sendBracketState(conn, tournamentID)
 
 	for {
 		select {
@@ -240,15 +384,15 @@ func (h *Handler) BracketWebSocket(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-updates:
-			if err := h.sendBracketState(conn); err != nil {
+			if err := h.sendBracketState(conn, tournamentID); err != nil {
 				return
 			}
 		}
 	}
 }
 
-func (h *Handler) sendBracketState(conn *websocket.Conn) error {
-	tournament, err := h.db.GetTournament()
+func (h *Handler) sendBracketState(conn *websocket.Conn, tournamentID int64) error {
+	tournament, err := h.db.GetTournamentByID(tournamentID)
 	if err != nil || tournament == nil {
 		return nil
 	}

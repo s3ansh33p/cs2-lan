@@ -7,7 +7,7 @@ build: css
 	CGO_ENABLED=0 go build -o cs2-panel ./cmd/panel
 
 run: build
-	./cs2-panel --password admin --compose-file ../docker-compose.yml
+	./cs2-panel --password a --compose-file ../docker-compose.yml --tls
 
 clean:
 	rm -f cs2-panel

@@ -1,52 +1,104 @@
 {{define "content"}}
 <div class="mb-6">
-    <h1 class="text-2xl font-bold mb-1">Tournament</h1>
+    <h1 class="text-2xl font-bold mb-1">{{.Title}}</h1>
     <p class="text-slate-400 text-sm">Manage tournament settings, teams, and brackets.</p>
 </div>
 
 {{if not .Tournament}}
-<!-- No tournament — create one -->
-<div class="bg-slate-800 border border-slate-700 rounded-lg p-6 max-w-lg">
-    <h2 class="text-lg font-semibold mb-4">Create Tournament</h2>
-    <form method="POST" action="/admin/tournament/create" class="space-y-4">
-        <div>
-            <label class="block text-sm text-slate-400 mb-1">Name</label>
-            <input type="text" name="name" value="LAN Tournament" required
-                class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+<!-- Tournament list / selector view -->
+<div class="space-y-4 max-w-2xl">
+    {{if .Tournaments}}
+    <div class="space-y-2">
+        {{range .Tournaments}}
+        <a href="/admin/tournament/{{.ID}}" class="flex items-center justify-between bg-slate-800 border border-slate-700 rounded-lg p-4 hover:bg-slate-700 transition-colors">
+            <div class="flex items-center gap-3">
+                <span class="text-white font-medium">{{.Name}}</span>
+                <span class="text-xs font-medium rounded px-2 py-0.5 capitalize
+                    {{if eq .Status "draft"}}bg-slate-600 text-slate-300
+                    {{else if eq .Status "registration"}}bg-green-600/20 text-green-400
+                    {{else if eq .Status "locked"}}bg-yellow-600/20 text-yellow-400
+                    {{else if eq .Status "active"}}bg-orange-600/20 text-orange-400
+                    {{else if eq .Status "completed"}}bg-blue-600/20 text-blue-400
+                    {{end}}">{{.Status}}</span>
+                {{if eq .ID $.ActiveID}}<span class="text-xs bg-orange-600/20 text-orange-400 rounded px-2 py-0.5">Featured</span>{{end}}
+            </div>
+            <span class="text-xs text-slate-500">{{.CreatedAt.Format "Jan 2, 2006"}}</span>
+        </a>
+        {{end}}
+    </div>
+    {{end}}
+
+    {{if .Deleted}}
+    <div class="mt-6">
+        <h3 class="text-sm font-medium text-slate-500 mb-2">Trashed</h3>
+        <div class="space-y-2">
+            {{range .Deleted}}
+            <div class="flex items-center justify-between bg-slate-800/50 border border-slate-700/50 rounded-lg p-4 opacity-60">
+                <div class="flex items-center gap-3">
+                    <span class="text-slate-400 font-medium">{{.Name}}</span>
+                    <span class="text-xs text-slate-500">{{.Status}}</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <form method="POST" action="/admin/tournament/{{.ID}}/restore">
+                        <button type="submit" class="text-xs text-green-400 hover:text-green-300">Restore</button>
+                    </form>
+                    <form method="POST" action="/admin/tournament/{{.ID}}/purge" onsubmit="return confirm('Permanently delete this tournament and all its data?')">
+                        <button type="submit" class="text-xs text-red-400 hover:text-red-300">Delete Forever</button>
+                    </form>
+                </div>
+            </div>
+            {{end}}
         </div>
-        <div>
-            <label class="block text-sm text-slate-400 mb-1">Team Size (players per team)</label>
-            <input type="number" name="team_size" value="5" min="1" max="10"
-                class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
-        </div>
-        <div>
-            <label class="block text-sm text-slate-400 mb-1">Game Mode</label>
-            <select name="game_mode"
-                class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
-                <option value="competitive">Competitive</option>
-                <option value="wingman">Wingman</option>
-                <option value="casual">Casual</option>
-                <option value="deathmatch">Deathmatch</option>
-            </select>
-        </div>
-        <div>
-            <label class="block text-sm text-slate-400 mb-1">Server IP (shown to players for connect command)</label>
-            <input type="text" name="server_ip" placeholder="192.168.1.100"
-                class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
-        </div>
-        <div>
-            <label class="block text-sm text-slate-400 mb-1">Server Password (optional)</label>
-            <input type="text" name="server_password" placeholder=""
-                class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
-        </div>
-        <button type="submit" class="bg-orange-600 hover:bg-orange-700 text-white font-medium rounded px-4 py-2 text-sm">
-            Create Tournament
-        </button>
-    </form>
+    </div>
+    {{end}}
+
+    <!-- Create new tournament -->
+    <div class="bg-slate-800 border border-slate-700 rounded-lg p-6 mt-6">
+        <h2 class="text-lg font-semibold mb-4">New Tournament</h2>
+        <form method="POST" action="/admin/tournament/create" class="space-y-4">
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Name</label>
+                <input type="text" name="name" value="LAN Tournament" required
+                    class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Team Size (players per team)</label>
+                <input type="number" name="team_size" value="5" min="1" max="10"
+                    class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Game Mode</label>
+                <select name="game_mode"
+                    class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+                    <option value="competitive">Competitive</option>
+                    <option value="wingman">Wingman</option>
+                    <option value="casual">Casual</option>
+                    <option value="deathmatch">Deathmatch</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Server IP (shown to players for connect command)</label>
+                <input type="text" name="server_ip" placeholder="192.168.1.100"
+                    class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Server Password (optional)</label>
+                <input type="text" name="server_password" placeholder=""
+                    class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+            </div>
+            <button type="submit" class="bg-orange-600 hover:bg-orange-700 text-white font-medium rounded px-4 py-2 text-sm">
+                Create Tournament
+            </button>
+        </form>
+    </div>
 </div>
 {{else}}
 
-<!-- Tournament exists — show settings + teams -->
+<!-- Tournament detail view -->
+<div class="mb-4">
+    <a href="/admin/tournament" class="text-sm text-slate-400 hover:text-white">&larr; All Tournaments</a>
+</div>
+
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
     <!-- Settings -->
     <div class="lg:col-span-2 space-y-6">
@@ -54,7 +106,8 @@
             <div class="flex items-center justify-between mb-4">
                 <h2 class="text-lg font-semibold">Settings</h2>
                 <div class="flex items-center gap-2">
-                    <span class="text-xs font-medium rounded px-2 py-0.5
+                    {{if .IsActive}}<span class="text-xs bg-orange-600/20 text-orange-400 rounded px-2 py-0.5">Featured</span>{{end}}
+                    <span class="text-xs font-medium rounded px-2 py-0.5 capitalize
                         {{if eq .Tournament.Status "draft"}}bg-slate-600 text-slate-300
                         {{else if eq .Tournament.Status "registration"}}bg-green-600/20 text-green-400
                         {{else if eq .Tournament.Status "locked"}}bg-yellow-600/20 text-yellow-400
@@ -63,7 +116,7 @@
                         {{end}}">{{.Tournament.Status}}</span>
                 </div>
             </div>
-            <form method="POST" action="/admin/tournament/update" class="space-y-4">
+            <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/update" class="space-y-4">
                 <div class="grid grid-cols-2 gap-4">
                     <div>
                         <label class="block text-sm text-slate-400 mb-1">Name</label>
@@ -122,8 +175,15 @@
         <div class="bg-slate-800 border border-slate-700 rounded-lg p-6">
             <h2 class="text-lg font-semibold mb-4">Status</h2>
             <div class="flex flex-wrap gap-2">
+                {{if not .IsActive}}
+                <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/active">
+                    <button type="submit" class="bg-orange-600 hover:bg-orange-700 text-white font-medium rounded px-4 py-2 text-sm">
+                        Set as Featured
+                    </button>
+                </form>
+                {{end}}
                 {{if eq .Tournament.Status "draft"}}
-                <form method="POST" action="/admin/tournament/status">
+                <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/status">
                     <input type="hidden" name="status" value="registration">
                     <button type="submit" class="bg-green-600 hover:bg-green-700 text-white font-medium rounded px-4 py-2 text-sm">
                         Open Registration
@@ -131,7 +191,7 @@
                 </form>
                 {{end}}
                 {{if eq .Tournament.Status "registration"}}
-                <form method="POST" action="/admin/tournament/status">
+                <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/status">
                     <input type="hidden" name="status" value="locked">
                     <button type="submit" class="bg-yellow-600 hover:bg-yellow-700 text-white font-medium rounded px-4 py-2 text-sm">
                         Lock Teams
@@ -139,13 +199,13 @@
                 </form>
                 {{end}}
                 {{if eq .Tournament.Status "locked"}}
-                <form method="POST" action="/admin/tournament/status">
+                <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/status">
                     <input type="hidden" name="status" value="active">
                     <button type="submit" class="bg-orange-600 hover:bg-orange-700 text-white font-medium rounded px-4 py-2 text-sm">
                         Start Tournament
                     </button>
                 </form>
-                <form method="POST" action="/admin/tournament/status">
+                <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/status">
                     <input type="hidden" name="status" value="registration">
                     <button type="submit" class="bg-slate-600 hover:bg-slate-500 text-white font-medium rounded px-3 py-2 text-sm">
                         Re-open Registration
@@ -153,16 +213,16 @@
                 </form>
                 {{end}}
                 {{if eq .Tournament.Status "active"}}
-                <form method="POST" action="/admin/tournament/status">
+                <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/status">
                     <input type="hidden" name="status" value="completed">
                     <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-medium rounded px-4 py-2 text-sm">
                         Complete Tournament
                     </button>
                 </form>
                 {{end}}
-                <form method="POST" action="/admin/tournament/delete" onsubmit="return confirm('Delete this tournament and all data?')">
+                <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/delete" onsubmit="return confirm('Move this tournament to trash?')">
                     <button type="submit" class="bg-red-600 hover:bg-red-700 text-white font-medium rounded px-4 py-2 text-sm">
-                        Delete Tournament
+                        Trash
                     </button>
                 </form>
             </div>
@@ -191,6 +251,8 @@
     </div>
 </div>
 <script>
+var _tournamentID = {{.Tournament.ID}};
+var _tournamentStatus = "{{.Tournament.Status}}";
 var _teamsData = [
 {{range .Teams}}{id:{{.ID}}, name:"{{.Name}}", members:[{{range .Members}}{id:{{.ID}}, teamId:{{.TeamID}}, steamName:"{{.SteamName}}"},{{end}}]},{{end}}
 ];
@@ -208,7 +270,7 @@ connectAdminBracketWS();
 <div id="seed-section" class="mt-6 bg-slate-800 border border-slate-700 rounded-lg p-6" style="display:none">
     <h2 id="seed-heading" class="text-lg font-semibold mb-4">{{if .Bracket}}Regenerate Bracket{{else}}Generate Bracket{{end}}</h2>
     <p class="text-sm text-slate-400 mb-4">Order teams by seed (drag to reorder), then generate the bracket.</p>
-    <form method="POST" action="/admin/bracket/seed">
+    <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/bracket/seed">
         <input type="hidden" name="team_ids" id="seed-order">
         <ul id="seed-list" class="space-y-1 mb-4"></ul>
         <button id="seed-submit" type="submit" onclick="return prepSeedOrder()" class="bg-orange-600 hover:bg-orange-700 text-white font-medium rounded px-4 py-2 text-sm">
@@ -303,11 +365,15 @@ renderSeedList(_teamsData);
         <h2 class="text-lg font-semibold">Bracket</h2>
         <div class="flex items-center gap-3">
             {{if not (or (eq .Tournament.Status "active") (eq .Tournament.Status "completed"))}}
-            <form method="POST" action="/admin/bracket/delete" onsubmit="return confirm('Delete the entire bracket and all game data?')">
+            <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/bracket/delete" onsubmit="return confirm('Delete the entire bracket and all game data?')">
                 <button type="submit" class="text-red-400 hover:text-red-300 text-sm">Delete Bracket</button>
             </form>
             {{end}}
+            {{if .IsActive}}
             <a href="/" target="_blank" class="text-orange-400 hover:text-orange-300 text-sm">Public View &rarr;</a>
+            {{else}}
+            <a href="/tournament/{{.Tournament.ID}}" target="_blank" class="text-orange-400 hover:text-orange-300 text-sm">Public View &rarr;</a>
+            {{end}}
         </div>
     </div>
     <div id="bracket-view" class="overflow-x-auto">

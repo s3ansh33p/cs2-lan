@@ -8,30 +8,57 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"cs2-panel/internal/db"
 )
 
+// parseTID extracts the tournament ID from the {tid} path value.
+func parseTID(r *http.Request) (int64, error) {
+	return strconv.ParseInt(r.PathValue("tid"), 10, 64)
+}
+
+// adminTournamentRedirect returns the redirect URL for a tournament detail page.
+func adminTournamentRedirect(tid int64) string {
+	return fmt.Sprintf("/admin/tournament/%d", tid)
+}
+
+// AdminTournament shows the tournament list/selector page.
 func (h *Handler) AdminTournament(w http.ResponseWriter, r *http.Request) {
-	tournament, err := h.db.GetTournament()
+	tournaments, _ := h.db.ListTournaments()
+	deleted, _ := h.db.ListDeletedTournaments()
+	activeID, _ := h.db.GetActiveTournamentID()
+
+	h.render(w, "admin_tournament.html", map[string]any{
+		"Title":       "Tournaments",
+		"Tournaments": tournaments,
+		"Deleted":     deleted,
+		"ActiveID":    activeID,
+	})
+}
+
+// AdminTournamentDetail shows a specific tournament's settings, teams, and bracket.
+func (h *Handler) AdminTournamentDetail(w http.ResponseWriter, r *http.Request) {
+	tid, err := parseTID(r)
 	if err != nil {
-		log.Printf("get tournament: %v", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
 		return
 	}
 
-	var teams []db.Team
-	var bracket []db.Match
-	if tournament != nil {
-		teams, _ = h.db.ListTeams(tournament.ID)
-		bracket, _ = h.db.GetBracket(tournament.ID)
+	tournament, err := h.db.GetTournamentByID(tid)
+	if err != nil || tournament == nil {
+		http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+		return
 	}
 
+	teams, _ := h.db.ListTeams(tournament.ID)
+	bracket, _ := h.db.GetBracket(tournament.ID)
+	activeID, _ := h.db.GetActiveTournamentID()
+
 	h.render(w, "admin_tournament.html", map[string]any{
-		"Title":      "Tournament",
+		"Title":      tournament.Name,
 		"Tournament": tournament,
 		"Teams":      teams,
 		"Bracket":    bracket,
+		"IsActive":   tournament.ID == activeID,
+		"ActiveID":   activeID,
 	})
 }
 
@@ -51,18 +78,24 @@ func (h *Handler) CreateTournament(w http.ResponseWriter, r *http.Request) {
 	serverIP := r.FormValue("server_ip")
 	serverPassword := r.FormValue("server_password")
 
-	_, err := h.db.CreateTournament(name, teamSize, gameMode, serverIP, serverPassword)
+	t, err := h.db.CreateTournament(name, teamSize, gameMode, serverIP, serverPassword)
 	if err != nil {
 		log.Printf("create tournament: %v", err)
 		http.Error(w, "Failed to create tournament", http.StatusInternalServerError)
 		return
 	}
 
-	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+	http.Redirect(w, r, adminTournamentRedirect(t.ID), http.StatusSeeOther)
 }
 
 func (h *Handler) UpdateTournament(w http.ResponseWriter, r *http.Request) {
-	tournament, err := h.db.GetTournament()
+	tid, err := parseTID(r)
+	if err != nil {
+		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
+		return
+	}
+
+	tournament, err := h.db.GetTournamentByID(tid)
 	if err != nil || tournament == nil {
 		http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 		return
@@ -94,29 +127,53 @@ func (h *Handler) UpdateTournament(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.db.UpdateTournament(tournament.ID, name, teamSize, gameMode, regOpen, regClose, serverIP, serverPassword); err != nil {
+	if err := h.db.UpdateTournament(tid, name, teamSize, gameMode, regOpen, regClose, serverIP, serverPassword); err != nil {
 		log.Printf("update tournament: %v", err)
 	}
 
+	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
+}
+
+func (h *Handler) SoftDeleteTournament(w http.ResponseWriter, r *http.Request) {
+	tid, err := parseTID(r)
+	if err != nil {
+		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
+		return
+	}
+	if err := h.db.SoftDeleteTournament(tid); err != nil {
+		log.Printf("soft delete tournament: %v", err)
+	}
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 }
 
-func (h *Handler) DeleteTournament(w http.ResponseWriter, r *http.Request) {
-	tournament, err := h.db.GetTournament()
-	if err != nil || tournament == nil {
-		http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+func (h *Handler) RestoreTournament(w http.ResponseWriter, r *http.Request) {
+	tid, err := parseTID(r)
+	if err != nil {
+		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
 		return
 	}
-	if err := h.db.DeleteTournament(tournament.ID); err != nil {
-		log.Printf("delete tournament: %v", err)
+	if err := h.db.RestoreTournament(tid); err != nil {
+		log.Printf("restore tournament: %v", err)
+	}
+	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+}
+
+func (h *Handler) PurgeTournament(w http.ResponseWriter, r *http.Request) {
+	tid, err := parseTID(r)
+	if err != nil {
+		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
+		return
+	}
+	if err := h.db.PurgeTournament(tid); err != nil {
+		log.Printf("purge tournament: %v", err)
 	}
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 }
 
 func (h *Handler) SetTournamentStatus(w http.ResponseWriter, r *http.Request) {
-	tournament, err := h.db.GetTournament()
-	if err != nil || tournament == nil {
-		http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+	tid, err := parseTID(r)
+	if err != nil {
+		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
 		return
 	}
 
@@ -127,34 +184,47 @@ func (h *Handler) SetTournamentStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.db.SetTournamentStatus(tournament.ID, status); err != nil {
+	if err := h.db.SetTournamentStatus(tid, status); err != nil {
 		log.Printf("set tournament status: %v", err)
 	}
 	h.notifyBracket()
-	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
+}
+
+func (h *Handler) SetActiveTournament(w http.ResponseWriter, r *http.Request) {
+	tid, err := parseTID(r)
+	if err != nil {
+		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
+		return
+	}
+	if err := h.db.SetActiveTournament(tid); err != nil {
+		log.Printf("set active tournament: %v", err)
+	}
+	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 }
 
 // Admin team management
+
 func (h *Handler) AdminCreateTeam(w http.ResponseWriter, r *http.Request) {
-	tournament, err := h.db.GetTournament()
-	if err != nil || tournament == nil {
-		http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+	tid, err := parseTID(r)
+	if err != nil {
+		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
 		return
 	}
 
 	name := sanitize(r.FormValue("name"))
 	if name == "" {
-		http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+		http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 		return
 	}
 
-	teamID, err := h.db.CreateTeam(tournament.ID, name)
+	teamID, err := h.db.CreateTeam(tid, name)
 	if err != nil {
 		log.Printf("create team: %v", err)
 		if isAJAX(r) {
 			http.Error(w, "Failed", http.StatusInternalServerError)
 		} else {
-			http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+			http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 		}
 		return
 	}
@@ -164,10 +234,11 @@ func (h *Handler) AdminCreateTeam(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"id": teamID, "name": name})
 		return
 	}
-	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 }
 
 func (h *Handler) AdminDeleteTeam(w http.ResponseWriter, r *http.Request) {
+	tid, _ := parseTID(r)
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.Error(w, "Invalid team ID", http.StatusBadRequest)
@@ -181,10 +252,11 @@ func (h *Handler) AdminDeleteTeam(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 }
 
 func (h *Handler) AdminAddMember(w http.ResponseWriter, r *http.Request) {
+	tid, _ := parseTID(r)
 	teamID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.Error(w, "Invalid team ID", http.StatusBadRequest)
@@ -195,7 +267,7 @@ func (h *Handler) AdminAddMember(w http.ResponseWriter, r *http.Request) {
 		if isAJAX(r) {
 			http.Error(w, "Name required", http.StatusBadRequest)
 		} else {
-			http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+			http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 		}
 		return
 	}
@@ -205,7 +277,7 @@ func (h *Handler) AdminAddMember(w http.ResponseWriter, r *http.Request) {
 		if isAJAX(r) {
 			http.Error(w, "Failed", http.StatusInternalServerError)
 		} else {
-			http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+			http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 		}
 		return
 	}
@@ -219,10 +291,11 @@ func (h *Handler) AdminAddMember(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 }
 
 func (h *Handler) AdminRemoveMember(w http.ResponseWriter, r *http.Request) {
+	tid, _ := parseTID(r)
 	id, err := strconv.ParseInt(r.PathValue("mid"), 10, 64)
 	if err != nil {
 		http.Error(w, "Invalid member ID", http.StatusBadRequest)
@@ -236,10 +309,11 @@ func (h *Handler) AdminRemoveMember(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 }
 
 func (h *Handler) AdminRenameTeam(w http.ResponseWriter, r *http.Request) {
+	tid, _ := parseTID(r)
 	teamID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.Error(w, "Invalid team ID", http.StatusBadRequest)
@@ -250,7 +324,7 @@ func (h *Handler) AdminRenameTeam(w http.ResponseWriter, r *http.Request) {
 		if isAJAX(r) {
 			http.Error(w, "Name required", http.StatusBadRequest)
 		} else {
-			http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+			http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 		}
 		return
 	}
@@ -262,31 +336,32 @@ func (h *Handler) AdminRenameTeam(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 }
 
 func isAJAX(r *http.Request) bool {
 	return r.Header.Get("X-Requested-With") == "XMLHttpRequest"
 }
 
-// Bracket generation — takes comma-separated team IDs in seed order
+// Bracket management
+
 func (h *Handler) AdminDeleteBracket(w http.ResponseWriter, r *http.Request) {
-	tournament, err := h.db.GetTournament()
-	if err != nil || tournament == nil {
-		http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+	tid, err := parseTID(r)
+	if err != nil {
+		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
 		return
 	}
-	if err := h.db.DeleteBracket(tournament.ID); err != nil {
+	if err := h.db.DeleteBracket(tid); err != nil {
 		log.Printf("delete bracket: %v", err)
 	}
 	h.notifyBracket()
-	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 }
 
 func (h *Handler) AdminSeedBracket(w http.ResponseWriter, r *http.Request) {
-	tournament, err := h.db.GetTournament()
-	if err != nil || tournament == nil {
-		http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+	tid, err := parseTID(r)
+	if err != nil {
+		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
 		return
 	}
 
@@ -319,15 +394,17 @@ func (h *Handler) AdminSeedBracket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.db.GenerateBracket(tournament.ID, teamIDs); err != nil {
+	if err := h.db.GenerateBracket(tid, teamIDs); err != nil {
 		log.Printf("generate bracket: %v", err)
 		http.Error(w, "Failed to generate bracket: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	h.notifyBracket()
-	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 }
+
+// Match/game handlers — these work by match/game ID (tournament-scoped via foreign keys)
 
 func (h *Handler) AdminSetBestOf(w http.ResponseWriter, r *http.Request) {
 	matchID, err := strconv.ParseInt(r.FormValue("match_id"), 10, 64)
@@ -482,7 +559,8 @@ func (h *Handler) AdminLaunchMatch(w http.ResponseWriter, r *http.Request) {
 		gameNumber = "1"
 	}
 
-	tournament, _ := h.db.GetTournament()
+	mid, _ := strconv.ParseInt(matchID, 10, 64)
+	tournament, _ := h.db.GetTournamentByMatchID(mid)
 	gameMode := "competitive"
 	maxPlayers := 15
 	password := ""

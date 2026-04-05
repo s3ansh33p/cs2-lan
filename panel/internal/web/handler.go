@@ -53,9 +53,9 @@ type Handler struct {
 	// System stats sampler
 	sys sysSampler
 
-	// Bracket broadcast: push updates to public bracket viewers
+	// Bracket broadcast: push updates to public bracket viewers (per tournament)
 	bracketMu   sync.RWMutex
-	bracketSubs []chan struct{}
+	bracketSubs map[int64][]chan struct{}
 }
 
 func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, database *db.DB, composeFile, defaultRCON string) (*Handler, error) {
@@ -98,7 +98,7 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, da
 
 	// Each page gets its own clone of base so {{define "content"}} doesn't collide
 	pages := make(map[string]*template.Template)
-	for _, page := range []string{"dashboard.html", "server.html", "launch.html", "bracket.html", "admin_tournament.html"} {
+	for _, page := range []string{"dashboard.html", "server.html", "launch.html", "bracket.html", "admin_tournament.html", "tournaments.html"} {
 		t, err := template.Must(base.Clone()).ParseFS(tmplFS, page)
 		if err != nil {
 			return nil, fmt.Errorf("parse %s: %w", page, err)
@@ -130,6 +130,7 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, da
 		defaultRCON:    defaultRCON,
 		pages:          pages,
 		restartServers: make(map[string]docker.ServerInfo),
+		bracketSubs:    make(map[int64][]chan struct{}),
 	}
 	go h.dashboardPoller()
 	h.setupGameOverHook()
@@ -155,7 +156,7 @@ func (h *Handler) render(w http.ResponseWriter, name string, data any) {
 	// For page templates that use layout, execute "layout"; for partials/login, execute the named define
 	execName := name
 	switch name {
-	case "dashboard.html", "server.html", "launch.html", "bracket.html", "admin_tournament.html":
+	case "dashboard.html", "server.html", "launch.html", "bracket.html", "admin_tournament.html", "tournaments.html":
 		execName = "layout"
 	}
 

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -18,6 +19,7 @@ type Tournament struct {
 	ServerPassword    string
 	Status            string // draft, registration, locked, active, completed
 	CreatedAt         time.Time
+	DeletedAt         *time.Time
 }
 
 // CanRegister returns true if the tournament is accepting team registrations.
@@ -35,13 +37,13 @@ func (t *Tournament) CanRegister() bool {
 	return true
 }
 
-func (db *DB) GetTournament() (*Tournament, error) {
-	row := db.QueryRow(`SELECT id, name, team_size, game_mode, registration_open, registration_close,
-		server_ip, server_password, status, created_at FROM tournament LIMIT 1`)
+const tournamentColumns = `id, name, team_size, game_mode, registration_open, registration_close,
+	server_ip, server_password, status, created_at, deleted_at`
 
+func scanTournament(row interface{ Scan(...any) error }) (*Tournament, error) {
 	t := &Tournament{}
 	err := row.Scan(&t.ID, &t.Name, &t.TeamSize, &t.GameMode, &t.RegistrationOpen, &t.RegistrationClose,
-		&t.ServerIP, &t.ServerPassword, &t.Status, &t.CreatedAt)
+		&t.ServerIP, &t.ServerPassword, &t.Status, &t.CreatedAt, &t.DeletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -51,12 +53,58 @@ func (db *DB) GetTournament() (*Tournament, error) {
 	return t, nil
 }
 
-func (db *DB) CreateTournament(name string, teamSize int, gameMode, serverIP, serverPassword string) (*Tournament, error) {
-	// Only one tournament at a time — delete any existing
-	if _, err := db.Exec(`DELETE FROM tournament`); err != nil {
+func (db *DB) GetTournamentByID(id int64) (*Tournament, error) {
+	return scanTournament(db.QueryRow(`SELECT `+tournamentColumns+` FROM tournament WHERE id=?`, id))
+}
+
+func (db *DB) GetActiveTournament() (*Tournament, error) {
+	id, err := db.GetActiveTournamentID()
+	if err != nil || id == 0 {
+		// Fallback: if no active tournament set, return the most recent non-deleted
+		return scanTournament(db.QueryRow(`SELECT ` + tournamentColumns + ` FROM tournament WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1`))
+	}
+	return db.GetTournamentByID(id)
+}
+
+func (db *DB) ListTournaments() ([]Tournament, error) {
+	rows, err := db.Query(`SELECT `+tournamentColumns+` FROM tournament WHERE deleted_at IS NULL ORDER BY created_at DESC`)
+	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
+	var result []Tournament
+	for rows.Next() {
+		t, err := scanTournament(rows)
+		if err != nil {
+			return nil, err
+		}
+		if t != nil {
+			result = append(result, *t)
+		}
+	}
+	return result, rows.Err()
+}
 
+func (db *DB) ListDeletedTournaments() ([]Tournament, error) {
+	rows, err := db.Query(`SELECT `+tournamentColumns+` FROM tournament WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []Tournament
+	for rows.Next() {
+		t, err := scanTournament(rows)
+		if err != nil {
+			return nil, err
+		}
+		if t != nil {
+			result = append(result, *t)
+		}
+	}
+	return result, rows.Err()
+}
+
+func (db *DB) CreateTournament(name string, teamSize int, gameMode, serverIP, serverPassword string) (*Tournament, error) {
 	if gameMode == "" {
 		gameMode = "competitive"
 	}
@@ -88,4 +136,59 @@ func (db *DB) SetTournamentStatus(id int64, status string) error {
 func (db *DB) DeleteTournament(id int64) error {
 	_, err := db.Exec(`DELETE FROM tournament WHERE id=?`, id)
 	return err
+}
+
+func (db *DB) SoftDeleteTournament(id int64) error {
+	_, err := db.Exec(`UPDATE tournament SET deleted_at=CURRENT_TIMESTAMP WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	// If this was the active tournament, clear active
+	activeID, _ := db.GetActiveTournamentID()
+	if activeID == id {
+		db.SetActiveTournament(0)
+	}
+	return nil
+}
+
+func (db *DB) RestoreTournament(id int64) error {
+	_, err := db.Exec(`UPDATE tournament SET deleted_at=NULL WHERE id=?`, id)
+	return err
+}
+
+func (db *DB) PurgeTournament(id int64) error {
+	_, err := db.Exec(`DELETE FROM tournament WHERE id=? AND deleted_at IS NOT NULL`, id)
+	return err
+}
+
+// --- Settings ---
+
+func (db *DB) GetActiveTournamentID() (int64, error) {
+	var val string
+	err := db.QueryRow(`SELECT value FROM settings WHERE key='active_tournament_id'`).Scan(&val)
+	if err != nil || val == "" {
+		return 0, err
+	}
+	id, err := strconv.ParseInt(val, 10, 64)
+	return id, err
+}
+
+func (db *DB) SetActiveTournament(id int64) error {
+	val := ""
+	if id > 0 {
+		val = strconv.FormatInt(id, 10)
+	}
+	_, err := db.Exec(`INSERT INTO settings (key, value) VALUES ('active_tournament_id', ?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, val)
+	return err
+}
+
+// GetTournamentByMatchID resolves the tournament for a given match ID.
+func (db *DB) GetTournamentByMatchID(matchID int64) (*Tournament, error) {
+	var tid int64
+	err := db.QueryRow(`SELECT tournament_id FROM matches WHERE id=?`, matchID).Scan(&tid)
+	if err != nil {
+		return nil, err
+	}
+	return db.GetTournamentByID(tid)
 }

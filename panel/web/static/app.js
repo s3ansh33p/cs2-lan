@@ -114,6 +114,7 @@ function copyConnect(btn, cmd) {
 
 function publicCreateTeam(form) {
     var data = new URLSearchParams(new FormData(form));
+    if (typeof _tournamentID !== 'undefined' && _tournamentID) data.set('tournament_id', _tournamentID);
     fetch('/teams', {
         method: 'POST',
         headers: {'X-Requested-With': 'XMLHttpRequest'},
@@ -125,6 +126,7 @@ function publicCreateTeam(form) {
 
 function publicAddMember(teamId, form) {
     var data = new URLSearchParams(new FormData(form));
+    if (typeof _tournamentID !== 'undefined' && _tournamentID) data.set('tournament_id', _tournamentID);
     fetch('/teams/' + teamId + '/members', {
         method: 'POST',
         headers: {'X-Requested-With': 'XMLHttpRequest'},
@@ -135,9 +137,12 @@ function publicAddMember(teamId, form) {
 }
 
 function publicRemoveMember(teamId, memberId) {
+    var body = '';
+    if (typeof _tournamentID !== 'undefined' && _tournamentID) body = 'tournament_id=' + _tournamentID;
     fetch('/teams/' + teamId + '/members/' + memberId + '/delete', {
         method: 'POST',
-        headers: {'X-Requested-With': 'XMLHttpRequest'}
+        headers: {'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded'},
+        body: body
     });
 }
 
@@ -161,10 +166,12 @@ function publicRenameTeam(teamId, btn) {
             input.replaceWith(s);
             return;
         }
+        var renameBody = 'name=' + encodeURIComponent(name);
+        if (typeof _tournamentID !== 'undefined' && _tournamentID) renameBody += '&tournament_id=' + _tournamentID;
         fetch('/teams/' + teamId + '/rename', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest'},
-            body: 'name=' + encodeURIComponent(name)
+            body: renameBody
         });
     }
     input.addEventListener('blur', save);
@@ -253,10 +260,17 @@ var _bracketRetries = 0;
 var _lastBracketJSON = '';
 var _lastTournamentStatus = '';
 function connectBracketWS() {
+    // No live updates for completed tournaments
+    if (typeof _tournamentStatus !== 'undefined' && _tournamentStatus === 'completed') return;
+
     if (_bracketWS) { try { _bracketWS.close(); } catch(e) {} }
 
     var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var ws = new WebSocket(protocol + '//' + location.host + '/ws');
+    var wsPath = '/ws';
+    if (typeof _tournamentID !== 'undefined' && _tournamentID) {
+        wsPath = '/tournament/' + _tournamentID + '/ws';
+    }
+    var ws = new WebSocket(protocol + '//' + location.host + wsPath);
     _bracketWS = ws;
 
     ws.onmessage = function(e) {
