@@ -323,7 +323,7 @@ func (h *Handler) LaunchPage(w http.ResponseWriter, r *http.Request) {
 		usedPorts[s.Port] = true
 		usedPorts[s.TVPort] = true
 	}
-	for usedPorts[nextPort] || usedPorts[nextPort+5] {
+	for usedPorts[nextPort] || usedPorts[nextPort+1000] {
 		nextPort++
 	}
 

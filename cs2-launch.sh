@@ -55,7 +55,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-TV_PORT=$((PORT + 5))
+TV_PORT=$((PORT + 1000))
 
 echo "Starting CS2 LAN server: ${NAME}"
 echo "  Connect: localhost:${PORT}"

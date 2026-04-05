@@ -19,10 +19,14 @@ switch ($Action) {
     "enable" {
         Remove-NetFirewallRule -DisplayName "CS2 LAN Servers" -ErrorAction SilentlyContinue
         Remove-NetFirewallRule -DisplayName "CS2 LAN Servers TCP" -ErrorAction SilentlyContinue
+        Remove-NetFirewallRule -DisplayName "CS2 LAN CSTV" -ErrorAction SilentlyContinue
+        Remove-NetFirewallRule -DisplayName "CS2 LAN CSTV TCP" -ErrorAction SilentlyContinue
         Remove-NetFirewallRule -DisplayName "CS2 LAN Panel" -ErrorAction SilentlyContinue
         New-NetFirewallRule -DisplayName "CS2 LAN Servers" -Direction Inbound -Protocol UDP -LocalPort 27015-27030 -Action Allow | Out-Null
         New-NetFirewallRule -DisplayName "CS2 LAN Servers TCP" -Direction Inbound -Protocol TCP -LocalPort 27015-27030 -Action Allow | Out-Null
-        Write-Host "Firewall opened for CS2 LAN (ports 27015-27030)"
+        New-NetFirewallRule -DisplayName "CS2 LAN CSTV" -Direction Inbound -Protocol UDP -LocalPort 28015-28030 -Action Allow | Out-Null
+        New-NetFirewallRule -DisplayName "CS2 LAN CSTV TCP" -Direction Inbound -Protocol TCP -LocalPort 28015-28030 -Action Allow | Out-Null
+        Write-Host "Firewall opened for CS2 LAN (ports 27015-27030, CSTV 28015-28030)"
 
         if ($WebPort -gt 0) {
             New-NetFirewallRule -DisplayName "CS2 LAN Panel" -Direction Inbound -Protocol TCP -LocalPort $WebPort -Action Allow | Out-Null
@@ -32,6 +36,8 @@ switch ($Action) {
     "disable" {
         Remove-NetFirewallRule -DisplayName "CS2 LAN Servers" -ErrorAction SilentlyContinue
         Remove-NetFirewallRule -DisplayName "CS2 LAN Servers TCP" -ErrorAction SilentlyContinue
+        Remove-NetFirewallRule -DisplayName "CS2 LAN CSTV" -ErrorAction SilentlyContinue
+        Remove-NetFirewallRule -DisplayName "CS2 LAN CSTV TCP" -ErrorAction SilentlyContinue
         Remove-NetFirewallRule -DisplayName "CS2 LAN Panel" -ErrorAction SilentlyContinue
         Write-Host "Firewall rules removed"
     }

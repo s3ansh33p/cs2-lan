@@ -38,7 +38,7 @@ func (c *Client) Launch(ctx context.Context, req LaunchRequest, composeFile stri
 		return fmt.Errorf("server %q already exists", req.Name)
 	}
 
-	tvPort := req.Port + 5
+	tvPort := req.Port + 1000
 	tvEnable := "0"
 	if req.TV {
 		tvEnable = "1"
