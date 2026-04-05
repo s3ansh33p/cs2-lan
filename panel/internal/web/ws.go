@@ -128,7 +128,7 @@ func (h *Handler) GameStateWebSocket(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Server not found", http.StatusNotFound)
 			return
 		}
-		state = h.tracker.TrackServer(name, info.Port, info.RCONPassword, info.GameMode, info.Map)
+		state = h.trackServer(name, info.Port, info.RCONPassword, info.GameMode, info.Map)
 	}
 
 	conn, done, err := setupWSConn(w, r)
@@ -560,7 +560,7 @@ func (h *Handler) buildDashboardJSON() []byte {
 		// Start tracking if not already (so dashboard shows live data)
 		// Skip if server is mid-restart to avoid spawning trackers against a dying container
 		if s.Status == "running" && s.Port > 0 && s.RCONPassword != "" && !restartingNames[s.Name] {
-			h.tracker.TrackServer(s.Name, s.Port, s.RCONPassword, s.GameMode, s.Map)
+			h.trackServer(s.Name, s.Port, s.RCONPassword, s.GameMode, s.Map)
 		}
 
 		// Get player count and score from tracker
@@ -570,6 +570,9 @@ func (h *Handler) buildDashboardJSON() []byte {
 			ds.Score = &scoreJSON{Round: sc.Round, CT: sc.CT, T: sc.T, GameMode: sc.GameMode}
 			if sc.CurrentMap != "" {
 				ds.Map = sc.CurrentMap
+			}
+			if sc.GameMode != "" {
+				ds.GameMode = sc.GameMode
 			}
 			for _, ps := range state.GetScoreboard() {
 				if ps.Online {

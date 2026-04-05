@@ -77,7 +77,7 @@ func main() {
 	}
 	defer database.Close()
 
-	a := auth.New(*password)
+	a := auth.New(*password, database.DB)
 	if *tlsEnabled {
 		a.SetSecure(true)
 	}

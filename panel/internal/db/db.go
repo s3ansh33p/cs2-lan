@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -135,6 +136,25 @@ CREATE TABLE IF NOT EXISTS server_aliases (
 	server_name TEXT PRIMARY KEY,
 	alias TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS sessions (
+	token TEXT PRIMARY KEY,
+	created_at DATETIME NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS server_tracker_state (
+	server_name TEXT PRIMARY KEY,
+	game_mode TEXT NOT NULL DEFAULT '',
+	current_map TEXT NOT NULL DEFAULT '',
+	half_round INTEGER NOT NULL DEFAULT 0,
+	max_rounds INTEGER NOT NULL DEFAULT 0,
+	ct_score INTEGER NOT NULL DEFAULT 0,
+	t_score INTEGER NOT NULL DEFAULT 0,
+	round INTEGER NOT NULL DEFAULT 0,
+	in_warmup INTEGER NOT NULL DEFAULT 0,
+	is_paused INTEGER NOT NULL DEFAULT 0,
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 `
 
 func (db *DB) LoadAliases() (map[string]string, error) {
@@ -163,5 +183,94 @@ func (db *DB) SetAlias(name, alias string) error {
 		"INSERT INTO server_aliases (server_name, alias) VALUES (?, ?) ON CONFLICT(server_name) DO UPDATE SET alias = excluded.alias",
 		name, alias,
 	)
+	return err
+}
+
+// --- Session persistence ---
+
+func (db *DB) LoadSessions() (map[string]time.Time, error) {
+	rows, err := db.Query("SELECT token, created_at FROM sessions")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	m := make(map[string]time.Time)
+	for rows.Next() {
+		var token string
+		var created time.Time
+		if err := rows.Scan(&token, &created); err != nil {
+			return nil, err
+		}
+		m[token] = created
+	}
+	return m, rows.Err()
+}
+
+func (db *DB) SaveSession(token string, created time.Time) error {
+	_, err := db.Exec("INSERT INTO sessions (token, created_at) VALUES (?, ?)", token, created)
+	return err
+}
+
+func (db *DB) DeleteSession(token string) error {
+	_, err := db.Exec("DELETE FROM sessions WHERE token = ?", token)
+	return err
+}
+
+func (db *DB) CleanupSessions(maxAge time.Duration) error {
+	_, err := db.Exec("DELETE FROM sessions WHERE created_at < ?", time.Now().Add(-maxAge))
+	return err
+}
+
+// --- Server tracker state persistence ---
+
+type TrackerState struct {
+	GameMode   string
+	CurrentMap string
+	HalfRound  int
+	MaxRounds  int
+	CTScore    int
+	TScore     int
+	Round      int
+	InWarmup   bool
+	IsPaused   bool
+}
+
+func (db *DB) SaveTrackerState(name string, s TrackerState) error {
+	warmup, paused := 0, 0
+	if s.InWarmup {
+		warmup = 1
+	}
+	if s.IsPaused {
+		paused = 1
+	}
+	_, err := db.Exec(`INSERT INTO server_tracker_state
+		(server_name, game_mode, current_map, half_round, max_rounds, ct_score, t_score, round, in_warmup, is_paused, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(server_name) DO UPDATE SET
+		game_mode=excluded.game_mode, current_map=excluded.current_map,
+		half_round=excluded.half_round, max_rounds=excluded.max_rounds,
+		ct_score=excluded.ct_score, t_score=excluded.t_score, round=excluded.round,
+		in_warmup=excluded.in_warmup, is_paused=excluded.is_paused,
+		updated_at=excluded.updated_at`,
+		name, s.GameMode, s.CurrentMap, s.HalfRound, s.MaxRounds, s.CTScore, s.TScore, s.Round, warmup, paused)
+	return err
+}
+
+func (db *DB) LoadTrackerState(name string) (*TrackerState, error) {
+	var s TrackerState
+	var warmup, paused int
+	err := db.QueryRow(`SELECT game_mode, current_map, half_round, max_rounds, ct_score, t_score, round, in_warmup, is_paused
+		FROM server_tracker_state WHERE server_name=?`, name).
+		Scan(&s.GameMode, &s.CurrentMap, &s.HalfRound, &s.MaxRounds, &s.CTScore, &s.TScore, &s.Round, &warmup, &paused)
+	if err != nil {
+		return nil, err
+	}
+	s.InWarmup = warmup != 0
+	s.IsPaused = paused != 0
+	return &s, nil
+}
+
+func (db *DB) DeleteTrackerState(name string) error {
+	_, err := db.Exec("DELETE FROM server_tracker_state WHERE server_name=?", name)
 	return err
 }

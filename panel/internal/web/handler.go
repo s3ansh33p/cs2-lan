@@ -214,6 +214,46 @@ func (h *Handler) dashboardPoller() {
 	defer ticker.Stop()
 	for range ticker.C {
 		h.notifyDashboard()
+		h.saveTrackerStates()
+	}
+}
+
+// trackServer wraps tracker.TrackServer with DB-backed metadata restoration.
+func (h *Handler) trackServer(name string, port int, rconPw, mode, mapName string) *gametracker.ServerState {
+	state, isNew := h.tracker.TrackServer(name, port, rconPw, mode, mapName)
+	if isNew {
+		if saved, err := h.db.LoadTrackerState(name); err == nil && saved != nil {
+			state.RestoreMetadata(gametracker.TrackerMetadata{
+				GameMode:   saved.GameMode,
+				CurrentMap: saved.CurrentMap,
+				HalfRound:  saved.HalfRound,
+				MaxRounds:  saved.MaxRounds,
+				CTScore:    saved.CTScore,
+				TScore:     saved.TScore,
+				Round:      saved.Round,
+				InWarmup:   saved.InWarmup,
+				IsPaused:   saved.IsPaused,
+			})
+		}
+	}
+	return state
+}
+
+// saveTrackerStates persists metadata for all tracked servers.
+func (h *Handler) saveTrackerStates() {
+	for name, state := range h.tracker.GetAllStates() {
+		m := state.GetMetadata()
+		h.db.SaveTrackerState(name, db.TrackerState{
+			GameMode:   m.GameMode,
+			CurrentMap: m.CurrentMap,
+			HalfRound:  m.HalfRound,
+			MaxRounds:  m.MaxRounds,
+			CTScore:    m.CTScore,
+			TScore:     m.TScore,
+			Round:      m.Round,
+			InWarmup:   m.InWarmup,
+			IsPaused:   m.IsPaused,
+		})
 	}
 }
 
@@ -385,7 +425,7 @@ func (h *Handler) ServerDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Start tracking this server for killfeed/scoreboard via UDP log
-	state := h.tracker.TrackServer(name, info.Port, info.RCONPassword, info.GameMode, info.Map)
+	state := h.trackServer(name, info.Port, info.RCONPassword, info.GameMode, info.Map)
 
 	// Build initial JSON for immediate client-side render
 	initialPlayers := buildPlayerList(name, h.tracker)
@@ -568,6 +608,7 @@ func (h *Handler) RestartServer(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		h.tracker.StopTracking(name)
+		h.db.DeleteTrackerState(name) // clear so fresh server gets clean state
 		h.notifyDashboard()
 		if err := h.docker.StopServer(context.Background(), name); err != nil {
 			log.Printf("restart %s: stop failed: %v", name, err)
@@ -613,6 +654,7 @@ func (h *Handler) StopServer(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		h.tracker.StopTracking(name)
+		h.db.DeleteTrackerState(name)
 		h.notifyDashboard()
 		if err := h.docker.StopServer(context.Background(), name); err != nil {
 			log.Printf("stop server %s: %v", name, err)

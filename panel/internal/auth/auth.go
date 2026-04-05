@@ -3,7 +3,9 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/hex"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -19,15 +21,40 @@ type Auth struct {
 	sessions map[string]time.Time
 	mu       sync.Mutex
 	secure   bool // set to true when TLS is enabled
+	db       *sql.DB
 }
 
-func New(password string) *Auth {
+func New(password string, db *sql.DB) *Auth {
 	a := &Auth{
 		password: password,
 		sessions: make(map[string]time.Time),
+		db:       db,
+	}
+	if db != nil {
+		a.loadSessions()
 	}
 	go a.cleanupLoop()
 	return a
+}
+
+func (a *Auth) loadSessions() {
+	rows, err := a.db.Query("SELECT token, created_at FROM sessions")
+	if err != nil {
+		log.Printf("auth: load sessions: %v", err)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var token string
+		var created time.Time
+		if err := rows.Scan(&token, &created); err != nil {
+			continue
+		}
+		if time.Since(created) <= sessionMaxAge {
+			a.sessions[token] = created
+		}
+	}
+	log.Printf("auth: restored %d sessions", len(a.sessions))
 }
 
 func (a *Auth) cleanupLoop() {
@@ -41,6 +68,9 @@ func (a *Auth) cleanupLoop() {
 			}
 		}
 		a.mu.Unlock()
+		if a.db != nil {
+			a.db.Exec("DELETE FROM sessions WHERE created_at < ?", time.Now().Add(-sessionMaxAge))
+		}
 	}
 }
 
@@ -58,11 +88,15 @@ func (a *Auth) CreateSession() string {
 		panic("crypto/rand failed: " + err.Error())
 	}
 	token := hex.EncodeToString(b)
+	now := time.Now()
 
 	a.mu.Lock()
-	a.sessions[token] = time.Now()
+	a.sessions[token] = now
 	a.mu.Unlock()
 
+	if a.db != nil {
+		a.db.Exec("INSERT INTO sessions (token, created_at) VALUES (?, ?)", token, now)
+	}
 	return token
 }
 
@@ -76,6 +110,9 @@ func (a *Auth) ValidateSession(token string) bool {
 	}
 	if time.Since(created) > sessionMaxAge {
 		delete(a.sessions, token)
+		if a.db != nil {
+			a.db.Exec("DELETE FROM sessions WHERE token = ?", token)
+		}
 		return false
 	}
 	return true
@@ -85,6 +122,9 @@ func (a *Auth) DeleteSession(token string) {
 	a.mu.Lock()
 	delete(a.sessions, token)
 	a.mu.Unlock()
+	if a.db != nil {
+		a.db.Exec("DELETE FROM sessions WHERE token = ?", token)
+	}
 }
 
 func (a *Auth) HandleLogin(w http.ResponseWriter, r *http.Request) {

@@ -237,6 +237,49 @@ func (s *ServerState) GetScore() ScoreInfo {
 	return ScoreInfo{Round: s.round, CT: s.ctScore, T: s.tScore, GameMode: s.gameMode, CurrentMap: s.currentMap, Rounds: rounds, HalfRound: s.halfRound, MaxRounds: s.maxRounds, InWarmup: s.inWarmup, IsPaused: s.isPaused}
 }
 
+// TrackerMetadata holds the subset of server state persisted across panel restarts.
+type TrackerMetadata struct {
+	GameMode   string
+	CurrentMap string
+	HalfRound  int
+	MaxRounds  int
+	CTScore    int
+	TScore     int
+	Round      int
+	InWarmup   bool
+	IsPaused   bool
+}
+
+func (s *ServerState) GetMetadata() TrackerMetadata {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return TrackerMetadata{
+		GameMode:   s.gameMode,
+		CurrentMap: s.currentMap,
+		HalfRound:  s.halfRound,
+		MaxRounds:  s.maxRounds,
+		CTScore:    s.ctScore,
+		TScore:     s.tScore,
+		Round:      s.round,
+		InWarmup:   s.inWarmup,
+		IsPaused:   s.isPaused,
+	}
+}
+
+func (s *ServerState) RestoreMetadata(m TrackerMetadata) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gameMode = m.GameMode
+	s.currentMap = m.CurrentMap
+	s.halfRound = m.HalfRound
+	s.maxRounds = m.MaxRounds
+	s.ctScore = m.CTScore
+	s.tScore = m.TScore
+	s.round = m.Round
+	s.inWarmup = m.InWarmup
+	s.isPaused = m.IsPaused
+}
+
 func newServerState() *ServerState {
 	return &ServerState{
 		stats:      make(map[string]*PlayerStats),
@@ -882,11 +925,12 @@ func (m *Manager) OnRoundEnd(fn RoundEndFunc) {
 	m.mu.Unlock()
 }
 
-func (m *Manager) TrackServer(name string, gamePort int, rconPassword, gameMode, initialMap string) *ServerState {
+// TrackServer starts tracking a server. Returns the state and whether it was newly created.
+func (m *Manager) TrackServer(name string, gamePort int, rconPassword, gameMode, initialMap string) (*ServerState, bool) {
 	m.mu.Lock()
 	if s, ok := m.servers[name]; ok {
 		m.mu.Unlock()
-		return s
+		return s, false
 	}
 
 	s := newServerState()
@@ -901,13 +945,24 @@ func (m *Manager) TrackServer(name string, gamePort int, rconPassword, gameMode,
 	m.mu.Unlock()
 
 	go m.setupAndTrack(ctx, name, gamePort, rconPassword, s)
-	return s
+	return s, true
 }
 
 func (m *Manager) GetState(name string) *ServerState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.servers[name]
+}
+
+// GetAllStates returns a snapshot of all tracked server states.
+func (m *Manager) GetAllStates() map[string]*ServerState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make(map[string]*ServerState, len(m.servers))
+	for k, v := range m.servers {
+		result[k] = v
+	}
+	return result
 }
 
 func (m *Manager) StopTracking(name string) {
