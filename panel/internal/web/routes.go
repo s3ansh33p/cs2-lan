@@ -60,6 +60,7 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	protected.HandleFunc("POST /admin/server/{name}/stop", h.StopServer)
 
 	// Admin tournament routes — list/selector
+	protected.HandleFunc("GET /admin/api/tournaments/ws", h.AdminTournamentListWS)
 	protected.HandleFunc("GET /admin/tournament", h.AdminTournament)
 	protected.HandleFunc("GET /admin/tournament/{tid}", h.AdminTournamentDetail)
 	protected.HandleFunc("POST /admin/tournament/create", h.CreateTournament)

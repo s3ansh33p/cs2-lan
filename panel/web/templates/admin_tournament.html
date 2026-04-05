@@ -7,46 +7,8 @@
 {{if not .Tournament}}
 <!-- Tournament list / selector view -->
 <div class="space-y-4 max-w-2xl">
-    {{if .Tournaments}}
-    <div class="space-y-2">
-        {{range .Tournaments}}
-        <a href="/admin/tournament/{{.ID}}" class="flex items-center justify-between bg-slate-800 border border-slate-700 rounded-lg p-4 hover:bg-slate-700 transition-colors">
-            <div class="flex items-center gap-3">
-                <span class="text-white font-medium">{{.Name}}</span>
-                <span class="text-xs font-medium rounded px-2 py-0.5 capitalize
-                    {{if eq .Status "draft"}}bg-slate-600 text-slate-300
-                    {{else if eq .Status "registration"}}bg-green-600/20 text-green-400
-                    {{else if eq .Status "locked"}}bg-yellow-600/20 text-yellow-400
-                    {{else if eq .Status "active"}}bg-orange-600/20 text-orange-400
-                    {{else if eq .Status "completed"}}bg-blue-600/20 text-blue-400
-                    {{end}}">{{.Status}}</span>
-                {{if eq .ID $.ActiveID}}<span class="text-xs bg-orange-600/20 text-orange-400 rounded px-2 py-0.5">Featured</span>{{end}}
-            </div>
-            <span class="text-xs text-slate-500">{{.CreatedAt.Format "Jan 2, 2006"}}</span>
-        </a>
-        {{end}}
-    </div>
-    {{end}}
-
-    {{if .Deleted}}
-    <div class="mt-6">
-        <h3 class="text-sm font-medium text-slate-500 mb-2">Trashed</h3>
-        <div class="space-y-2">
-            {{range .Deleted}}
-            <div class="flex items-center justify-between bg-slate-800/50 border border-slate-700/50 rounded-lg p-4 opacity-60">
-                <div class="flex items-center gap-3">
-                    <span class="text-slate-400 font-medium">{{.Name}}</span>
-                    <span class="text-xs text-slate-500">{{.Status}}</span>
-                </div>
-                <div class="flex items-center gap-2">
-                    <button onclick="ajaxPost('/admin/tournament/{{.ID}}/restore')" class="text-xs text-green-400 hover:text-green-300">Restore</button>
-                    <button onclick="if(confirm('Permanently delete this tournament and all its data?'))ajaxPost('/admin/tournament/{{.ID}}/purge')" class="text-xs text-red-400 hover:text-red-300">Delete Forever</button>
-                </div>
-            </div>
-            {{end}}
-        </div>
-    </div>
-    {{end}}
+    <div id="tournament-list"></div>
+    <div id="tournament-trash"></div>
 
     <!-- Create new tournament -->
     <div class="bg-slate-800 border border-slate-700 rounded-lg p-6 mt-6">
@@ -88,6 +50,62 @@
         </form>
     </div>
 </div>
+<script>
+var _statusColors = {draft:'bg-slate-600 text-slate-300', registration:'bg-green-600/20 text-green-400', locked:'bg-yellow-600/20 text-yellow-400', active:'bg-orange-600/20 text-orange-400', completed:'bg-blue-600/20 text-blue-400'};
+
+function renderTournamentList(data) {
+    var el = document.getElementById('tournament-list');
+    var trashEl = document.getElementById('tournament-trash');
+    if (!el || !trashEl) return;
+
+    var html = '';
+    if (data.tournaments && data.tournaments.length > 0) {
+        html += '<div class="space-y-2">';
+        for (var i = 0; i < data.tournaments.length; i++) {
+            var t = data.tournaments[i];
+            html += '<a href="/admin/tournament/' + t.id + '" class="flex items-center justify-between bg-slate-800 border border-slate-700 rounded-lg p-4 hover:bg-slate-700 transition-colors">';
+            html += '<div class="flex items-center gap-3">';
+            html += '<span class="text-white font-medium">' + t.name + '</span>';
+            html += '<span class="text-xs font-medium rounded px-2 py-0.5 capitalize ' + (_statusColors[t.status] || 'bg-slate-600 text-slate-300') + '">' + t.status + '</span>';
+            if (t.id === data.activeID) html += '<span class="text-xs bg-orange-600/20 text-orange-400 rounded px-2 py-0.5">Featured</span>';
+            html += '</div>';
+            html += '<span class="text-xs text-slate-500">' + t.createdAt + '</span>';
+            html += '</a>';
+        }
+        html += '</div>';
+    }
+    el.innerHTML = html;
+
+    var thtml = '';
+    if (data.deleted && data.deleted.length > 0) {
+        thtml += '<div class="mt-6"><h3 class="text-sm font-medium text-slate-500 mb-2">Trashed</h3><div class="space-y-2">';
+        for (var i = 0; i < data.deleted.length; i++) {
+            var d = data.deleted[i];
+            thtml += '<div class="flex items-center justify-between bg-slate-800/50 border border-slate-700/50 rounded-lg p-4 opacity-60">';
+            thtml += '<div class="flex items-center gap-3"><span class="text-slate-400 font-medium">' + d.name + '</span>';
+            thtml += '<span class="text-xs text-slate-500 capitalize">' + d.status + '</span></div>';
+            thtml += '<div class="flex items-center gap-2">';
+            thtml += '<button onclick="ajaxPost(\'/admin/tournament/' + d.id + '/restore\')" class="text-xs text-green-400 hover:text-green-300">Restore</button>';
+            thtml += '<button onclick="ajaxPost(\'/admin/tournament/' + d.id + '/purge\')" class="text-xs text-red-400 hover:text-red-300">Delete Forever</button>';
+            thtml += '</div></div>';
+        }
+        thtml += '</div></div>';
+    }
+    trashEl.innerHTML = thtml;
+}
+
+(function() {
+    var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var ws = new WebSocket(protocol + '//' + location.host + '/admin/api/tournaments/ws');
+    ws.onmessage = function(e) {
+        try {
+            var data = JSON.parse(e.data);
+            if (data.type === 'tournament_list') renderTournamentList(data);
+        } catch(err) { console.error('[tournament-list-ws]', err); }
+    };
+    ws.onclose = function() { setTimeout(arguments.callee, 3000); };
+})();
+</script>
 {{else}}
 
 <!-- Tournament detail view -->

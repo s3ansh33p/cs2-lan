@@ -8,6 +8,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"cs2-panel/internal/db"
+
+	"github.com/gorilla/websocket"
 )
 
 // parseTID extracts the tournament ID from the {tid} path value.
@@ -85,6 +89,7 @@ func (h *Handler) CreateTournament(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.notifyTournamentList()
 	http.Redirect(w, r, adminTournamentRedirect(t.ID), http.StatusSeeOther)
 }
 
@@ -130,6 +135,7 @@ func (h *Handler) UpdateTournament(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.UpdateTournament(tid, name, teamSize, gameMode, regOpen, regClose, serverIP, serverPassword); err != nil {
 		log.Printf("update tournament: %v", err)
 	}
+	h.notifyTournamentList()
 
 	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 }
@@ -144,6 +150,7 @@ func (h *Handler) SoftDeleteTournament(w http.ResponseWriter, r *http.Request) {
 		log.Printf("soft delete tournament: %v", err)
 	}
 	h.notifyBracket()
+	h.notifyTournamentList()
 	if isAJAX(r) {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -160,6 +167,11 @@ func (h *Handler) RestoreTournament(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.RestoreTournament(tid); err != nil {
 		log.Printf("restore tournament: %v", err)
 	}
+	h.notifyTournamentList()
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 }
 
@@ -171,6 +183,11 @@ func (h *Handler) PurgeTournament(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.db.PurgeTournament(tid); err != nil {
 		log.Printf("purge tournament: %v", err)
+	}
+	h.notifyTournamentList()
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
 	}
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 }
@@ -193,6 +210,7 @@ func (h *Handler) SetTournamentStatus(w http.ResponseWriter, r *http.Request) {
 		log.Printf("set tournament status: %v", err)
 	}
 	h.notifyBracket()
+	h.notifyTournamentList()
 	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 }
 
@@ -206,6 +224,7 @@ func (h *Handler) SetActiveTournament(w http.ResponseWriter, r *http.Request) {
 		log.Printf("set active tournament: %v", err)
 	}
 	h.notifyBracket()
+	h.notifyTournamentList()
 	if isAJAX(r) {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -622,4 +641,76 @@ func (h *Handler) AdminSwapTeams(w http.ResponseWriter, r *http.Request) {
 	}
 	h.notifyBracket()
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+}
+
+// AdminTournamentListWS pushes tournament list updates to admin clients.
+func (h *Handler) AdminTournamentListWS(w http.ResponseWriter, r *http.Request) {
+	conn, done, err := setupWSConn(w, r)
+	if err != nil {
+		log.Printf("ws tournament list upgrade: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	updates, unsub := h.subscribeTournamentList()
+	defer unsub()
+
+	pingTicker := time.NewTicker(pingInterval)
+	defer pingTicker.Stop()
+
+	h.sendTournamentList(conn)
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-pingTicker.C:
+			conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		case <-updates:
+			if err := h.sendTournamentList(conn); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (h *Handler) sendTournamentList(conn *websocket.Conn) error {
+	tournaments, _ := h.db.ListTournaments()
+	deleted, _ := h.db.ListDeletedTournaments()
+	activeID, _ := h.db.GetActiveTournamentID()
+
+	type tournamentJSON struct {
+		ID        int64  `json:"id"`
+		Name      string `json:"name"`
+		Status    string `json:"status"`
+		TeamSize  int    `json:"teamSize"`
+		GameMode  string `json:"gameMode"`
+		CreatedAt string `json:"createdAt"`
+	}
+
+	toJSON := func(t []db.Tournament) []tournamentJSON {
+		out := make([]tournamentJSON, len(t))
+		for i, v := range t {
+			out[i] = tournamentJSON{ID: v.ID, Name: v.Name, Status: v.Status, TeamSize: v.TeamSize, GameMode: v.GameMode, CreatedAt: v.CreatedAt.Format("Jan 2, 2006")}
+		}
+		return out
+	}
+
+	msg := struct {
+		Type        string           `json:"type"`
+		Tournaments []tournamentJSON `json:"tournaments"`
+		Deleted     []tournamentJSON `json:"deleted"`
+		ActiveID    int64            `json:"activeID"`
+	}{
+		Type:        "tournament_list",
+		Tournaments: toJSON(tournaments),
+		Deleted:     toJSON(deleted),
+		ActiveID:    activeID,
+	}
+
+	conn.SetWriteDeadline(time.Now().Add(writeWait))
+	return conn.WriteJSON(msg)
 }

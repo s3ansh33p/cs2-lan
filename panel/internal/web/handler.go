@@ -57,6 +57,10 @@ type Handler struct {
 	// Bracket broadcast: push updates to public bracket viewers (per tournament)
 	bracketMu   sync.RWMutex
 	bracketSubs map[int64][]chan struct{}
+
+	// Tournament list broadcast: sync admin tournament list page
+	tournamentListMu   sync.RWMutex
+	tournamentListSubs []chan struct{}
 }
 
 func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, database *db.DB, composeFile, defaultRCON string) (*Handler, error) {
@@ -136,6 +140,36 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, da
 	go h.dashboardPoller()
 	h.setupGameOverHook()
 	return h, nil
+}
+
+func (h *Handler) notifyTournamentList() {
+	h.tournamentListMu.RLock()
+	subs := make([]chan struct{}, len(h.tournamentListSubs))
+	copy(subs, h.tournamentListSubs)
+	h.tournamentListMu.RUnlock()
+	for _, ch := range subs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (h *Handler) subscribeTournamentList() (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	h.tournamentListMu.Lock()
+	h.tournamentListSubs = append(h.tournamentListSubs, ch)
+	h.tournamentListMu.Unlock()
+	return ch, func() {
+		h.tournamentListMu.Lock()
+		defer h.tournamentListMu.Unlock()
+		for i, c := range h.tournamentListSubs {
+			if c == ch {
+				h.tournamentListSubs = append(h.tournamentListSubs[:i], h.tournamentListSubs[i+1:]...)
+				break
+			}
+		}
+	}
 }
 
 func generateRCONPassword() string {
