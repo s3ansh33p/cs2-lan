@@ -416,7 +416,7 @@ func (h *Handler) sendBracketState(conn *websocket.Conn, tournamentID int64) err
 	for _, m := range bracket {
 		mj := matchJSON{
 			ID: m.ID, Round: m.Round, Pos: m.Position, BestOf: m.BestOf, IsBye: m.IsBye,
-			Team1: teamRef{Name: m.Team1Name}, Team2: teamRef{Name: m.Team2Name},
+			Team1: teamRef{Name: html.EscapeString(m.Team1Name)}, Team2: teamRef{Name: html.EscapeString(m.Team2Name)},
 		}
 		if m.Team1ID != nil {
 			mj.Team1.ID = *m.Team1ID
@@ -456,9 +456,9 @@ func (h *Handler) sendBracketState(conn *websocket.Conn, tournamentID int64) err
 	var teamsOut []teamJSON
 	if teams, err := h.db.ListTeams(tournament.ID); err == nil {
 		for _, t := range teams {
-			tj := teamJSON{ID: t.ID, Name: t.Name}
+			tj := teamJSON{ID: t.ID, Name: html.EscapeString(t.Name)}
 			for _, m := range t.Members {
-				tj.Members = append(tj.Members, memberJSON{ID: m.ID, TeamID: m.TeamID, SteamName: m.SteamName})
+				tj.Members = append(tj.Members, memberJSON{ID: m.ID, TeamID: m.TeamID, SteamName: html.EscapeString(m.SteamName)})
 			}
 			teamsOut = append(teamsOut, tj)
 		}
@@ -488,9 +488,9 @@ func (h *Handler) sendBracketState(conn *websocket.Conn, tournamentID int64) err
 		Teams:       teamsOut,
 		TeamSize:    tournament.TeamSize,
 		Status:      tournament.Status,
-		Name:        tournament.Name,
+		Name:        html.EscapeString(tournament.Name),
 		CanRegister: tournament.CanRegister(),
-		ConnectInfo: connectInfo,
+		ConnectInfo: html.EscapeString(connectInfo),
 	}
 
 	conn.SetWriteDeadline(time.Now().Add(writeWait))

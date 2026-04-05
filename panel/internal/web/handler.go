@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"html/template"
 	"io/fs"
 	"log"
@@ -418,7 +419,7 @@ func (h *Handler) ServerDetail(w http.ResponseWriter, r *http.Request) {
 	for _, r := range sc.Rounds {
 		rounds = append(rounds, roundJSON{Round: r.Round, Winner: r.Winner, Reason: r.Reason})
 	}
-	initialScore = &scoreJSON{Round: sc.Round, CT: sc.CT, T: sc.T, GameMode: sc.GameMode, Map: sc.CurrentMap, Rounds: rounds, HalfRound: sc.HalfRound, Warmup: sc.InWarmup}
+	initialScore = &scoreJSON{Round: sc.Round, CT: sc.CT, T: sc.T, GameMode: sc.GameMode, Map: html.EscapeString(sc.CurrentMap), Rounds: rounds, HalfRound: sc.HalfRound, Warmup: sc.InWarmup}
 
 	playersJSON, _ := json.Marshal(initialPlayers)
 	scoreJSON, _ := json.Marshal(initialScore)

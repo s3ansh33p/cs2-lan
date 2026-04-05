@@ -336,7 +336,7 @@ func (h *Handler) sendPlayers(conn *websocket.Conn, name string) error {
 		if round == 0 {
 			round = 1
 		}
-		score = &scoreJSON{Round: round, CT: s.CT, T: s.T, GameMode: s.GameMode, Map: s.CurrentMap, Rounds: rounds, HalfRound: s.HalfRound, MaxRounds: s.MaxRounds, Warmup: s.InWarmup, Paused: s.IsPaused}
+		score = &scoreJSON{Round: round, CT: s.CT, T: s.T, GameMode: s.GameMode, Map: html.EscapeString(s.CurrentMap), Rounds: rounds, HalfRound: s.HalfRound, MaxRounds: s.MaxRounds, Warmup: s.InWarmup, Paused: s.IsPaused}
 	}
 
 	msg := struct {
@@ -567,12 +567,12 @@ func (h *Handler) buildDashboardJSON() []byte {
 		state := h.tracker.GetState(s.Name)
 		if state != nil {
 			sc := state.GetScore()
-			ds.Score = &scoreJSON{Round: sc.Round, CT: sc.CT, T: sc.T, GameMode: sc.GameMode}
+			ds.Score = &scoreJSON{Round: sc.Round, CT: sc.CT, T: sc.T, GameMode: html.EscapeString(sc.GameMode)}
 			if sc.CurrentMap != "" {
-				ds.Map = sc.CurrentMap
+				ds.Map = html.EscapeString(sc.CurrentMap)
 			}
 			if sc.GameMode != "" {
-				ds.GameMode = sc.GameMode
+				ds.GameMode = html.EscapeString(sc.GameMode)
 			}
 			for _, ps := range state.GetScoreboard() {
 				if ps.Online {
