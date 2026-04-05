@@ -76,22 +76,15 @@ func (h *Handler) PublicBracket(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// PublicTournamentList shows all non-active, non-deleted tournaments.
+// PublicTournamentList shows all non-deleted tournaments.
 func (h *Handler) PublicTournamentList(w http.ResponseWriter, r *http.Request) {
 	tournaments, _ := h.db.ListTournaments()
 	activeID, _ := h.db.GetActiveTournamentID()
 
-	// Filter out the active tournament
-	var past []db.Tournament
-	for _, t := range tournaments {
-		if t.ID != activeID {
-			past = append(past, t)
-		}
-	}
-
 	h.render(w, "tournaments.html", map[string]any{
-		"Title":       "Past Tournaments",
-		"Tournaments": past,
+		"Title":       "All Tournaments",
+		"Tournaments": tournaments,
+		"ActiveID":    activeID,
 	})
 }
 

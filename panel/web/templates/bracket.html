@@ -3,7 +3,7 @@
 <nav class="bg-slate-800 border-b border-slate-700 px-6 py-3 flex items-center justify-between">
     <div class="flex items-center gap-6">
         <a href="/" class="text-lg font-bold text-orange-400 hover:text-orange-300">CS2 Tournament</a>
-        <a href="/tournaments" class="text-slate-400 hover:text-white text-sm">Past Tournaments</a>
+        <a href="/tournaments" class="text-slate-400 hover:text-white text-sm">All Tournaments</a>
     </div>
     <a href="/admin" class="text-slate-400 hover:text-white text-sm">Admin</a>
 </nav>
@@ -32,7 +32,7 @@
 </div>
 
 {{if .Tournament}}
-<div id="public-teams-container" class="max-w-2xl mx-auto mb-8"></div>
+<div id="public-teams-container" class="mb-8"></div>
 {{end}}
 <script>
 var _publicTeamsData = [

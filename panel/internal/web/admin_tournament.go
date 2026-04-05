@@ -143,6 +143,11 @@ func (h *Handler) SoftDeleteTournament(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.SoftDeleteTournament(tid); err != nil {
 		log.Printf("soft delete tournament: %v", err)
 	}
+	h.notifyBracket()
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 }
 
@@ -199,6 +204,11 @@ func (h *Handler) SetActiveTournament(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.db.SetActiveTournament(tid); err != nil {
 		log.Printf("set active tournament: %v", err)
+	}
+	h.notifyBracket()
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
 	}
 	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 }

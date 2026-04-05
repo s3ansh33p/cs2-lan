@@ -39,12 +39,8 @@
                     <span class="text-xs text-slate-500">{{.Status}}</span>
                 </div>
                 <div class="flex items-center gap-2">
-                    <form method="POST" action="/admin/tournament/{{.ID}}/restore">
-                        <button type="submit" class="text-xs text-green-400 hover:text-green-300">Restore</button>
-                    </form>
-                    <form method="POST" action="/admin/tournament/{{.ID}}/purge" onsubmit="return confirm('Permanently delete this tournament and all its data?')">
-                        <button type="submit" class="text-xs text-red-400 hover:text-red-300">Delete Forever</button>
-                    </form>
+                    <button onclick="ajaxPost('/admin/tournament/{{.ID}}/restore')" class="text-xs text-green-400 hover:text-green-300">Restore</button>
+                    <button onclick="if(confirm('Permanently delete this tournament and all its data?'))ajaxPost('/admin/tournament/{{.ID}}/purge')" class="text-xs text-red-400 hover:text-red-300">Delete Forever</button>
                 </div>
             </div>
             {{end}}
@@ -105,16 +101,7 @@
         <div class="bg-slate-800 border border-slate-700 rounded-lg p-6">
             <div class="flex items-center justify-between mb-4">
                 <h2 class="text-lg font-semibold">Settings</h2>
-                <div class="flex items-center gap-2">
-                    {{if .IsActive}}<span class="text-xs bg-orange-600/20 text-orange-400 rounded px-2 py-0.5">Featured</span>{{end}}
-                    <span class="text-xs font-medium rounded px-2 py-0.5 capitalize
-                        {{if eq .Tournament.Status "draft"}}bg-slate-600 text-slate-300
-                        {{else if eq .Tournament.Status "registration"}}bg-green-600/20 text-green-400
-                        {{else if eq .Tournament.Status "locked"}}bg-yellow-600/20 text-yellow-400
-                        {{else if eq .Tournament.Status "active"}}bg-orange-600/20 text-orange-400
-                        {{else if eq .Tournament.Status "completed"}}bg-blue-600/20 text-blue-400
-                        {{end}}">{{.Tournament.Status}}</span>
-                </div>
+                <div id="status-pills" class="flex items-center gap-2"></div>
             </div>
             <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/update" class="space-y-4">
                 <div class="grid grid-cols-2 gap-4">
@@ -174,58 +161,7 @@
         <!-- Status Transitions -->
         <div class="bg-slate-800 border border-slate-700 rounded-lg p-6">
             <h2 class="text-lg font-semibold mb-4">Status</h2>
-            <div class="flex flex-wrap gap-2">
-                {{if not .IsActive}}
-                <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/active">
-                    <button type="submit" class="bg-orange-600 hover:bg-orange-700 text-white font-medium rounded px-4 py-2 text-sm">
-                        Set as Featured
-                    </button>
-                </form>
-                {{end}}
-                {{if eq .Tournament.Status "draft"}}
-                <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/status">
-                    <input type="hidden" name="status" value="registration">
-                    <button type="submit" class="bg-green-600 hover:bg-green-700 text-white font-medium rounded px-4 py-2 text-sm">
-                        Open Registration
-                    </button>
-                </form>
-                {{end}}
-                {{if eq .Tournament.Status "registration"}}
-                <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/status">
-                    <input type="hidden" name="status" value="locked">
-                    <button type="submit" class="bg-yellow-600 hover:bg-yellow-700 text-white font-medium rounded px-4 py-2 text-sm">
-                        Lock Teams
-                    </button>
-                </form>
-                {{end}}
-                {{if eq .Tournament.Status "locked"}}
-                <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/status">
-                    <input type="hidden" name="status" value="active">
-                    <button type="submit" class="bg-orange-600 hover:bg-orange-700 text-white font-medium rounded px-4 py-2 text-sm">
-                        Start Tournament
-                    </button>
-                </form>
-                <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/status">
-                    <input type="hidden" name="status" value="registration">
-                    <button type="submit" class="bg-slate-600 hover:bg-slate-500 text-white font-medium rounded px-3 py-2 text-sm">
-                        Re-open Registration
-                    </button>
-                </form>
-                {{end}}
-                {{if eq .Tournament.Status "active"}}
-                <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/status">
-                    <input type="hidden" name="status" value="completed">
-                    <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-medium rounded px-4 py-2 text-sm">
-                        Complete Tournament
-                    </button>
-                </form>
-                {{end}}
-                <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/delete" onsubmit="return confirm('Move this tournament to trash?')">
-                    <button type="submit" class="bg-red-600 hover:bg-red-700 text-white font-medium rounded px-4 py-2 text-sm">
-                        Trash
-                    </button>
-                </form>
-            </div>
+            <div id="status-buttons" class="flex flex-wrap gap-2"></div>
             <p class="text-xs text-slate-500 mt-3">
                 Draft &rarr; Registration (public can create teams) &rarr; Locked (seed &amp; generate bracket) &rarr; Active (matches in progress) &rarr; Completed
             </p>
@@ -253,6 +189,54 @@
 <script>
 var _tournamentID = {{.Tournament.ID}};
 var _tournamentStatus = "{{.Tournament.Status}}";
+var _isActive = {{if .IsActive}}true{{else}}false{{end}};
+
+function renderStatusPills() {
+    var el = document.getElementById('status-pills');
+    if (!el) return;
+    var html = '';
+    if (_isActive) html += '<span class="text-xs bg-orange-600/20 text-orange-400 rounded px-2 py-0.5">Featured</span>';
+    var colors = {draft:'bg-slate-600 text-slate-300', registration:'bg-green-600/20 text-green-400', locked:'bg-yellow-600/20 text-yellow-400', active:'bg-orange-600/20 text-orange-400', completed:'bg-blue-600/20 text-blue-400'};
+    html += '<span class="text-xs font-medium rounded px-2 py-0.5 capitalize ' + (colors[_tournamentStatus] || 'bg-slate-600 text-slate-300') + '">' + _tournamentStatus + '</span>';
+    el.innerHTML = html;
+}
+
+function statusBtn(tid, toStatus, label, cls) {
+    return '<button onclick="ajaxPost(\'/admin/tournament/' + tid + '/status\', {status:\'' + toStatus + '\'})" class="' + cls + ' text-white font-medium rounded px-4 py-2 text-sm">' + label + '</button>';
+}
+
+function renderStatusButtons() {
+    var el = document.getElementById('status-buttons');
+    if (!el) return;
+    var tid = _tournamentID;
+    var s = _tournamentStatus;
+    var back = 'bg-slate-600 hover:bg-slate-500';
+    var html = '';
+
+    if (!_isActive) html += '<button onclick="ajaxPost(\'/admin/tournament/' + tid + '/active\')" class="bg-orange-600 hover:bg-orange-700 text-white font-medium rounded px-4 py-2 text-sm">Set as Featured</button>';
+
+    if (s === 'draft') {
+        html += statusBtn(tid, 'registration', 'Open Registration', 'bg-green-600 hover:bg-green-700');
+    } else if (s === 'registration') {
+        html += statusBtn(tid, 'locked', 'Lock Teams', 'bg-yellow-600 hover:bg-yellow-700');
+        html += statusBtn(tid, 'draft', 'Back to Draft', back);
+    } else if (s === 'locked') {
+        html += statusBtn(tid, 'active', 'Start Tournament', 'bg-orange-600 hover:bg-orange-700');
+        html += statusBtn(tid, 'registration', 'Re-open Registration', back);
+    } else if (s === 'active') {
+        html += statusBtn(tid, 'completed', 'Complete Tournament', 'bg-blue-600 hover:bg-blue-700');
+        html += statusBtn(tid, 'locked', 'Back to Locked', back);
+    } else if (s === 'completed') {
+        html += statusBtn(tid, 'active', 'Re-open as Active', back);
+    }
+
+    html += '<button onclick="ajaxPost(\'/admin/tournament/' + tid + '/delete\', null, {redirect:\'/admin/tournament\'})" class="bg-red-600 hover:bg-red-700 text-white font-medium rounded px-4 py-2 text-sm">Trash</button>';
+    el.innerHTML = html;
+}
+
+renderStatusPills();
+renderStatusButtons();
+
 var _teamsData = [
 {{range .Teams}}{id:{{.ID}}, name:"{{.Name}}", members:[{{range .Members}}{id:{{.ID}}, teamId:{{.TeamID}}, steamName:"{{.SteamName}}"},{{end}}]},{{end}}
 ];
@@ -365,9 +349,7 @@ renderSeedList(_teamsData);
         <h2 class="text-lg font-semibold">Bracket</h2>
         <div class="flex items-center gap-3">
             {{if not (or (eq .Tournament.Status "active") (eq .Tournament.Status "completed"))}}
-            <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/bracket/delete" onsubmit="return confirm('Delete the entire bracket and all game data?')">
-                <button type="submit" class="text-red-400 hover:text-red-300 text-sm">Delete Bracket</button>
-            </form>
+            <button onclick="if(confirm('Delete the entire bracket and all game data?'))ajaxPost('/admin/tournament/{{.Tournament.ID}}/bracket/delete')" class="text-red-400 hover:text-red-300 text-sm">Delete Bracket</button>
             {{end}}
             {{if .IsActive}}
             <a href="/" target="_blank" class="text-orange-400 hover:text-orange-300 text-sm">Public View &rarr;</a>

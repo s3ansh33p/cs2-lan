@@ -1411,6 +1411,31 @@ function bracketAction(url, params) {
     });
 }
 
+// AJAX POST — updates status UI inline, or redirects if specified
+function ajaxPost(url, params, opts) {
+    var body = '';
+    if (params) body = Object.keys(params).map(function(k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
+    fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest'},
+        body: body
+    }).then(function() {
+        if (opts && opts.redirect) { location.href = opts.redirect; return; }
+        // Update local status if this was a status change
+        if (params && params.status && typeof _tournamentStatus !== 'undefined') {
+            _tournamentStatus = params.status;
+            if (typeof renderStatusPills === 'function') renderStatusPills();
+            if (typeof renderStatusButtons === 'function') renderStatusButtons();
+        }
+        // Set-as-featured: update local flag
+        if (url.indexOf('/active') !== -1 && typeof _isActive !== 'undefined') {
+            _isActive = true;
+            if (typeof renderStatusPills === 'function') renderStatusPills();
+            if (typeof renderStatusButtons === 'function') renderStatusButtons();
+        }
+    });
+}
+
 function adminAddTeam(form) {
     var data = new URLSearchParams(new FormData(form));
     fetch('/admin/tournament/' + _tournamentID + '/teams', {
@@ -1666,6 +1691,12 @@ function connectAdminBracketWS() {
             _adminBracketRetries = 0;
             var data = JSON.parse(e.data);
             if (data.type === 'bracket') {
+                // Update status pills and buttons if status changed
+                if (data.status && typeof _tournamentStatus !== 'undefined' && data.status !== _tournamentStatus) {
+                    _tournamentStatus = data.status;
+                    if (typeof renderStatusPills === 'function') renderStatusPills();
+                    if (typeof renderStatusButtons === 'function') renderStatusButtons();
+                }
                 if (data.bracket) {
                     var key = JSON.stringify(data.bracket);
                     if (key !== _lastAdminBracketJSON) {
