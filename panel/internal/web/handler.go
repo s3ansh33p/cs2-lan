@@ -84,9 +84,11 @@ type Handler struct {
 	dashData []byte // cached JSON message
 	dashBcast broadcaster
 
-	// Servers currently being restarted (name -> last known info for dashboard)
+	// Servers currently being restarted or stopped (name -> last known info for dashboard)
 	restartMu      sync.RWMutex
 	restartServers map[string]docker.ServerInfo
+	stoppingMu     sync.RWMutex
+	stoppingServers map[string]bool
 
 	// System stats sampler
 	sys sysSampler
@@ -170,8 +172,9 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, da
 		composeFile:    composeFile,
 		defaultRCON:    defaultRCON,
 		pages:          pages,
-		restartServers: make(map[string]docker.ServerInfo),
-		bracketSubs:    make(map[int64][]chan struct{}),
+		restartServers:  make(map[string]docker.ServerInfo),
+		stoppingServers: make(map[string]bool),
+		bracketSubs:     make(map[int64][]chan struct{}),
 	}
 	go h.dashboardPoller()
 	h.setupGameOverHook()
@@ -652,6 +655,11 @@ func (h *Handler) StopServer(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin", http.StatusSeeOther)
 	}
 
+	// Track stopping state for dashboard
+	h.stoppingMu.Lock()
+	h.stoppingServers[name] = true
+	h.stoppingMu.Unlock()
+
 	go func() {
 		h.tracker.StopTracking(name)
 		h.db.DeleteTrackerState(name)
@@ -659,6 +667,11 @@ func (h *Handler) StopServer(w http.ResponseWriter, r *http.Request) {
 		if err := h.docker.StopServer(context.Background(), name); err != nil {
 			log.Printf("stop server %s: %v", name, err)
 		}
+
+		h.stoppingMu.Lock()
+		delete(h.stoppingServers, name)
+		h.stoppingMu.Unlock()
+
 		h.notifyDashboard()
 	}()
 }

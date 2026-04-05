@@ -254,7 +254,9 @@ function renderDashboard(servers) {
         if (s.status === 'running') {
             statusText = '<span class="text-green-400 text-xs">Running</span>';
         } else if (s.status === 'restarting') {
-            statusText = '<span class="text-orange-400 text-xs">Restarting</span>';
+            statusText = '<span class="text-orange-400 text-xs">Restarting\u2026</span>';
+        } else if (s.status === 'stopping') {
+            statusText = '<span class="text-red-400 text-xs">Stopping\u2026</span>';
         } else {
             statusText = '<span class="text-slate-400 text-xs">' + s.status + '</span>';
         }

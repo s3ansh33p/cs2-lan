@@ -500,6 +500,13 @@ func (h *Handler) buildDashboardJSON() []byte {
 	}
 	h.restartMu.RUnlock()
 
+	h.stoppingMu.RLock()
+	stoppingNames := make(map[string]bool, len(h.stoppingServers))
+	for name := range h.stoppingServers {
+		stoppingNames[name] = true
+	}
+	h.stoppingMu.RUnlock()
+
 	runningNames := make(map[string]bool)
 	for _, s := range servers {
 		if s.Status == "running" {
@@ -552,14 +559,16 @@ func (h *Handler) buildDashboardJSON() []byte {
 			MaxPlayers: s.MaxPlayers,
 		}
 
-		// Override status if server is restarting
+		// Override status if server is restarting or stopping
 		if restartingNames[s.Name] {
 			ds.Status = "restarting"
+		} else if stoppingNames[s.Name] {
+			ds.Status = "stopping"
 		}
 
 		// Start tracking if not already (so dashboard shows live data)
-		// Skip if server is mid-restart to avoid spawning trackers against a dying container
-		if s.Status == "running" && s.Port > 0 && s.RCONPassword != "" && !restartingNames[s.Name] {
+		// Skip if server is mid-restart or stopping to avoid spawning trackers against a dying container
+		if s.Status == "running" && s.Port > 0 && s.RCONPassword != "" && !restartingNames[s.Name] && !stoppingNames[s.Name] {
 			h.trackServer(s.Name, s.Port, s.RCONPassword, s.GameMode, s.Map)
 		}
 
