@@ -446,6 +446,23 @@ func (h *Handler) AdminSetWinner(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 }
 
+func (h *Handler) AdminClearWinner(w http.ResponseWriter, r *http.Request) {
+	matchID, err := strconv.ParseInt(r.FormValue("match_id"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid match ID", http.StatusBadRequest)
+		return
+	}
+	if err := h.db.ClearMatchWinner(matchID); err != nil {
+		log.Printf("clear winner: %v", err)
+	}
+	h.notifyBracket()
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+}
+
 func (h *Handler) AdminCreateGame(w http.ResponseWriter, r *http.Request) {
 	matchID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {

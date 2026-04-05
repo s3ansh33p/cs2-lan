@@ -82,6 +82,7 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	// Admin match/game routes — work by match/game ID (tournament-scoped via foreign keys)
 	protected.HandleFunc("POST /admin/bracket/bestof", h.AdminSetBestOf)
 	protected.HandleFunc("POST /admin/bracket/winner", h.AdminSetWinner)
+	protected.HandleFunc("POST /admin/bracket/clearwinner", h.AdminClearWinner)
 	protected.HandleFunc("POST /admin/bracket/swap", h.AdminSwapTeams)
 	protected.HandleFunc("POST /admin/match/{id}/game", h.AdminCreateGame)
 	protected.HandleFunc("POST /admin/match/{id}/game/{gid}", h.AdminUpdateGame)

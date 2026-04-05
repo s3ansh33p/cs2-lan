@@ -1630,6 +1630,11 @@ function renderBracketMatch(m) {
         html += '<button onclick="bracketAction(\'/admin/bracket/winner\', {match_id:\'' + m.id + '\',winner_id:\'' + m.team2.id + '\'})" class="bg-slate-600 hover:bg-slate-500 text-white rounded px-1.5 py-0.5" title="Manually advance">' + (m.team2.name || 'T2') + ' wins</button>';
     }
 
+    // Revert winner — AJAX
+    if (m.winner) {
+        html += '<button onclick="if(confirm(\'Revert winner and undo bracket advancement?\'))bracketAction(\'/admin/bracket/clearwinner\', {match_id:\'' + m.id + '\'})" class="bg-red-600/80 hover:bg-red-600 text-white rounded px-1.5 py-0.5" title="Revert winner and undo advancement">Revert Winner</button>';
+    }
+
     // Bo toggle — AJAX
     if (!m.winner) {
         var nextBo = m.bestOf === 1 ? 3 : m.bestOf === 3 ? 5 : 1;
