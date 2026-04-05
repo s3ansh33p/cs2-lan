@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"log"
 	"net/http"
 	"strconv"
@@ -89,7 +90,7 @@ func (h *Handler) CreateTournament(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.notifyTournamentList()
+	h.tournamentListBcast.notify()
 	http.Redirect(w, r, adminTournamentRedirect(t.ID), http.StatusSeeOther)
 }
 
@@ -135,7 +136,7 @@ func (h *Handler) UpdateTournament(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.UpdateTournament(tid, name, teamSize, gameMode, regOpen, regClose, serverIP, serverPassword); err != nil {
 		log.Printf("update tournament: %v", err)
 	}
-	h.notifyTournamentList()
+	h.tournamentListBcast.notify()
 
 	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 }
@@ -150,7 +151,7 @@ func (h *Handler) SoftDeleteTournament(w http.ResponseWriter, r *http.Request) {
 		log.Printf("soft delete tournament: %v", err)
 	}
 	h.notifyBracket()
-	h.notifyTournamentList()
+	h.tournamentListBcast.notify()
 	if isAJAX(r) {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -167,7 +168,7 @@ func (h *Handler) RestoreTournament(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.RestoreTournament(tid); err != nil {
 		log.Printf("restore tournament: %v", err)
 	}
-	h.notifyTournamentList()
+	h.tournamentListBcast.notify()
 	if isAJAX(r) {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -184,7 +185,7 @@ func (h *Handler) PurgeTournament(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.PurgeTournament(tid); err != nil {
 		log.Printf("purge tournament: %v", err)
 	}
-	h.notifyTournamentList()
+	h.tournamentListBcast.notify()
 	if isAJAX(r) {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -210,7 +211,7 @@ func (h *Handler) SetTournamentStatus(w http.ResponseWriter, r *http.Request) {
 		log.Printf("set tournament status: %v", err)
 	}
 	h.notifyBracket()
-	h.notifyTournamentList()
+	h.tournamentListBcast.notify()
 	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 }
 
@@ -224,7 +225,7 @@ func (h *Handler) SetActiveTournament(w http.ResponseWriter, r *http.Request) {
 		log.Printf("set active tournament: %v", err)
 	}
 	h.notifyBracket()
-	h.notifyTournamentList()
+	h.tournamentListBcast.notify()
 	if isAJAX(r) {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -652,7 +653,7 @@ func (h *Handler) AdminTournamentListWS(w http.ResponseWriter, r *http.Request) 
 	}
 	defer conn.Close()
 
-	updates, unsub := h.subscribeTournamentList()
+	updates, unsub := h.tournamentListBcast.subscribe()
 	defer unsub()
 
 	pingTicker := time.NewTicker(pingInterval)
@@ -694,7 +695,7 @@ func (h *Handler) sendTournamentList(conn *websocket.Conn) error {
 	toJSON := func(t []db.Tournament) []tournamentJSON {
 		out := make([]tournamentJSON, len(t))
 		for i, v := range t {
-			out[i] = tournamentJSON{ID: v.ID, Name: v.Name, Status: v.Status, TeamSize: v.TeamSize, GameMode: v.GameMode, CreatedAt: v.CreatedAt.Format("Jan 2, 2006")}
+			out[i] = tournamentJSON{ID: v.ID, Name: html.EscapeString(v.Name), Status: v.Status, TeamSize: v.TeamSize, GameMode: v.GameMode, CreatedAt: v.CreatedAt.Format("Jan 2, 2006")}
 		}
 		return out
 	}

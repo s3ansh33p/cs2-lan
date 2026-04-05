@@ -32,6 +32,43 @@ func sanitize(s string) string {
 	return strings.TrimSpace(htmlTagRe.ReplaceAllString(s, ""))
 }
 
+// broadcaster is a simple pub/sub signal hub. Subscribers receive a struct{}
+// on their channel whenever notify is called. Used for dashboard and tournament list.
+type broadcaster struct {
+	mu   sync.RWMutex
+	subs []chan struct{}
+}
+
+func (b *broadcaster) subscribe() (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	b.mu.Lock()
+	b.subs = append(b.subs, ch)
+	b.mu.Unlock()
+	return ch, func() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		for i, c := range b.subs {
+			if c == ch {
+				b.subs = append(b.subs[:i], b.subs[i+1:]...)
+				break
+			}
+		}
+	}
+}
+
+func (b *broadcaster) notify() {
+	b.mu.RLock()
+	subs := make([]chan struct{}, len(b.subs))
+	copy(subs, b.subs)
+	b.mu.RUnlock()
+	for _, ch := range subs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
 type Handler struct {
 	docker      *docker.Client
 	rcon        *rcon.Manager
@@ -45,7 +82,7 @@ type Handler struct {
 	// Dashboard broadcast: compute once, send to all WS clients
 	dashMu   sync.RWMutex
 	dashData []byte // cached JSON message
-	dashSubs []chan struct{}
+	dashBcast broadcaster
 
 	// Servers currently being restarted (name -> last known info for dashboard)
 	restartMu      sync.RWMutex
@@ -59,8 +96,7 @@ type Handler struct {
 	bracketSubs map[int64][]chan struct{}
 
 	// Tournament list broadcast: sync admin tournament list page
-	tournamentListMu   sync.RWMutex
-	tournamentListSubs []chan struct{}
+	tournamentListBcast broadcaster
 }
 
 func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, database *db.DB, composeFile, defaultRCON string) (*Handler, error) {
@@ -140,36 +176,6 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, da
 	go h.dashboardPoller()
 	h.setupGameOverHook()
 	return h, nil
-}
-
-func (h *Handler) notifyTournamentList() {
-	h.tournamentListMu.RLock()
-	subs := make([]chan struct{}, len(h.tournamentListSubs))
-	copy(subs, h.tournamentListSubs)
-	h.tournamentListMu.RUnlock()
-	for _, ch := range subs {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
-}
-
-func (h *Handler) subscribeTournamentList() (<-chan struct{}, func()) {
-	ch := make(chan struct{}, 1)
-	h.tournamentListMu.Lock()
-	h.tournamentListSubs = append(h.tournamentListSubs, ch)
-	h.tournamentListMu.Unlock()
-	return ch, func() {
-		h.tournamentListMu.Lock()
-		defer h.tournamentListMu.Unlock()
-		for i, c := range h.tournamentListSubs {
-			if c == ch {
-				h.tournamentListSubs = append(h.tournamentListSubs[:i], h.tournamentListSubs[i+1:]...)
-				break
-			}
-		}
-	}
 }
 
 func generateRCONPassword() string {
@@ -275,23 +281,6 @@ func (h *Handler) trackServer(name string, port int, rconPw, mode, mapName strin
 }
 
 
-func (h *Handler) subscribeDashboard() (<-chan struct{}, func()) {
-	ch := make(chan struct{}, 1)
-	h.dashMu.Lock()
-	h.dashSubs = append(h.dashSubs, ch)
-	h.dashMu.Unlock()
-	return ch, func() {
-		h.dashMu.Lock()
-		defer h.dashMu.Unlock()
-		for i, c := range h.dashSubs {
-			if c == ch {
-				h.dashSubs = append(h.dashSubs[:i], h.dashSubs[i+1:]...)
-				break
-			}
-		}
-	}
-}
-
 func (h *Handler) getDashboardData() []byte {
 	h.dashMu.RLock()
 	defer h.dashMu.RUnlock()
@@ -303,15 +292,8 @@ func (h *Handler) notifyDashboard() {
 	data := h.buildDashboardJSON()
 	h.dashMu.Lock()
 	h.dashData = data
-	subs := make([]chan struct{}, len(h.dashSubs))
-	copy(subs, h.dashSubs)
 	h.dashMu.Unlock()
-	for _, ch := range subs {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
+	h.dashBcast.notify()
 }
 
 func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {

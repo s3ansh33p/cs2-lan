@@ -424,7 +424,7 @@ func (h *Handler) DashboardWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	updates, unsub := h.subscribeDashboard()
+	updates, unsub := h.dashBcast.subscribe()
 	defer unsub()
 
 	pingTicker := time.NewTicker(pingInterval)
