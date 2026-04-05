@@ -19,6 +19,19 @@ func (h *Handler) setupGameOverHook() {
 	h.tracker.OnRoundEnd(func(info gametracker.RoundEndInfo) {
 		h.handleRoundEnd(info)
 	})
+	h.tracker.OnMetadataChange(func(serverName string, m gametracker.TrackerMetadata) {
+		h.db.SaveTrackerState(serverName, db.TrackerState{
+			GameMode:   m.GameMode,
+			CurrentMap: m.CurrentMap,
+			HalfRound:  m.HalfRound,
+			MaxRounds:  m.MaxRounds,
+			CTScore:    m.CTScore,
+			TScore:     m.TScore,
+			Round:      m.Round,
+			InWarmup:   m.InWarmup,
+			IsPaused:   m.IsPaused,
+		})
+	})
 }
 
 // mapScores maps CT/T scores to team1/team2 using the stored CT assignment.

@@ -214,7 +214,6 @@ func (h *Handler) dashboardPoller() {
 	defer ticker.Stop()
 	for range ticker.C {
 		h.notifyDashboard()
-		h.saveTrackerStates()
 	}
 }
 
@@ -239,23 +238,6 @@ func (h *Handler) trackServer(name string, port int, rconPw, mode, mapName strin
 	return state
 }
 
-// saveTrackerStates persists metadata for all tracked servers.
-func (h *Handler) saveTrackerStates() {
-	for name, state := range h.tracker.GetAllStates() {
-		m := state.GetMetadata()
-		h.db.SaveTrackerState(name, db.TrackerState{
-			GameMode:   m.GameMode,
-			CurrentMap: m.CurrentMap,
-			HalfRound:  m.HalfRound,
-			MaxRounds:  m.MaxRounds,
-			CTScore:    m.CTScore,
-			TScore:     m.TScore,
-			Round:      m.Round,
-			InWarmup:   m.InWarmup,
-			IsPaused:   m.IsPaused,
-		})
-	}
-}
 
 func (h *Handler) subscribeDashboard() (<-chan struct{}, func()) {
 	ch := make(chan struct{}, 1)

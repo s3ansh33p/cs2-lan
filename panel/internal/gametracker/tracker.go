@@ -209,6 +209,10 @@ type ServerState struct {
 	serverName string
 	gameOverFn GameOverFunc
 	roundEndFn RoundEndFunc
+	persistFn  PersistFunc
+
+	// Metadata dirty flag — set under mu, read in notify()
+	metaDirty bool
 
 	// Change notification
 	subMu sync.Mutex
@@ -266,6 +270,9 @@ func (s *ServerState) GetMetadata() TrackerMetadata {
 	}
 }
 
+// markMetaDirty flags that metadata has changed. Caller must hold s.mu.
+func (s *ServerState) markMetaDirty() { s.metaDirty = true }
+
 func (s *ServerState) RestoreMetadata(m TrackerMetadata) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -310,6 +317,30 @@ func (s *ServerState) Subscribe() (<-chan struct{}, func()) {
 }
 
 func (s *ServerState) notify() {
+	// Check and clear metadata dirty flag (set under s.mu by callers)
+	s.mu.Lock()
+	dirty := s.metaDirty
+	if dirty {
+		s.metaDirty = false
+	}
+	var meta TrackerMetadata
+	var persistFn PersistFunc
+	if dirty && s.persistFn != nil {
+		meta = TrackerMetadata{
+			GameMode: s.gameMode, CurrentMap: s.currentMap,
+			HalfRound: s.halfRound, MaxRounds: s.maxRounds,
+			CTScore: s.ctScore, TScore: s.tScore, Round: s.round,
+			InWarmup: s.inWarmup, IsPaused: s.isPaused,
+		}
+		persistFn = s.persistFn
+	}
+	name := s.serverName
+	s.mu.Unlock()
+
+	if persistFn != nil {
+		go persistFn(name, meta)
+	}
+
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	for _, ch := range s.subs {
@@ -758,6 +789,7 @@ func (s *ServerState) parseRoundStats(lines []string) {
 		s.currentMap = mapName
 	}
 	s.ctScore = scoreCT
+	s.markMetaDirty()
 	s.tScore = scoreT
 
 	// Parse each player line: accountid, team, money, kills, deaths, assists, ...
@@ -860,6 +892,7 @@ func (s *ServerState) resetWithMessage(reason string) {
 	s.halfRound = 0
 	s.maxRounds = 0
 	s.isPaused = false
+	s.markMetaDirty()
 	s.appendKill(Kill{Time: time.Now(), IsSystem: true, Message: reason})
 	s.mu.Unlock()
 	s.notify()
@@ -892,6 +925,9 @@ type RoundEndInfo struct {
 // RoundEndFunc is called after each round win.
 type RoundEndFunc func(info RoundEndInfo)
 
+// PersistFunc is called when metadata fields change and should be persisted.
+type PersistFunc func(serverName string, m TrackerMetadata)
+
 type Manager struct {
 	mu         sync.Mutex
 	servers    map[string]*ServerState
@@ -900,6 +936,7 @@ type Manager struct {
 	rconFn     RCONFunc
 	gameOverFn GameOverFunc
 	roundEndFn RoundEndFunc
+	persistFn  PersistFunc
 }
 
 func NewManager(streamFn LogStreamFunc, rconFn RCONFunc) *Manager {
@@ -925,6 +962,13 @@ func (m *Manager) OnRoundEnd(fn RoundEndFunc) {
 	m.mu.Unlock()
 }
 
+// OnMetadataChange registers a callback that fires when metadata fields change.
+func (m *Manager) OnMetadataChange(fn PersistFunc) {
+	m.mu.Lock()
+	m.persistFn = fn
+	m.mu.Unlock()
+}
+
 // TrackServer starts tracking a server. Returns the state and whether it was newly created.
 func (m *Manager) TrackServer(name string, gamePort int, rconPassword, gameMode, initialMap string) (*ServerState, bool) {
 	m.mu.Lock()
@@ -939,6 +983,7 @@ func (m *Manager) TrackServer(name string, gamePort int, rconPassword, gameMode,
 	s.serverName = name
 	s.gameOverFn = m.gameOverFn
 	s.roundEndFn = m.roundEndFn
+	s.persistFn = m.persistFn
 	m.servers[name] = s
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancels[name] = cancel
@@ -952,17 +997,6 @@ func (m *Manager) GetState(name string) *ServerState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.servers[name]
-}
-
-// GetAllStates returns a snapshot of all tracked server states.
-func (m *Manager) GetAllStates() map[string]*ServerState {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	result := make(map[string]*ServerState, len(m.servers))
-	for k, v := range m.servers {
-		result[k] = v
-	}
-	return result
 }
 
 func (m *Manager) StopTracking(name string) {
@@ -1223,6 +1257,7 @@ func parseLine(line string, state *ServerState) {
 	if m := loadingMapRe.FindStringSubmatch(line); m != nil {
 		state.mu.Lock()
 		state.currentMap = m[1]
+		state.markMetaDirty()
 		for name, p := range state.stats {
 			if p.IsBot {
 				delete(state.stats, name)
@@ -1255,6 +1290,7 @@ func parseLine(line string, state *ServerState) {
 			}
 			state.halfRound = playedRounds
 			state.maxRounds = playedRounds * 2
+			state.markMetaDirty()
 			log.Printf("gametracker %s: half time (round %d/%d)", state.serverName, playedRounds, state.maxRounds)
 		}
 		state.mu.Unlock()
@@ -1279,6 +1315,7 @@ func parseLine(line string, state *ServerState) {
 				state.mu.Lock()
 				if newMode != state.gameMode {
 					state.gameMode = newMode
+					state.markMetaDirty()
 				}
 				state.mu.Unlock()
 				break
@@ -1315,6 +1352,7 @@ func parseLine(line string, state *ServerState) {
 	if strings.Contains(line, `command "mp_pause_match"`) {
 		state.mu.Lock()
 		state.isPaused = true
+		state.markMetaDirty()
 		state.mu.Unlock()
 		state.addSystemMessage("Match Paused")
 		return
@@ -1322,6 +1360,7 @@ func parseLine(line string, state *ServerState) {
 	if strings.Contains(line, `command "mp_unpause_match"`) {
 		state.mu.Lock()
 		state.isPaused = false
+		state.markMetaDirty()
 		state.mu.Unlock()
 		state.addSystemMessage("Match Unpaused")
 		return
@@ -1349,6 +1388,7 @@ func parseLine(line string, state *ServerState) {
 				newMode := resolveGameMode(state.gameType, state.gameModeNum)
 				if newMode != "" && newMode != state.gameMode {
 					state.gameMode = newMode
+					state.markMetaDirty()
 				}
 				state.mu.Unlock()
 				state.notify()
@@ -1388,6 +1428,7 @@ func parseLine(line string, state *ServerState) {
 		state.mu.Lock()
 		state.ctScore = ct
 		state.tScore = t
+		state.markMetaDirty()
 		state.rounds = append(state.rounds, RoundResult{
 			Round: ct + t, Winner: winner, Reason: reason,
 		})
@@ -1420,6 +1461,7 @@ func parseLine(line string, state *ServerState) {
 		state.mu.Lock()
 		state.ctScore = ct
 		state.tScore = t
+		state.markMetaDirty()
 		state.mu.Unlock()
 		state.notify()
 		return
@@ -1431,6 +1473,7 @@ func parseLine(line string, state *ServerState) {
 		case "Match_Start":
 			state.mu.Lock()
 			state.inWarmup = false
+			state.markMetaDirty()
 			for name, p := range state.stats {
 				if !p.Online {
 					delete(state.stats, name)
@@ -1448,16 +1491,19 @@ func parseLine(line string, state *ServerState) {
 			}
 			state.mu.Lock()
 			state.inWarmup = true
+			state.markMetaDirty()
 			state.mu.Unlock()
 			state.resetWithMessage("Warmup Started")
 		case "Warmup_End":
 			state.mu.Lock()
 			state.inWarmup = false
+			state.markMetaDirty()
 			state.mu.Unlock()
 			state.resetWithMessage("Warmup Ended - Stats Reset")
 		case "Round_Start":
 			state.mu.Lock()
 			state.isPaused = false
+			state.markMetaDirty()
 			state.defuser = ""
 			state.defuserTeam = ""
 			round := state.round
@@ -1470,6 +1516,7 @@ func parseLine(line string, state *ServerState) {
 		case "Game_Halftime":
 			state.mu.Lock()
 			state.halfRound = state.round
+			state.markMetaDirty()
 			state.mu.Unlock()
 			state.addSystemMessage("Half Time")
 		}
