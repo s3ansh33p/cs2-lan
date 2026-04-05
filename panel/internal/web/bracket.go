@@ -14,6 +14,61 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// bracketPageData holds the template data for rendering a bracket page.
+type bracketPageData struct {
+	Title        string
+	Tournament   *db.Tournament
+	Teams        []db.Team
+	Bracket      []db.Match
+	CanRegister  bool
+	ConnectInfo  string
+	GamePorts    map[string]int
+	TournamentID int64
+}
+
+// buildBracketPage loads teams, bracket, connect info, and live game ports for a tournament.
+func (h *Handler) buildBracketPage(ctx context.Context, tournament *db.Tournament, title string) bracketPageData {
+	data := bracketPageData{
+		Title:      title,
+		Tournament: tournament,
+		GamePorts:  make(map[string]int),
+	}
+	if tournament == nil {
+		return data
+	}
+
+	data.TournamentID = tournament.ID
+	data.Teams, _ = h.db.ListTeams(tournament.ID)
+	data.Bracket, _ = h.db.GetBracket(tournament.ID)
+	data.CanRegister = tournament.CanRegister()
+
+	if tournament.ServerIP != "" {
+		data.ConnectInfo = fmt.Sprintf("connect %s", tournament.ServerIP)
+		if tournament.ServerPassword != "" {
+			data.ConnectInfo += fmt.Sprintf("; password %s", tournament.ServerPassword)
+		}
+	}
+
+	if tournament.Status != "completed" {
+		servers, _ := h.docker.ListServers(ctx)
+		serverPorts := make(map[string]int)
+		for _, s := range servers {
+			serverPorts[s.Name] = s.Port
+		}
+		for _, m := range data.Bracket {
+			for _, g := range m.Games {
+				if g.Status == "live" && g.ServerName != "" {
+					if port, ok := serverPorts[g.ServerName]; ok {
+						data.GamePorts[g.ServerName] = port
+					}
+				}
+			}
+		}
+	}
+
+	return data
+}
+
 func (h *Handler) PublicBracket(w http.ResponseWriter, r *http.Request) {
 	tournament, err := h.db.GetActiveTournament()
 	if err != nil {
@@ -22,57 +77,16 @@ func (h *Handler) PublicBracket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var teams []db.Team
-	var bracket []db.Match
-	var canRegister bool
-	var connectInfo string
-
-	// Map of server name -> port for live games
-	gamePorts := make(map[string]int)
-
-	if tournament != nil {
-		teams, _ = h.db.ListTeams(tournament.ID)
-		bracket, _ = h.db.GetBracket(tournament.ID)
-		canRegister = tournament.CanRegister()
-
-		if tournament.ServerIP != "" {
-			connectInfo = fmt.Sprintf("connect %s", tournament.ServerIP)
-			if tournament.ServerPassword != "" {
-				connectInfo += fmt.Sprintf("; password %s", tournament.ServerPassword)
-			}
-		}
-
-		// Look up ports for live games via single ListServers call
-		servers, _ := h.docker.ListServers(r.Context())
-		serverPorts := make(map[string]int)
-		for _, s := range servers {
-			serverPorts[s.Name] = s.Port
-		}
-		for _, m := range bracket {
-			for _, g := range m.Games {
-				if g.Status == "live" && g.ServerName != "" {
-					if port, ok := serverPorts[g.ServerName]; ok {
-						gamePorts[g.ServerName] = port
-					}
-				}
-			}
-		}
-	}
-
-	var tournamentID int64
-	if tournament != nil {
-		tournamentID = tournament.ID
-	}
-
+	data := h.buildBracketPage(r.Context(), tournament, "Bracket")
 	h.render(w, "bracket.html", map[string]any{
-		"Title":        "Bracket",
-		"Tournament":   tournament,
-		"Teams":        teams,
-		"Bracket":      bracket,
-		"CanRegister":  canRegister,
-		"ConnectInfo":  connectInfo,
-		"GamePorts":    gamePorts,
-		"TournamentID": tournamentID,
+		"Title":        data.Title,
+		"Tournament":   data.Tournament,
+		"Teams":        data.Teams,
+		"Bracket":      data.Bracket,
+		"CanRegister":  data.CanRegister,
+		"ConnectInfo":  data.ConnectInfo,
+		"GamePorts":    data.GamePorts,
+		"TournamentID": data.TournamentID,
 	})
 }
 
@@ -102,50 +116,16 @@ func (h *Handler) PublicTournamentBracket(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	var teams []db.Team
-	var bracket []db.Match
-	var canRegister bool
-	var connectInfo string
-
-	gamePorts := make(map[string]int)
-
-	teams, _ = h.db.ListTeams(tournament.ID)
-	bracket, _ = h.db.GetBracket(tournament.ID)
-	canRegister = tournament.CanRegister()
-
-	if tournament.ServerIP != "" {
-		connectInfo = fmt.Sprintf("connect %s", tournament.ServerIP)
-		if tournament.ServerPassword != "" {
-			connectInfo += fmt.Sprintf("; password %s", tournament.ServerPassword)
-		}
-	}
-
-	if tournament.Status != "completed" {
-		servers, _ := h.docker.ListServers(r.Context())
-		serverPorts := make(map[string]int)
-		for _, s := range servers {
-			serverPorts[s.Name] = s.Port
-		}
-		for _, m := range bracket {
-			for _, g := range m.Games {
-				if g.Status == "live" && g.ServerName != "" {
-					if port, ok := serverPorts[g.ServerName]; ok {
-						gamePorts[g.ServerName] = port
-					}
-				}
-			}
-		}
-	}
-
+	data := h.buildBracketPage(r.Context(), tournament, tournament.Name)
 	h.render(w, "bracket.html", map[string]any{
-		"Title":        tournament.Name,
-		"Tournament":   tournament,
-		"Teams":        teams,
-		"Bracket":      bracket,
-		"CanRegister":  canRegister,
-		"ConnectInfo":  connectInfo,
-		"GamePorts":    gamePorts,
-		"TournamentID": tournament.ID,
+		"Title":        data.Title,
+		"Tournament":   data.Tournament,
+		"Teams":        data.Teams,
+		"Bracket":      data.Bracket,
+		"CanRegister":  data.CanRegister,
+		"ConnectInfo":  data.ConnectInfo,
+		"GamePorts":    data.GamePorts,
+		"TournamentID": data.TournamentID,
 	})
 }
 

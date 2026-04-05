@@ -123,7 +123,7 @@ func main() {
 }
 
 // ensureSelfSignedCert generates a self-signed TLS cert if one doesn't exist,
-// or reuses the existing one. Stored in ~/.cs2-panel/
+// or reuses the existing one. Stored in the current working directory.
 func ensureSelfSignedCert() (certPath, keyPath string, err error) {
 	certPath = "cert.pem"
 	keyPath = "key.pem"

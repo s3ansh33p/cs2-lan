@@ -3,7 +3,6 @@ package db
 import (
 	"database/sql"
 	"fmt"
-	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -192,41 +191,6 @@ func (db *DB) SetAlias(name, alias string) error {
 		"INSERT INTO server_aliases (server_name, alias) VALUES (?, ?) ON CONFLICT(server_name) DO UPDATE SET alias = excluded.alias",
 		name, alias,
 	)
-	return err
-}
-
-// --- Session persistence ---
-
-func (db *DB) LoadSessions() (map[string]time.Time, error) {
-	rows, err := db.Query("SELECT token, created_at FROM sessions")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	m := make(map[string]time.Time)
-	for rows.Next() {
-		var token string
-		var created time.Time
-		if err := rows.Scan(&token, &created); err != nil {
-			return nil, err
-		}
-		m[token] = created
-	}
-	return m, rows.Err()
-}
-
-func (db *DB) SaveSession(token string, created time.Time) error {
-	_, err := db.Exec("INSERT INTO sessions (token, created_at) VALUES (?, ?)", token, created)
-	return err
-}
-
-func (db *DB) DeleteSession(token string) error {
-	_, err := db.Exec("DELETE FROM sessions WHERE token = ?", token)
-	return err
-}
-
-func (db *DB) CleanupSessions(maxAge time.Duration) error {
-	_, err := db.Exec("DELETE FROM sessions WHERE created_at < ?", time.Now().Add(-maxAge))
 	return err
 }
 

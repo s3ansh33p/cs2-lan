@@ -142,19 +142,31 @@ func (db *DB) GetGameByServerAny(serverName string) (*Game, error) {
 }
 
 func (db *DB) SavePlayerStats(gameID int64, stats []PlayerStat) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`INSERT INTO game_player_stats
+		(game_id, team_id, player_name, kills, deaths, assists, hs_percent, kdr, adr, mvps, ef, ud)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(game_id, player_name) DO UPDATE SET
+		kills=excluded.kills, deaths=excluded.deaths, assists=excluded.assists,
+		hs_percent=excluded.hs_percent, kdr=excluded.kdr, adr=excluded.adr,
+		mvps=excluded.mvps, ef=excluded.ef, ud=excluded.ud`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
 	for _, s := range stats {
-		_, err := db.Exec(`INSERT INTO game_player_stats
-			(game_id, team_id, player_name, kills, deaths, assists, hs_percent, kdr, adr, mvps, ef, ud)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(game_id, player_name) DO UPDATE SET
-			kills=?, deaths=?, assists=?, hs_percent=?, kdr=?, adr=?, mvps=?, ef=?, ud=?`,
-			gameID, s.TeamID, s.PlayerName, s.Kills, s.Deaths, s.Assists, s.HSPercent, s.KDR, s.ADR, s.MVPs, s.EF, s.UD,
-			s.Kills, s.Deaths, s.Assists, s.HSPercent, s.KDR, s.ADR, s.MVPs, s.EF, s.UD)
-		if err != nil {
+		if _, err := stmt.Exec(gameID, s.TeamID, s.PlayerName, s.Kills, s.Deaths, s.Assists,
+			s.HSPercent, s.KDR, s.ADR, s.MVPs, s.EF, s.UD); err != nil {
 			return err
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (db *DB) GetGameStats(gameID int64) ([]PlayerStat, error) {

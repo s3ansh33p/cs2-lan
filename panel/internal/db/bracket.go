@@ -50,8 +50,6 @@ func (db *DB) GenerateBracket(tournamentID int64, teamIDs []int64) error {
 		p *= 2
 	}
 	numRounds := int(math.Log2(float64(p)))
-	numByes := p - n
-
 	// Build seeding order: 1vP, 2v(P-1), etc.
 	// For a bracket of size P, standard seeding places teams so that
 	// seed 1 plays seed P, seed 2 plays seed P-1, etc.
@@ -148,30 +146,17 @@ func (db *DB) GenerateBracket(tournamentID int64, teamIDs []int64) error {
 		}
 	}
 
-	_ = numByes // used implicitly via nil slots
 	return tx.Commit()
 }
 
 // DeleteBracket removes all matches and their associated games, rounds, and stats.
+// Relies on ON DELETE CASCADE from matches → games → game_rounds/game_player_stats.
 func (db *DB) DeleteBracket(tournamentID int64) error {
-	// Delete game data (rounds + stats) for all games in this tournament's matches
-	_, err := db.Exec(`DELETE FROM game_rounds WHERE game_id IN (
-		SELECT g.id FROM games g JOIN matches m ON g.match_id = m.id WHERE m.tournament_id = ?)`, tournamentID)
-	if err != nil {
-		return fmt.Errorf("delete game rounds: %w", err)
+	// Clear self-referential next_match_id FK before deleting
+	if _, err := db.Exec(`UPDATE matches SET next_match_id=NULL WHERE tournament_id=?`, tournamentID); err != nil {
+		return fmt.Errorf("clear next_match refs: %w", err)
 	}
-	_, err = db.Exec(`DELETE FROM game_player_stats WHERE game_id IN (
-		SELECT g.id FROM games g JOIN matches m ON g.match_id = m.id WHERE m.tournament_id = ?)`, tournamentID)
-	if err != nil {
-		return fmt.Errorf("delete game stats: %w", err)
-	}
-	_, err = db.Exec(`DELETE FROM games WHERE match_id IN (
-		SELECT id FROM matches WHERE tournament_id = ?)`, tournamentID)
-	if err != nil {
-		return fmt.Errorf("delete games: %w", err)
-	}
-	_, err = db.Exec(`DELETE FROM matches WHERE tournament_id = ?`, tournamentID)
-	if err != nil {
+	if _, err := db.Exec(`DELETE FROM matches WHERE tournament_id=?`, tournamentID); err != nil {
 		return fmt.Errorf("delete matches: %w", err)
 	}
 	return nil

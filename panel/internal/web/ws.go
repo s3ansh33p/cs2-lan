@@ -28,9 +28,9 @@ var upgrader = websocket.Upgrader{
 		if origin == "" {
 			return true // allow non-browser clients
 		}
-		// Allow same-host connections (LAN panel)
+		// Allow same-host connections (LAN panel) — exact match only
 		host := r.Host
-		return strings.Contains(origin, host)
+		return origin == "http://"+host || origin == "https://"+host
 	},
 }
 

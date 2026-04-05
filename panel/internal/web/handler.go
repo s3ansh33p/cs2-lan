@@ -354,7 +354,7 @@ func (h *Handler) LaunchServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.notifyDashboard()
+	go h.notifyDashboard()
 
 	// If launched from a bracket match, link the server to the game
 	if matchID := r.FormValue("match_id"); matchID != "" {
