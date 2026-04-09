@@ -31,10 +31,13 @@ func (h *Handler) AdminTournament(w http.ResponseWriter, r *http.Request) {
 	deleted, _ := h.db.ListDeletedTournaments()
 	activeID, _ := h.db.GetActiveTournamentID()
 
+	hidden, _ := h.db.ListHiddenTournaments()
+
 	h.render(w, "admin_tournament.html", map[string]any{
 		"Title":       "Tournaments",
 		"Tournaments": tournaments,
 		"Deleted":     deleted,
+		"Hidden":      hidden,
 		"ActiveID":    activeID,
 	})
 }
@@ -63,6 +66,7 @@ func (h *Handler) AdminTournamentDetail(w http.ResponseWriter, r *http.Request) 
 		"Teams":      teams,
 		"Bracket":    bracket,
 		"IsActive":   tournament.ID == activeID,
+		"IsHidden":   tournament.HiddenAt != nil,
 		"ActiveID":   activeID,
 	})
 }
@@ -167,6 +171,40 @@ func (h *Handler) RestoreTournament(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.db.RestoreTournament(tid); err != nil {
 		log.Printf("restore tournament: %v", err)
+	}
+	h.tournamentListBcast.notify()
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+}
+
+func (h *Handler) HideTournament(w http.ResponseWriter, r *http.Request) {
+	tid, err := parseTID(r)
+	if err != nil {
+		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
+		return
+	}
+	if err := h.db.HideTournament(tid); err != nil {
+		log.Printf("hide tournament: %v", err)
+	}
+	h.tournamentListBcast.notify()
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+}
+
+func (h *Handler) UnhideTournament(w http.ResponseWriter, r *http.Request) {
+	tid, err := parseTID(r)
+	if err != nil {
+		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
+		return
+	}
+	if err := h.db.UnhideTournament(tid); err != nil {
+		log.Printf("unhide tournament: %v", err)
 	}
 	h.tournamentListBcast.notify()
 	if isAJAX(r) {
@@ -644,6 +682,91 @@ func (h *Handler) AdminSwapTeams(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
 }
 
+// AdminTournamentDetailWS pushes tournament detail updates to admin clients viewing a specific tournament.
+func (h *Handler) AdminTournamentDetailWS(w http.ResponseWriter, r *http.Request) {
+	tid, err := parseTID(r)
+	if err != nil {
+		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
+		return
+	}
+
+	conn, done, err := setupWSConn(w, r)
+	if err != nil {
+		log.Printf("ws tournament detail upgrade: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	updates, unsub := h.tournamentListBcast.subscribe()
+	defer unsub()
+
+	pingTicker := time.NewTicker(pingInterval)
+	defer pingTicker.Stop()
+
+	h.sendTournamentDetail(conn, tid)
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-pingTicker.C:
+			conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		case <-updates:
+			if err := h.sendTournamentDetail(conn, tid); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (h *Handler) sendTournamentDetail(conn *websocket.Conn, tid int64) error {
+	tournament, err := h.db.GetTournamentByID(tid)
+	if err != nil || tournament == nil {
+		return nil
+	}
+	activeID, _ := h.db.GetActiveTournamentID()
+
+	var regOpen, regClose string
+	if tournament.RegistrationOpen != nil {
+		regOpen = tournament.RegistrationOpen.Format("2006-01-02T15:04")
+	}
+	if tournament.RegistrationClose != nil {
+		regClose = tournament.RegistrationClose.Format("2006-01-02T15:04")
+	}
+
+	msg := struct {
+		Type              string `json:"type"`
+		Name              string `json:"name"`
+		TeamSize          int    `json:"teamSize"`
+		GameMode          string `json:"gameMode"`
+		Status            string `json:"status"`
+		Hidden            bool   `json:"hidden"`
+		Active            bool   `json:"active"`
+		RegistrationOpen  string `json:"registrationOpen"`
+		RegistrationClose string `json:"registrationClose"`
+		ServerIP          string `json:"serverIP"`
+		ServerPassword    string `json:"serverPassword"`
+	}{
+		Type:              "tournament_detail",
+		Name:              html.EscapeString(tournament.Name),
+		TeamSize:          tournament.TeamSize,
+		GameMode:          tournament.GameMode,
+		Status:            tournament.Status,
+		Hidden:            tournament.HiddenAt != nil,
+		Active:            tournament.ID == activeID,
+		RegistrationOpen:  regOpen,
+		RegistrationClose: regClose,
+		ServerIP:          tournament.ServerIP,
+		ServerPassword:    tournament.ServerPassword,
+	}
+
+	conn.SetWriteDeadline(time.Now().Add(writeWait))
+	return conn.WriteJSON(msg)
+}
+
 // AdminTournamentListWS pushes tournament list updates to admin clients.
 func (h *Handler) AdminTournamentListWS(w http.ResponseWriter, r *http.Request) {
 	conn, done, err := setupWSConn(w, r)
@@ -681,6 +804,7 @@ func (h *Handler) AdminTournamentListWS(w http.ResponseWriter, r *http.Request) 
 func (h *Handler) sendTournamentList(conn *websocket.Conn) error {
 	tournaments, _ := h.db.ListTournaments()
 	deleted, _ := h.db.ListDeletedTournaments()
+	hidden, _ := h.db.ListHiddenTournaments()
 	activeID, _ := h.db.GetActiveTournamentID()
 
 	type tournamentJSON struct {
@@ -704,11 +828,13 @@ func (h *Handler) sendTournamentList(conn *websocket.Conn) error {
 		Type        string           `json:"type"`
 		Tournaments []tournamentJSON `json:"tournaments"`
 		Deleted     []tournamentJSON `json:"deleted"`
+		Hidden      []tournamentJSON `json:"hidden"`
 		ActiveID    int64            `json:"activeID"`
 	}{
 		Type:        "tournament_list",
 		Tournaments: toJSON(tournaments),
 		Deleted:     toJSON(deleted),
+		Hidden:      toJSON(hidden),
 		ActiveID:    activeID,
 	}
 

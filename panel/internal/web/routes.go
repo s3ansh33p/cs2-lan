@@ -63,6 +63,7 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	protected.HandleFunc("GET /admin/api/tournaments/ws", h.AdminTournamentListWS)
 	protected.HandleFunc("GET /admin/tournament", h.AdminTournament)
 	protected.HandleFunc("GET /admin/tournament/{tid}", h.AdminTournamentDetail)
+	protected.HandleFunc("GET /admin/tournament/{tid}/ws", h.AdminTournamentDetailWS)
 	protected.HandleFunc("POST /admin/tournament/create", h.CreateTournament)
 
 	// Admin tournament routes — scoped by tournament ID
@@ -70,6 +71,8 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	protected.HandleFunc("POST /admin/tournament/{tid}/delete", h.SoftDeleteTournament)
 	protected.HandleFunc("POST /admin/tournament/{tid}/restore", h.RestoreTournament)
 	protected.HandleFunc("POST /admin/tournament/{tid}/purge", h.PurgeTournament)
+	protected.HandleFunc("POST /admin/tournament/{tid}/hide", h.HideTournament)
+	protected.HandleFunc("POST /admin/tournament/{tid}/unhide", h.UnhideTournament)
 	protected.HandleFunc("POST /admin/tournament/{tid}/status", h.SetTournamentStatus)
 	protected.HandleFunc("POST /admin/tournament/{tid}/active", h.SetActiveTournament)
 	protected.HandleFunc("POST /admin/tournament/{tid}/teams", h.AdminCreateTeam)

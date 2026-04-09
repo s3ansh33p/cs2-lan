@@ -20,6 +20,7 @@ type Tournament struct {
 	Status            string // draft, registration, locked, active, completed
 	CreatedAt         time.Time
 	DeletedAt         *time.Time
+	HiddenAt          *time.Time
 }
 
 // CanRegister returns true if the tournament is accepting team registrations.
@@ -38,12 +39,12 @@ func (t *Tournament) CanRegister() bool {
 }
 
 const tournamentColumns = `id, name, team_size, game_mode, registration_open, registration_close,
-	server_ip, server_password, status, created_at, deleted_at`
+	server_ip, server_password, status, created_at, deleted_at, hidden_at`
 
 func scanTournament(row interface{ Scan(...any) error }) (*Tournament, error) {
 	t := &Tournament{}
 	err := row.Scan(&t.ID, &t.Name, &t.TeamSize, &t.GameMode, &t.RegistrationOpen, &t.RegistrationClose,
-		&t.ServerIP, &t.ServerPassword, &t.Status, &t.CreatedAt, &t.DeletedAt)
+		&t.ServerIP, &t.ServerPassword, &t.Status, &t.CreatedAt, &t.DeletedAt, &t.HiddenAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -60,14 +61,14 @@ func (db *DB) GetTournamentByID(id int64) (*Tournament, error) {
 func (db *DB) GetActiveTournament() (*Tournament, error) {
 	id, err := db.GetActiveTournamentID()
 	if err != nil || id == 0 {
-		// Fallback: if no active tournament set, return the most recent non-deleted
-		return scanTournament(db.QueryRow(`SELECT ` + tournamentColumns + ` FROM tournament WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1`))
+		// Fallback: if no active tournament set, return the most recent non-deleted, non-hidden
+		return scanTournament(db.QueryRow(`SELECT ` + tournamentColumns + ` FROM tournament WHERE deleted_at IS NULL AND hidden_at IS NULL ORDER BY id DESC LIMIT 1`))
 	}
 	return db.GetTournamentByID(id)
 }
 
 func (db *DB) ListTournaments() ([]Tournament, error) {
-	rows, err := db.Query(`SELECT `+tournamentColumns+` FROM tournament WHERE deleted_at IS NULL ORDER BY created_at DESC`)
+	rows, err := db.Query(`SELECT `+tournamentColumns+` FROM tournament WHERE deleted_at IS NULL AND hidden_at IS NULL ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -102,6 +103,42 @@ func (db *DB) ListDeletedTournaments() ([]Tournament, error) {
 		}
 	}
 	return result, rows.Err()
+}
+
+func (db *DB) ListHiddenTournaments() ([]Tournament, error) {
+	rows, err := db.Query(`SELECT `+tournamentColumns+` FROM tournament WHERE deleted_at IS NULL AND hidden_at IS NOT NULL ORDER BY hidden_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []Tournament
+	for rows.Next() {
+		t, err := scanTournament(rows)
+		if err != nil {
+			return nil, err
+		}
+		if t != nil {
+			result = append(result, *t)
+		}
+	}
+	return result, rows.Err()
+}
+
+func (db *DB) HideTournament(id int64) error {
+	_, err := db.Exec(`UPDATE tournament SET hidden_at=CURRENT_TIMESTAMP WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	activeID, _ := db.GetActiveTournamentID()
+	if activeID == id {
+		db.SetActiveTournament(0)
+	}
+	return nil
+}
+
+func (db *DB) UnhideTournament(id int64) error {
+	_, err := db.Exec(`UPDATE tournament SET hidden_at=NULL WHERE id=?`, id)
+	return err
 }
 
 func (db *DB) CreateTournament(name string, teamSize int, gameMode, serverIP, serverPassword string) (*Tournament, error) {

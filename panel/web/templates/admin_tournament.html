@@ -29,11 +29,33 @@
     </div>
     {{end}}
     </div>
+    <div id="tournament-hidden">
+    {{if .Hidden}}
+    <div class="mt-6">
+        <button onclick="this.nextElementSibling.classList.toggle('hidden');this.querySelector('span').textContent=this.nextElementSibling.classList.contains('hidden')?'\u25B8':'\u25BE'" class="flex items-center gap-1 text-sm font-medium text-slate-500 mb-2 hover:text-slate-400">
+            <span>&#x25B8;</span> Hidden ({{len .Hidden}})
+        </button>
+        <div class="space-y-2 hidden">
+            {{range .Hidden}}
+            <div class="flex items-center justify-between bg-slate-800/50 border border-slate-700/50 rounded-lg p-4 opacity-60">
+                <a href="/admin/tournament/{{.ID}}" class="flex items-center gap-3 hover:opacity-80">
+                    <span class="text-slate-400 font-medium">{{.Name}}</span>
+                    <span class="text-xs text-slate-500 capitalize">{{.Status}}</span>
+                </a>
+                <button onclick="ajaxPost('/admin/tournament/{{.ID}}/unhide')" class="text-xs text-green-400 hover:text-green-300">Unhide</button>
+            </div>
+            {{end}}
+        </div>
+    </div>
+    {{end}}
+    </div>
     <div id="tournament-trash">
     {{if .Deleted}}
     <div class="mt-6">
-        <h3 class="text-sm font-medium text-slate-500 mb-2">Trashed</h3>
-        <div class="space-y-2">
+        <button onclick="this.nextElementSibling.classList.toggle('hidden');this.querySelector('span').textContent=this.nextElementSibling.classList.contains('hidden')?'\u25B8':'\u25BE'" class="flex items-center gap-1 text-sm font-medium text-slate-500 mb-2 hover:text-slate-400">
+            <span>&#x25B8;</span> Trashed ({{len .Deleted}})
+        </button>
+        <div class="space-y-2 hidden">
             {{range .Deleted}}
             <div class="flex items-center justify-between bg-slate-800/50 border border-slate-700/50 rounded-lg p-4 opacity-60">
                 <div class="flex items-center gap-3">
@@ -96,8 +118,9 @@ var _statusColors = {draft:'bg-slate-600 text-slate-300', registration:'bg-green
 
 function renderTournamentList(data) {
     var el = document.getElementById('tournament-list');
+    var hiddenEl = document.getElementById('tournament-hidden');
     var trashEl = document.getElementById('tournament-trash');
-    if (!el || !trashEl) return;
+    if (!el || !hiddenEl || !trashEl) return;
 
     var html = '';
     if (data.tournaments && data.tournaments.length > 0) {
@@ -117,9 +140,33 @@ function renderTournamentList(data) {
     }
     el.innerHTML = html;
 
+    var hiddenOpen = !!hiddenEl.querySelector('.space-y-2:not(.hidden)');
+    var hhtml = '';
+    if (data.hidden && data.hidden.length > 0) {
+        hhtml += '<div class="mt-6">';
+        hhtml += '<button onclick="this.nextElementSibling.classList.toggle(\'hidden\');this.querySelector(\'span\').textContent=this.nextElementSibling.classList.contains(\'hidden\')?\'\u25B8\':\'\u25BE\'" class="flex items-center gap-1 text-sm font-medium text-slate-500 mb-2 hover:text-slate-400">';
+        hhtml += '<span>' + (hiddenOpen ? '\u25BE' : '\u25B8') + '</span> Hidden (' + data.hidden.length + ')</button>';
+        hhtml += '<div class="space-y-2' + (hiddenOpen ? '' : ' hidden') + '">';
+        for (var i = 0; i < data.hidden.length; i++) {
+            var h = data.hidden[i];
+            hhtml += '<div class="flex items-center justify-between bg-slate-800/50 border border-slate-700/50 rounded-lg p-4 opacity-60">';
+            hhtml += '<a href="/admin/tournament/' + h.id + '" class="flex items-center gap-3 hover:opacity-80">';
+            hhtml += '<span class="text-slate-400 font-medium">' + h.name + '</span>';
+            hhtml += '<span class="text-xs text-slate-500 capitalize">' + h.status + '</span></a>';
+            hhtml += '<button onclick="ajaxPost(\'/admin/tournament/' + h.id + '/unhide\')" class="text-xs text-green-400 hover:text-green-300">Unhide</button>';
+            hhtml += '</div>';
+        }
+        hhtml += '</div></div>';
+    }
+    hiddenEl.innerHTML = hhtml;
+
+    var trashOpen = !!trashEl.querySelector('.space-y-2:not(.hidden)');
     var thtml = '';
     if (data.deleted && data.deleted.length > 0) {
-        thtml += '<div class="mt-6"><h3 class="text-sm font-medium text-slate-500 mb-2">Trashed</h3><div class="space-y-2">';
+        thtml += '<div class="mt-6">';
+        thtml += '<button onclick="this.nextElementSibling.classList.toggle(\'hidden\');this.querySelector(\'span\').textContent=this.nextElementSibling.classList.contains(\'hidden\')?\'\u25B8\':\'\u25BE\'" class="flex items-center gap-1 text-sm font-medium text-slate-500 mb-2 hover:text-slate-400">';
+        thtml += '<span>' + (trashOpen ? '\u25BE' : '\u25B8') + '</span> Trashed (' + data.deleted.length + ')</button>';
+        thtml += '<div class="space-y-2' + (trashOpen ? '' : ' hidden') + '">';
         for (var i = 0; i < data.deleted.length; i++) {
             var d = data.deleted[i];
             thtml += '<div class="flex items-center justify-between bg-slate-800/50 border border-slate-700/50 rounded-lg p-4 opacity-60">';
@@ -256,12 +303,14 @@ connectTournamentListWS();
 var _tournamentID = {{.Tournament.ID}};
 var _tournamentStatus = "{{.Tournament.Status}}";
 var _isActive = {{if .IsActive}}true{{else}}false{{end}};
+var _isHidden = {{if .IsHidden}}true{{else}}false{{end}};
 
 function renderStatusPills() {
     var el = document.getElementById('status-pills');
     if (!el) return;
     var html = '';
     if (_isActive) html += '<span class="text-xs bg-orange-600/20 text-orange-400 rounded px-2 py-0.5">Featured</span>';
+    if (_isHidden) html += '<span class="text-xs bg-slate-600/20 text-slate-400 rounded px-2 py-0.5">Hidden</span>';
     var colors = {draft:'bg-slate-600 text-slate-300', registration:'bg-green-600/20 text-green-400', locked:'bg-yellow-600/20 text-yellow-400', active:'bg-orange-600/20 text-orange-400', completed:'bg-blue-600/20 text-blue-400'};
     html += '<span class="text-xs font-medium rounded px-2 py-0.5 capitalize ' + (colors[_tournamentStatus] || 'bg-slate-600 text-slate-300') + '">' + _tournamentStatus + '</span>';
     el.innerHTML = html;
@@ -296,12 +345,51 @@ function renderStatusButtons() {
         html += statusBtn(tid, 'active', 'Re-open as Active', back);
     }
 
+    if (_isHidden) {
+        html += '<button onclick="ajaxPost(\'/admin/tournament/' + tid + '/unhide\')" class="bg-slate-600 hover:bg-slate-500 text-white font-medium rounded px-4 py-2 text-sm">Unhide</button>';
+    } else {
+        html += '<button onclick="ajaxPost(\'/admin/tournament/' + tid + '/hide\')" class="bg-slate-600 hover:bg-slate-500 text-white font-medium rounded px-4 py-2 text-sm">Hide</button>';
+    }
     html += '<button onclick="ajaxPost(\'/admin/tournament/' + tid + '/delete\', null, {redirect:\'/admin/tournament\'})" class="bg-red-600 hover:bg-red-700 text-white font-medium rounded px-4 py-2 text-sm">Trash</button>';
     el.innerHTML = html;
 }
 
 renderStatusPills();
 renderStatusButtons();
+
+var _detailRetries = 0;
+function connectDetailWS() {
+    var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var ws = new WebSocket(protocol + '//' + location.host + '/admin/tournament/' + _tournamentID + '/ws');
+    ws.onmessage = function(e) {
+        try {
+            _detailRetries = 0;
+            var d = JSON.parse(e.data);
+            if (d.type !== 'tournament_detail') return;
+            _tournamentStatus = d.status;
+            _isActive = d.active;
+            _isHidden = d.hidden;
+            renderStatusPills();
+            renderStatusButtons();
+            var f = document.querySelector('form[action$="/update"]');
+            if (f) {
+                var n = f.querySelector('[name="name"]'); if (n && document.activeElement !== n) n.value = d.name;
+                var ts = f.querySelector('[name="team_size"]'); if (ts && document.activeElement !== ts) ts.value = d.teamSize;
+                var gm = f.querySelector('[name="game_mode"]'); if (gm && document.activeElement !== gm) gm.value = d.gameMode;
+                var ro = f.querySelector('[name="registration_open"]'); if (ro && document.activeElement !== ro) ro.value = d.registrationOpen;
+                var rc = f.querySelector('[name="registration_close"]'); if (rc && document.activeElement !== rc) rc.value = d.registrationClose;
+                var si = f.querySelector('[name="server_ip"]'); if (si && document.activeElement !== si) si.value = d.serverIP;
+                var sp = f.querySelector('[name="server_password"]'); if (sp && document.activeElement !== sp) sp.value = d.serverPassword;
+            }
+        } catch(err) { console.error('[detail-ws]', err); }
+    };
+    ws.onclose = function() {
+        var delay = Math.min(5000 * Math.pow(2, _detailRetries), 60000);
+        _detailRetries++;
+        setTimeout(connectDetailWS, delay);
+    };
+}
+connectDetailWS();
 
 var _teamsData = [
 {{range .Teams}}{id:{{.ID}}, name:"{{.Name}}", members:[{{range .Members}}{id:{{.ID}}, teamId:{{.TeamID}}, steamName:"{{.SteamName}}"},{{end}}]},{{end}}

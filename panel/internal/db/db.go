@@ -40,6 +40,7 @@ func (db *DB) migrate() error {
 		`ALTER TABLE games ADD COLUMN h2_t INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE games ADD COLUMN half_round INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE tournament ADD COLUMN deleted_at DATETIME`,
+		`ALTER TABLE tournament ADD COLUMN hidden_at DATETIME`,
 	} {
 		db.Exec(q) // ignore errors (column already exists)
 	}
