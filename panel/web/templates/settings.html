@@ -24,11 +24,13 @@
         <h2 class="text-lg font-semibold mb-4">Announcement</h2>
         <p class="text-xs text-slate-500 mb-3">Broadcast a message to all connected public and admin clients.</p>
         <form method="POST" action="/admin/announcement" class="space-y-3">
-            <div class="flex gap-2">
+            <div class="flex flex-col sm:flex-row gap-2">
                 <input type="text" name="message" placeholder="Type an announcement..." value="{{.Announcement}}"
                     class="flex-1 bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
-                <button type="submit" class="bg-orange-600 hover:bg-orange-700 text-white font-medium rounded px-4 py-2 text-sm">Send</button>
-                <button type="button" onclick="fetch('/admin/announcement',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},body:'message=&link='});this.closest('form').querySelector('[name=message]').value='';this.closest('form').querySelector('[name=link]').value=''" class="bg-slate-600 hover:bg-slate-500 text-white font-medium rounded px-4 py-2 text-sm">Clear</button>
+                <div class="flex gap-2">
+                    <button type="submit" class="flex-1 sm:flex-none bg-orange-600 hover:bg-orange-700 text-white font-medium rounded px-4 py-2 text-sm">Send</button>
+                    <button type="button" onclick="fetch('/admin/announcement',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},body:'message=&link='});this.closest('form').querySelector('[name=message]').value='';this.closest('form').querySelector('[name=link]').value=''" class="flex-1 sm:flex-none bg-slate-600 hover:bg-slate-500 text-white font-medium rounded px-4 py-2 text-sm">Clear</button>
+                </div>
             </div>
             <div>
                 <label class="block text-xs text-slate-500 mb-1">Link (optional)</label>
