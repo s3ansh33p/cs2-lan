@@ -50,7 +50,7 @@ func (h *Handler) buildBracketPage(ctx context.Context, tournament *db.Tournamen
 		}
 	}
 
-	if tournament.Status != "completed" {
+	if tournament.Status != db.TournamentCompleted {
 		servers, _ := h.docker.ListServers(ctx)
 		serverPorts := make(map[string]int)
 		for _, s := range servers {
@@ -58,7 +58,7 @@ func (h *Handler) buildBracketPage(ctx context.Context, tournament *db.Tournamen
 		}
 		for _, m := range data.Bracket {
 			for _, g := range m.Games {
-				if g.Status == "live" && g.ServerName != "" {
+				if g.Status == db.GameLive && g.ServerName != "" {
 					if port, ok := serverPorts[g.ServerName]; ok {
 						data.GamePorts[g.ServerName] = port
 					}
@@ -331,7 +331,7 @@ func (h *Handler) BracketWebSocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Tournament not found", http.StatusNotFound)
 		return
 	}
-	if tournament.Status == "completed" {
+	if tournament.Status == db.TournamentCompleted {
 		http.Error(w, "Tournament completed, no live updates", http.StatusGone)
 		return
 	}
@@ -437,7 +437,7 @@ func (h *Handler) sendBracketState(conn *websocket.Conn, tournamentID int64) err
 				Status: g.Status, Server: g.ServerName, T1CT: g.Team1StartsCT,
 				H1CT: g.H1CT, H1T: g.H1T, H2CT: g.H2CT, H2T: g.H2T}
 			// Look up port for live games
-			if g.Status == "live" && g.ServerName != "" {
+			if g.Status == db.GameLive && g.ServerName != "" {
 				if port, ok := serverPorts[g.ServerName]; ok {
 					gj.Port = port
 				}

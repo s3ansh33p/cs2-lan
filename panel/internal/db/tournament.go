@@ -8,6 +8,15 @@ import (
 	"time"
 )
 
+// Tournament status constants.
+const (
+	TournamentDraft        = "draft"
+	TournamentRegistration = "registration"
+	TournamentLocked       = "locked"
+	TournamentActive       = "active"
+	TournamentCompleted    = "completed"
+)
+
 type Tournament struct {
 	ID                int64
 	Name              string
@@ -25,7 +34,7 @@ type Tournament struct {
 
 // CanRegister returns true if the tournament is accepting team registrations.
 func (t *Tournament) CanRegister() bool {
-	if t.Status != "registration" {
+	if t.Status != TournamentRegistration {
 		return false
 	}
 	now := time.Now()
@@ -155,7 +164,7 @@ func (db *DB) CreateTournament(name string, teamSize int, gameMode, serverIP, se
 	if err != nil {
 		return nil, fmt.Errorf("last insert id: %w", err)
 	}
-	return &Tournament{ID: id, Name: name, TeamSize: teamSize, GameMode: gameMode, ServerIP: serverIP, ServerPassword: serverPassword, Status: "draft"}, nil
+	return &Tournament{ID: id, Name: name, TeamSize: teamSize, GameMode: gameMode, ServerIP: serverIP, ServerPassword: serverPassword, Status: TournamentDraft}, nil
 }
 
 func (db *DB) UpdateTournament(id int64, name string, teamSize int, gameMode string, regOpen, regClose *time.Time, serverIP, serverPassword string) error {

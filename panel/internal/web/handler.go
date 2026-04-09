@@ -184,6 +184,8 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, da
 		restartServers:  make(map[string]docker.ServerInfo),
 		stoppingServers: make(map[string]bool),
 		bracketSubs:     make(map[int64][]chan struct{}),
+		announcement:    database.GetSetting("announcement"),
+		announceLink:    database.GetSetting("announcement_link"),
 	}
 	go h.dashboardPoller()
 	h.setupGameOverHook()
@@ -243,21 +245,26 @@ func (h *Handler) enrichServers(ctx context.Context) []serverWithStatus {
 		log.Printf("list servers: %v", err)
 		return nil
 	}
-	var result []serverWithStatus
-	for _, s := range servers {
-		ss := serverWithStatus{ServerInfo: s}
+	result := make([]serverWithStatus, len(servers))
+	var wg sync.WaitGroup
+	for i, s := range servers {
+		result[i] = serverWithStatus{ServerInfo: s}
 		if s.Status == "running" && s.Port > 0 && s.RCONPassword != "" {
-			addr := fmt.Sprintf("localhost:%d", s.Port)
-			resp, err := h.rcon.Execute(addr, s.RCONPassword, "status")
-			if err == nil {
-				status := rcon.ParseStatus(resp)
-				ss.PlayerCount = status.Humans + status.Bots
-				ss.CurrentMap = status.Map
-				ss.RCONOk = true
-			}
+			wg.Add(1)
+			go func(idx int, s docker.ServerInfo) {
+				defer wg.Done()
+				addr := fmt.Sprintf("localhost:%d", s.Port)
+				resp, err := h.rcon.Execute(addr, s.RCONPassword, "status")
+				if err == nil {
+					status := rcon.ParseStatus(resp)
+					result[idx].PlayerCount = status.Humans + status.Bots
+					result[idx].CurrentMap = status.Map
+					result[idx].RCONOk = true
+				}
+			}(i, s)
 		}
-		result = append(result, ss)
 	}
+	wg.Wait()
 	return result
 }
 

@@ -19,6 +19,9 @@ func (h *Handler) SetAnnouncement(w http.ResponseWriter, r *http.Request) {
 	h.announceLink = link
 	h.announceMu.Unlock()
 
+	h.db.SetSetting("announcement", msg)
+	h.db.SetSetting("announcement_link", link)
+
 	h.announceBcast.notify()
 	http.Redirect(w, r, "/admin/settings", http.StatusSeeOther)
 }

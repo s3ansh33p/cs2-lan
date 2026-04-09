@@ -5,6 +5,13 @@ import (
 	"time"
 )
 
+// Game status constants.
+const (
+	GamePending   = "pending"
+	GameLive      = "live"
+	GameCompleted = "completed"
+)
+
 type Game struct {
 	ID            int64
 	MatchID       int64
@@ -194,14 +201,24 @@ func (db *DB) GetGameStats(gameID int64) ([]PlayerStat, error) {
 }
 
 func (db *DB) SaveGameRounds(gameID int64, rounds []GameRound) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`INSERT INTO game_rounds (game_id, round, winner, reason) VALUES (?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
 	for _, r := range rounds {
-		_, err := db.Exec(`INSERT INTO game_rounds (game_id, round, winner, reason) VALUES (?, ?, ?, ?)`,
-			gameID, r.Round, r.Winner, r.Reason)
-		if err != nil {
+		if _, err := stmt.Exec(gameID, r.Round, r.Winner, r.Reason); err != nil {
 			return err
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (db *DB) GetGameRounds(gameID int64) ([]GameRound, error) {

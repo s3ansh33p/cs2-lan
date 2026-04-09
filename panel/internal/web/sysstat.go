@@ -87,8 +87,8 @@ func parseCPULine(line string) cpuSample {
 	for i, f := range fields[1:] {
 		v, _ := strconv.ParseUint(f, 10, 64)
 		s.total += v
-		if i == 3 { // idle is the 4th value
-			s.idle = v
+		if i == 3 || i == 4 { // idle + iowait
+			s.idle += v
 		}
 	}
 	return s

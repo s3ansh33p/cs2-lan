@@ -48,6 +48,8 @@ func (db *DB) migrate() error {
 	// Seed settings table with defaults if empty
 	db.Exec(`INSERT OR IGNORE INTO settings (key, value) VALUES ('active_tournament_id', '')`)
 	db.Exec(`INSERT OR IGNORE INTO settings (key, value) VALUES ('site_name', 'UniLAN')`)
+	db.Exec(`INSERT OR IGNORE INTO settings (key, value) VALUES ('announcement', '')`)
+	db.Exec(`INSERT OR IGNORE INTO settings (key, value) VALUES ('announcement_link', '')`)
 	return nil
 }
 

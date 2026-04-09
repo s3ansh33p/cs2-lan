@@ -6,6 +6,7 @@ import (
 	"html"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -193,7 +194,7 @@ func (h *Handler) SetTournamentStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := r.FormValue("status")
-	valid := map[string]bool{"draft": true, "registration": true, "locked": true, "active": true, "completed": true}
+	valid := map[string]bool{db.TournamentDraft: true, db.TournamentRegistration: true, db.TournamentLocked: true, db.TournamentActive: true, db.TournamentCompleted: true}
 	if !valid[status] {
 		http.Error(w, "Invalid status", http.StatusBadRequest)
 		return
@@ -610,9 +611,15 @@ func (h *Handler) AdminLaunchMatch(w http.ResponseWriter, r *http.Request) {
 		password = tournament.ServerPassword
 	}
 
-	query := fmt.Sprintf("/admin/launch?name=match-%s&map=%s&mode=%s&players=%d&match_id=%s&game_number=%s&password=%s",
-		matchID, mapName, gameMode, maxPlayers, matchID, gameNumber, password)
-	http.Redirect(w, r, query, http.StatusSeeOther)
+	params := url.Values{}
+	params.Set("name", "match-"+matchID)
+	params.Set("map", mapName)
+	params.Set("mode", gameMode)
+	params.Set("players", strconv.Itoa(maxPlayers))
+	params.Set("match_id", matchID)
+	params.Set("game_number", gameNumber)
+	params.Set("password", password)
+	http.Redirect(w, r, "/admin/launch?"+params.Encode(), http.StatusSeeOther)
 }
 
 func (h *Handler) AdminSwapTeams(w http.ResponseWriter, r *http.Request) {

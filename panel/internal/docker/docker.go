@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,14 +56,26 @@ func (c *Client) ListServers(ctx context.Context) ([]ServerInfo, error) {
 		return nil, fmt.Errorf("list containers: %w", err)
 	}
 
-	var servers []ServerInfo
+	var (
+		mu      sync.Mutex
+		servers []ServerInfo
+		wg      sync.WaitGroup
+	)
 	for _, ctr := range containers {
-		info, err := c.InspectServer(ctx, ctr.ID)
-		if err != nil {
-			continue
-		}
-		servers = append(servers, info)
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			info, err := c.InspectServer(ctx, id)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			servers = append(servers, info)
+			mu.Unlock()
+		}(ctr.ID)
 	}
+	wg.Wait()
+	sort.Slice(servers, func(i, j int) bool { return servers[i].Name < servers[j].Name })
 	return servers, nil
 }
 
