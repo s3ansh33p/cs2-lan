@@ -41,6 +41,8 @@ Open `http://<your-lan-ip>:8080` from any device on the network.
 | `--tls-cert` | | Custom TLS certificate path |
 | `--tls-key` | | Custom TLS key path |
 
+To change the favicon, replace the contents of `panel/web/static/favicon/` with your own icons. Use [favicon.io](https://favicon.io/) to generate the required files from a text, image, or emoji.
+
 ### WSL2 network setup
 
 If running inside WSL2, enable mirrored networking so ports are reachable from Windows and LAN clients. Add to `C:\Users\<you>\.wslconfig`:
