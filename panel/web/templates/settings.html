@@ -1,0 +1,23 @@
+{{define "content"}}
+<div class="mb-6">
+    <h1 class="text-2xl font-bold mb-1">Settings</h1>
+    <p class="text-slate-400 text-sm">Configure site-wide settings.</p>
+</div>
+
+<div class="max-w-lg space-y-6">
+    <div class="bg-slate-800 border border-slate-700 rounded-lg p-6">
+        <h2 class="text-lg font-semibold mb-4">General</h2>
+        <form method="POST" action="/admin/settings/site-name" class="space-y-4">
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Site Name</label>
+                <input type="text" name="site_name" value="{{.SiteName}}" required
+                    class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+                <p class="text-xs text-slate-500 mt-1">Displayed in the nav bar and public pages.</p>
+            </div>
+            <button type="submit" class="bg-orange-600 hover:bg-orange-700 text-white font-medium rounded px-4 py-2 text-sm">
+                Save
+            </button>
+        </form>
+    </div>
+</div>
+{{end}}

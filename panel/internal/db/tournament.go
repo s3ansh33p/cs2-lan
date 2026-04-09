@@ -200,6 +200,18 @@ func (db *DB) PurgeTournament(id int64) error {
 
 // --- Settings ---
 
+func (db *DB) GetSetting(key string) string {
+	var val string
+	db.QueryRow(`SELECT value FROM settings WHERE key=?`, key).Scan(&val)
+	return val
+}
+
+func (db *DB) SetSetting(key, value string) error {
+	_, err := db.Exec(`INSERT INTO settings (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
+	return err
+}
+
 func (db *DB) GetActiveTournamentID() (int64, error) {
 	var val string
 	err := db.QueryRow(`SELECT value FROM settings WHERE key='active_tournament_id'`).Scan(&val)

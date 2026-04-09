@@ -47,6 +47,8 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	protected.HandleFunc("GET /admin/{$}", h.Dashboard)
 	protected.HandleFunc("GET /admin/api/servers", h.ServersPartial)
 	protected.HandleFunc("GET /admin/api/dashboard/ws", h.DashboardWebSocket)
+	protected.HandleFunc("GET /admin/settings", h.SettingsPage)
+	protected.HandleFunc("POST /admin/settings/site-name", h.SetSiteName)
 	protected.HandleFunc("GET /admin/launch", h.LaunchPage)
 	protected.HandleFunc("POST /admin/launch", h.LaunchServer)
 	protected.HandleFunc("GET /admin/server/{name}", h.ServerDetail)

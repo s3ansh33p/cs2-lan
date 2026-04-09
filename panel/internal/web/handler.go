@@ -109,6 +109,9 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, da
 
 	funcMap := template.FuncMap{
 		"upper": strings.ToUpper,
+		"siteName": func() string {
+			return database.GetSetting("site_name")
+		},
 		"divf": func(a, b int) float64 {
 			if b == 0 {
 				return 0
@@ -141,7 +144,7 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, da
 
 	// Each page gets its own clone of base so {{define "content"}} doesn't collide
 	pages := make(map[string]*template.Template)
-	for _, page := range []string{"dashboard.html", "server.html", "launch.html", "bracket.html", "admin_tournament.html", "tournaments.html"} {
+	for _, page := range []string{"dashboard.html", "server.html", "launch.html", "bracket.html", "admin_tournament.html", "tournaments.html", "settings.html"} {
 		t, err := template.Must(base.Clone()).ParseFS(tmplFS, page)
 		if err != nil {
 			return nil, fmt.Errorf("parse %s: %w", page, err)
@@ -200,7 +203,7 @@ func (h *Handler) render(w http.ResponseWriter, name string, data any) {
 	// For page templates that use layout, execute "layout"; for partials/login, execute the named define
 	execName := name
 	switch name {
-	case "dashboard.html", "server.html", "launch.html", "bracket.html", "admin_tournament.html", "tournaments.html":
+	case "dashboard.html", "server.html", "launch.html", "bracket.html", "admin_tournament.html", "tournaments.html", "settings.html":
 		execName = "layout"
 	}
 
@@ -306,6 +309,22 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 		"Servers": servers,
 		"Title":   "Dashboard",
 	})
+}
+
+func (h *Handler) SettingsPage(w http.ResponseWriter, r *http.Request) {
+	h.render(w, "settings.html", map[string]any{
+		"Title":    "Settings",
+		"SiteName": h.db.GetSetting("site_name"),
+	})
+}
+
+func (h *Handler) SetSiteName(w http.ResponseWriter, r *http.Request) {
+	name := sanitize(r.FormValue("site_name"))
+	if name == "" {
+		name = "UniLAN"
+	}
+	h.db.SetSetting("site_name", name)
+	http.Redirect(w, r, "/admin/settings", http.StatusSeeOther)
 }
 
 func (h *Handler) ServersPartial(w http.ResponseWriter, r *http.Request) {
