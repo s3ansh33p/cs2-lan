@@ -1,0 +1,56 @@
+{{define "announce"}}
+<div id="announce-banner" class="hidden bg-orange-600 text-white text-center py-2 text-sm font-bold"></div>
+<script>
+(function() {
+    var banner = document.getElementById('announce-banner');
+    if (!banner) return;
+    var MSG_KEY = 'announce_msg';
+    var LINK_KEY = 'announce_link';
+    function show(msg, link) {
+        if (msg) {
+            banner.innerHTML = '';
+            var text = document.createTextNode(msg);
+            if (link) {
+                var a = document.createElement('a');
+                a.href = link;
+                a.className = 'underline hover:text-orange-200';
+                a.appendChild(text);
+                banner.appendChild(a);
+            } else {
+                banner.appendChild(text);
+            }
+            banner.classList.remove('hidden');
+        } else {
+            banner.classList.add('hidden');
+            banner.innerHTML = '';
+        }
+    }
+    var cached = localStorage.getItem(MSG_KEY);
+    if (cached) show(cached, localStorage.getItem(LINK_KEY));
+    var retries = 0;
+    function connect() {
+        var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        var ws = new WebSocket(protocol + '//' + location.host + '/announce/ws');
+        ws.onmessage = function(e) {
+            try {
+                retries = 0;
+                var d = JSON.parse(e.data);
+                if (d.type === 'announcement') {
+                    if (d.message) localStorage.setItem(MSG_KEY, d.message);
+                    else localStorage.removeItem(MSG_KEY);
+                    if (d.link) localStorage.setItem(LINK_KEY, d.link);
+                    else localStorage.removeItem(LINK_KEY);
+                    show(d.message, d.link);
+                }
+            } catch(err) { console.error('[announce-ws]', err); }
+        };
+        ws.onclose = function() {
+            var delay = Math.min(5000 * Math.pow(2, retries), 60000);
+            retries++;
+            setTimeout(connect, delay);
+        };
+    }
+    connect();
+})();
+</script>
+{{end}}

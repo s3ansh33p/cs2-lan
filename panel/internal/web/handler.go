@@ -99,6 +99,12 @@ type Handler struct {
 
 	// Tournament list broadcast: sync admin tournament list page
 	tournamentListBcast broadcaster
+
+	// Announcements: ephemeral broadcast to all connected clients
+	announceMu    sync.RWMutex
+	announcement  string
+	announceLink  string
+	announceBcast broadcaster
 }
 
 func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, database *db.DB, composeFile, defaultRCON string) (*Handler, error) {
@@ -312,9 +318,15 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) SettingsPage(w http.ResponseWriter, r *http.Request) {
+	h.announceMu.RLock()
+	ann := h.announcement
+	annLink := h.announceLink
+	h.announceMu.RUnlock()
 	h.render(w, "settings.html", map[string]any{
-		"Title":    "Settings",
-		"SiteName": h.db.GetSetting("site_name"),
+		"Title":            "Settings",
+		"SiteName":         h.db.GetSetting("site_name"),
+		"Announcement":     ann,
+		"AnnouncementLink": annLink,
 	})
 }
 

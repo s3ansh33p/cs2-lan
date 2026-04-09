@@ -41,6 +41,7 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	mux.HandleFunc("GET /tournament/{tid}", h.PublicTournamentBracket)
 	mux.HandleFunc("GET /tournament/{tid}/game/{gid}/stats", h.PublicGameStats)
 	mux.HandleFunc("GET /tournament/{tid}/ws", h.BracketWebSocket)
+	mux.HandleFunc("GET /announce/ws", h.AnnounceWebSocket)
 
 	// Protected admin routes
 	protected := http.NewServeMux()
@@ -49,6 +50,7 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	protected.HandleFunc("GET /admin/api/dashboard/ws", h.DashboardWebSocket)
 	protected.HandleFunc("GET /admin/settings", h.SettingsPage)
 	protected.HandleFunc("POST /admin/settings/site-name", h.SetSiteName)
+	protected.HandleFunc("POST /admin/announcement", h.SetAnnouncement)
 	protected.HandleFunc("GET /admin/launch", h.LaunchPage)
 	protected.HandleFunc("POST /admin/launch", h.LaunchServer)
 	protected.HandleFunc("GET /admin/server/{name}", h.ServerDetail)
