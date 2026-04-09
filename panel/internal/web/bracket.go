@@ -522,17 +522,17 @@ func (h *Handler) PublicGameStats(w http.ResponseWriter, r *http.Request) {
 
 	// Player stats table — split by team
 	if len(stats) > 0 {
-		// Build team ID -> name lookup from the tournament teams table
+		// Build team ID -> name lookup from the stats (at most 2 teams)
+		teamIDs := make(map[int64]bool)
+		for _, s := range stats {
+			teamIDs[s.TeamID] = true
+		}
 		teamNames := make(map[int64]string)
-		rows, _ := h.db.Query(`SELECT id, name FROM teams`)
-		if rows != nil {
-			for rows.Next() {
-				var id int64
-				var name string
-				rows.Scan(&id, &name)
+		for id := range teamIDs {
+			var name string
+			if err := h.db.QueryRow(`SELECT name FROM teams WHERE id=?`, id).Scan(&name); err == nil {
 				teamNames[id] = name
 			}
-			rows.Close()
 		}
 
 		// Split stats into two groups by team

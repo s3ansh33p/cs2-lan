@@ -151,6 +151,12 @@ CREATE TABLE IF NOT EXISTS sessions (
 	created_at DATETIME NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_teams_tournament ON teams(tournament_id);
+CREATE INDEX IF NOT EXISTS idx_matches_tournament ON matches(tournament_id);
+CREATE INDEX IF NOT EXISTS idx_games_match ON games(match_id);
+CREATE INDEX IF NOT EXISTS idx_game_rounds_game ON game_rounds(game_id);
+CREATE INDEX IF NOT EXISTS idx_game_player_stats_game ON game_player_stats(game_id);
+
 CREATE TABLE IF NOT EXISTS server_tracker_state (
 	server_name TEXT PRIMARY KEY,
 	game_mode TEXT NOT NULL DEFAULT '',

@@ -145,90 +145,44 @@ func (h *Handler) UpdateTournament(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 }
 
-func (h *Handler) SoftDeleteTournament(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) tournamentAction(w http.ResponseWriter, r *http.Request, action func(int64) error, label string, doBracket bool) {
 	tid, err := parseTID(r)
 	if err != nil {
 		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
 		return
 	}
-	if err := h.db.SoftDeleteTournament(tid); err != nil {
-		log.Printf("soft delete tournament: %v", err)
+	if err := action(tid); err != nil {
+		log.Printf("%s tournament: %v", label, err)
 	}
-	h.notifyBracket()
+	if doBracket {
+		h.notifyBracket()
+	}
 	h.tournamentListBcast.notify()
 	if isAJAX(r) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+}
+
+func (h *Handler) SoftDeleteTournament(w http.ResponseWriter, r *http.Request) {
+	h.tournamentAction(w, r, h.db.SoftDeleteTournament, "soft delete", true)
 }
 
 func (h *Handler) RestoreTournament(w http.ResponseWriter, r *http.Request) {
-	tid, err := parseTID(r)
-	if err != nil {
-		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
-		return
-	}
-	if err := h.db.RestoreTournament(tid); err != nil {
-		log.Printf("restore tournament: %v", err)
-	}
-	h.tournamentListBcast.notify()
-	if isAJAX(r) {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+	h.tournamentAction(w, r, h.db.RestoreTournament, "restore", false)
 }
 
 func (h *Handler) HideTournament(w http.ResponseWriter, r *http.Request) {
-	tid, err := parseTID(r)
-	if err != nil {
-		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
-		return
-	}
-	if err := h.db.HideTournament(tid); err != nil {
-		log.Printf("hide tournament: %v", err)
-	}
-	h.tournamentListBcast.notify()
-	if isAJAX(r) {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+	h.tournamentAction(w, r, h.db.HideTournament, "hide", false)
 }
 
 func (h *Handler) UnhideTournament(w http.ResponseWriter, r *http.Request) {
-	tid, err := parseTID(r)
-	if err != nil {
-		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
-		return
-	}
-	if err := h.db.UnhideTournament(tid); err != nil {
-		log.Printf("unhide tournament: %v", err)
-	}
-	h.tournamentListBcast.notify()
-	if isAJAX(r) {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+	h.tournamentAction(w, r, h.db.UnhideTournament, "unhide", false)
 }
 
 func (h *Handler) PurgeTournament(w http.ResponseWriter, r *http.Request) {
-	tid, err := parseTID(r)
-	if err != nil {
-		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
-		return
-	}
-	if err := h.db.PurgeTournament(tid); err != nil {
-		log.Printf("purge tournament: %v", err)
-	}
-	h.tournamentListBcast.notify()
-	if isAJAX(r) {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+	h.tournamentAction(w, r, h.db.PurgeTournament, "purge", false)
 }
 
 func (h *Handler) SetTournamentStatus(w http.ResponseWriter, r *http.Request) {

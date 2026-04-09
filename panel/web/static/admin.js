@@ -601,11 +601,6 @@ function renderScore(score) {
     histEl.innerHTML = html;
 }
 
-function playerTeamBadge(team) {
-    if (team === 'CT') return '<span class="inline-block px-1.5 py-0.5 rounded text-xs font-bold bg-blue-500/20 text-blue-400">CT</span>';
-    if (team === 'T') return '<span class="inline-block px-1.5 py-0.5 rounded text-xs font-bold bg-yellow-500/20 text-yellow-400">T</span>';
-    return '<span class="text-slate-600 text-xs">-</span>';
-}
 
 function playerEquipIcons(p) {
     if (!_showDeadEquip && !p.alive && p.online) return '';
@@ -1423,18 +1418,6 @@ function ajaxPost(url, params, opts) {
         body: body
     }).then(function() {
         if (opts && opts.redirect) { location.href = opts.redirect; return; }
-        // Update local status if this was a status change
-        if (params && params.status && typeof _tournamentStatus !== 'undefined') {
-            _tournamentStatus = params.status;
-            if (typeof renderStatusPills === 'function') renderStatusPills();
-            if (typeof renderStatusButtons === 'function') renderStatusButtons();
-        }
-        // Set-as-featured: update local flag
-        if (url.indexOf('/active') !== -1 && typeof _isActive !== 'undefined') {
-            _isActive = true;
-            if (typeof renderStatusPills === 'function') renderStatusPills();
-            if (typeof renderStatusButtons === 'function') renderStatusButtons();
-        }
     });
 }
 
