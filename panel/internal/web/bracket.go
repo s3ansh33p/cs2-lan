@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"cs2-panel/internal/db"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -77,7 +78,11 @@ func (h *Handler) PublicBracket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := h.buildBracketPage(r.Context(), tournament, "Bracket")
+	title := ""
+	if tournament != nil {
+		title = tournament.Name
+	}
+	data := h.buildBracketPage(r.Context(), tournament, title)
 	h.render(w, "bracket.html", map[string]any{
 		"Title":        data.Title,
 		"Tournament":   data.Tournament,
@@ -375,19 +380,19 @@ func (h *Handler) sendBracketState(conn *websocket.Conn, tournamentID int64) err
 	}
 
 	type gameJSON struct {
-		ID       int64  `json:"id"`
-		Num      int    `json:"num"`
-		Map      string `json:"map"`
-		T1       int    `json:"t1"`
-		T2       int    `json:"t2"`
-		Status   string `json:"status"`
-		Server   string `json:"server,omitempty"`
-		Port     int    `json:"port,omitempty"`
-		T1CT     bool   `json:"t1ct"`
-		H1CT     int    `json:"h1ct"`
-		H1T      int    `json:"h1t"`
-		H2CT     int    `json:"h2ct"`
-		H2T      int    `json:"h2t"`
+		ID     int64  `json:"id"`
+		Num    int    `json:"num"`
+		Map    string `json:"map"`
+		T1     int    `json:"t1"`
+		T2     int    `json:"t2"`
+		Status string `json:"status"`
+		Server string `json:"server,omitempty"`
+		Port   int    `json:"port,omitempty"`
+		T1CT   bool   `json:"t1ct"`
+		H1CT   int    `json:"h1ct"`
+		H1T    int    `json:"h1t"`
+		H2CT   int    `json:"h2ct"`
+		H2T    int    `json:"h2t"`
 	}
 	type teamRef struct {
 		ID   int64  `json:"id"`
@@ -556,9 +561,13 @@ func (h *Handler) PublicGameStats(w http.ResponseWriter, r *http.Request) {
 		}
 
 		writeStatsRows := func(players []db.PlayerStat, teamName string) {
-			if len(players) == 0 { return }
+			if len(players) == 0 {
+				return
+			}
 			label := html.EscapeString(teamName)
-			if label == "" { label = "Player" }
+			if label == "" {
+				label = "Player"
+			}
 			fmt.Fprintf(w, `<tr class="text-slate-500 border-b border-slate-700"><th class="text-left px-3 py-2">%s</th>`, label)
 			fmt.Fprint(w, `<th class="px-2 py-2">K</th><th class="px-2 py-2">D</th><th class="px-2 py-2">A</th>`)
 			fmt.Fprint(w, `<th class="px-2 py-2">MVPs</th><th class="px-2 py-2">HS%</th>`)
@@ -580,7 +589,7 @@ func (h *Handler) PublicGameStats(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		fmt.Fprint(w, `<table class="w-full text-sm mt-4">`)
+		fmt.Fprint(w, `<table class="w-full text-sm mt-4 mb-3">`)
 		writeStatsRows(group1, name1)
 		writeStatsRows(group2, name2)
 		fmt.Fprint(w, `</table>`)
@@ -689,9 +698,9 @@ func renderRoundHistoryHTML(w http.ResponseWriter, rounds []db.GameRound, halfRo
 	var cols []string
 	for i := range sections {
 		if i > 0 {
-			cols = append(cols, "auto")
+			cols = append(cols, "5px")
 		}
-		cols = append(cols, "1fr")
+		cols = append(cols, "auto")
 	}
 
 	colStr := ""
@@ -702,7 +711,7 @@ func renderRoundHistoryHTML(w http.ResponseWriter, rounds []db.GameRound, halfRo
 		colStr += c
 	}
 
-	fmt.Fprintf(w, `<div class="mb-4"><div class="grid grid-rows-[auto_1fr_1fr] gap-0.5" style="grid-template-columns:%s">`, colStr)
+	fmt.Fprintf(w, `<div class="mb-4 overflow-x-auto"><div class="grid grid-rows-[auto_1fr_1fr] gap-0.5" style="grid-template-columns:%s;min-width:max-content">`, colStr)
 
 	// Row 0: labels
 	for i, s := range sections {

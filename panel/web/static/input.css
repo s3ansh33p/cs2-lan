@@ -2,6 +2,7 @@
 @source "../../web/templates";
 @source "../../web/static/app.js";
 @source "../../web/static/admin.js";
+@source "../../web/static/bracket.js";
 
 @layer components {
     .input-field {

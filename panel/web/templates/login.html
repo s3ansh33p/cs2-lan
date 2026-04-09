@@ -3,12 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - CS2 Panel</title>
+    <meta name="author" content="Sean McGinty (s3ansh33p)">
+    <title>Login - {{siteName}}</title>
     <link rel="stylesheet" href="/static/tailwind.css">
 </head>
 <body class="bg-slate-900 text-slate-200 min-h-screen flex items-center justify-center">
     <div class="bg-slate-800 border border-slate-700 rounded-lg p-8 w-full max-w-sm">
-        <h1 class="text-2xl font-bold text-orange-400 mb-6 text-center">CS2 Panel</h1>
+        <h1 class="text-2xl font-bold text-orange-400 mb-6 text-center">{{siteName}}</h1>
         {{if .Error}}
         <div class="bg-red-900/50 border border-red-700 text-red-300 rounded px-4 py-2 mb-4 text-sm">
             Invalid password

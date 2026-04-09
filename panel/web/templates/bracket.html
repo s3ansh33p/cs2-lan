@@ -1,7 +1,7 @@
 {{define "scripts"}}<script src="/static/bracket.js"></script><script src="/static/app.js"></script>{{end}}
 {{define "nav"}}
-<nav class="bg-slate-800 border-b border-slate-700 px-6 py-3 flex items-center justify-between">
-    <div class="flex items-center gap-6">
+<nav class="bg-slate-800 border-b border-slate-700 px-4 sm:px-6 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-4 sm:gap-6">
         <a href="/" class="text-lg font-bold text-orange-400 hover:text-orange-300">{{siteName}}</a>
         <a href="/tournaments" class="text-slate-400 hover:text-white text-sm">All Tournaments</a>
     </div>
@@ -46,7 +46,7 @@ renderPublicTeams(_publicTeamsData, _teamSize, _canRegister, _tournamentStatus);
 </script>
 
 {{if .Bracket}}
-<div class="bg-slate-800 border border-slate-700 rounded-lg p-6 mb-8">
+<div class="bg-slate-800 border border-slate-700 rounded-lg p-4 sm:p-6 mb-8">
     <h2 class="text-lg font-semibold mb-4 text-center">Bracket</h2>
     <div class="overflow-x-auto">
         <div class="bracket-container flex gap-8 items-start min-w-max py-4"></div>
@@ -78,12 +78,12 @@ connectBracketWS();
 {{end}}
 
 <!-- Match stats section (populated by JS when clicking Stats) -->
-<div id="match-stats-section" class="hidden mt-6 bg-slate-800 border border-slate-700 rounded-lg p-6">
-    <div class="flex items-center justify-between mb-4">
-        <h2 id="match-stats-title" class="text-lg font-semibold"></h2>
+<div id="match-stats-section" class="hidden mt-6 bg-slate-800 border border-slate-700 rounded-lg p-4 sm:p-6">
+    <div class="flex items-center justify-between mb-4 min-w-0">
+        <h2 id="match-stats-title" class="text-lg font-semibold min-w-0 truncate"></h2>
         <button onclick="closeMatchStats()" class="text-slate-400 hover:text-white text-sm">&times; Close</button>
     </div>
-    <div id="match-stats-content"></div>
+    <div id="match-stats-content" class="overflow-x-auto"></div>
 </div>
 
 {{if not .Bracket}}

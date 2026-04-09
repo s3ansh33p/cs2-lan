@@ -577,10 +577,10 @@ function renderScore(score) {
     // Build grid: each section is a column pair (top+bottom), with dividers between
     var cols = [];
     for (var s = 0; s < sections.length; s++) {
-        if (s > 0) cols.push('auto'); // divider column
-        cols.push('1fr');
+        if (s > 0) cols.push('5px'); // divider column
+        cols.push('auto');
     }
-    var html = '<div class="grid grid-rows-[auto_1fr_1fr] gap-0.5" style="grid-template-columns:' + cols.join(' ') + '">';
+    var html = '<div class="overflow-x-auto"><div class="grid grid-rows-[auto_1fr_1fr] gap-0.5" style="grid-template-columns:' + cols.join(' ') + ';min-width:max-content">';
 
     // Row 0: labels
     for (var s = 0; s < sections.length; s++) {
@@ -597,7 +597,7 @@ function renderScore(score) {
         var rounding = s === 0 ? ' rounded-bl' : (s === sections.length - 1 ? ' rounded-br' : '');
         html += '<div class="flex items-center gap-0.5 px-1.5 py-1 bg-slate-700/30 min-h-6' + rounding + '">' + sections[s].bottom + '</div>';
     }
-    html += '</div>';
+    html += '</div></div>';
     histEl.innerHTML = html;
 }
 
