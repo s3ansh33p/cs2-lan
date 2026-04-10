@@ -576,11 +576,12 @@ function renderScore(score) {
 
     // Build grid: each section is a column pair (top+bottom), with dividers between
     var cols = [];
+    var regCount = noHalves ? 1 : 2;
     for (var s = 0; s < sections.length; s++) {
         if (s > 0) cols.push('5px'); // divider column
-        cols.push('auto');
+        cols.push(s < regCount ? '1fr' : 'auto');
     }
-    var html = '<div class="overflow-x-auto"><div class="grid grid-rows-[auto_1fr_1fr] gap-0.5" style="grid-template-columns:' + cols.join(' ') + ';min-width:max-content">';
+    var html = '<div class="overflow-x-auto"><div class="grid gap-0.5" style="grid-template-columns:' + cols.join(' ') + ';min-width:max-content">';
 
     // Row 0: labels
     for (var s = 0; s < sections.length; s++) {

@@ -695,12 +695,20 @@ func renderRoundHistoryHTML(w http.ResponseWriter, rounds []db.GameRound, halfRo
 	}
 
 	// Render grid
+	regCount := 1
+	if halfRound > 0 {
+		regCount = 2
+	}
 	var cols []string
 	for i := range sections {
 		if i > 0 {
 			cols = append(cols, "5px")
 		}
-		cols = append(cols, "auto")
+		if i < regCount {
+			cols = append(cols, "1fr")
+		} else {
+			cols = append(cols, "auto")
+		}
 	}
 
 	colStr := ""
@@ -711,7 +719,7 @@ func renderRoundHistoryHTML(w http.ResponseWriter, rounds []db.GameRound, halfRo
 		colStr += c
 	}
 
-	fmt.Fprintf(w, `<div class="mb-4 overflow-x-auto"><div class="grid grid-rows-[auto_1fr_1fr] gap-0.5" style="grid-template-columns:%s;min-width:max-content">`, colStr)
+	fmt.Fprintf(w, `<div class="mb-4 overflow-x-auto"><div class="grid gap-0.5" style="grid-template-columns:%s;min-width:max-content">`, colStr)
 
 	// Row 0: labels
 	for i, s := range sections {
