@@ -1,4 +1,4 @@
-# CS2 LAN
+# UniLAN Panel
 
 Run and manage multiple CS2 dedicated servers from one machine, with an optional web panel for event scheduling and tournament management. All server instances share a single copy of the game files (~60GB). Built on [joedwards32/CS2](https://github.com/joedwards32/CS2).
 
@@ -17,7 +17,7 @@ docker compose --profile update run --rm cs2-updater
 ```bash
 cd panel
 make build
-# or I've committed the css files so you can just do `CGO_ENABLED=0 go build -o cs2-panel ./cmd/cs2-panel` for the go binary without needing Node.js if you don't plan to modify the styles
+# or I've committed the css files so you can just do `CGO_ENABLED=0 go build -o unilan ./cmd/panel` for the go binary without needing Node.js if you don't plan to modify the styles
 ```
 
 Requires Go 1.25+ and Node.js (for Tailwind CSS compilation).
@@ -25,7 +25,7 @@ Requires Go 1.25+ and Node.js (for Tailwind CSS compilation).
 ### Start the panel
 
 ```bash
-./cs2-panel --password <secret> --compose-file ../docker-compose.yml
+./unilan --password <secret> --compose-file ../docker-compose.yml
 ```
 
 Open `http://<your-lan-ip>:8080` from any device on the network.

@@ -4,7 +4,7 @@ import (
 	"log"
 	"sync"
 
-	"cs2-panel/internal/db"
+	"unilan/internal/db"
 )
 
 type AliasStore struct {

@@ -1,11 +1,11 @@
 package web
 
 import (
-	"cs2-panel/internal/auth"
+	"unilan/internal/auth"
 	"io/fs"
 	"net/http"
 
-	webfs "cs2-panel/web"
+	webfs "unilan/web"
 )
 
 func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {

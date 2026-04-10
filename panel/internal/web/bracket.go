@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"time"
 
-	"cs2-panel/internal/db"
+	"unilan/internal/db"
 
 	"github.com/gorilla/websocket"
 )

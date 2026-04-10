@@ -1,4 +1,4 @@
-module cs2-panel
+module unilan
 
 go 1.25.0
 

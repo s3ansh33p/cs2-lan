@@ -6,8 +6,8 @@ import (
 	"log"
 	"strings"
 
-	"cs2-panel/internal/db"
-	"cs2-panel/internal/gametracker"
+	"unilan/internal/db"
+	"unilan/internal/gametracker"
 )
 
 // setupGameOverHook registers callbacks on the tracker for auto-recording

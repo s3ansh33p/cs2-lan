@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"cs2-panel/internal/docker"
-	"cs2-panel/internal/gametracker"
+	"unilan/internal/docker"
+	"unilan/internal/gametracker"
 
 	"github.com/gorilla/websocket"
 )

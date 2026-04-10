@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"cs2-panel/internal/rcon"
+	"unilan/internal/rcon"
 	"regexp"
 	"sort"
 	"strings"

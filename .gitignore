@@ -1,6 +1,6 @@
 panel/cert.pem
 panel/key.pem
-panel/cs2-panel
+panel/unilan
 panel/node_modules
 panel/tournament.db
 panel/tournament.db-wal

@@ -20,12 +20,12 @@ import (
 	"strings"
 	"time"
 
-	"cs2-panel/internal/auth"
-	"cs2-panel/internal/db"
-	"cs2-panel/internal/docker"
-	"cs2-panel/internal/gametracker"
-	"cs2-panel/internal/rcon"
-	"cs2-panel/internal/web"
+	"unilan/internal/auth"
+	"unilan/internal/db"
+	"unilan/internal/docker"
+	"unilan/internal/gametracker"
+	"unilan/internal/rcon"
+	"unilan/internal/web"
 )
 
 func main() {
@@ -100,7 +100,7 @@ func main() {
 				log.Fatalf("tls: %v", err)
 			}
 		}
-		log.Printf("CS2 Panel listening on https://%s", addr)
+		log.Printf("UniLAN Panel listening on https://%s", addr)
 		tlsCfg, err := tlsConfig(certFile, keyFile)
 		if err != nil {
 			log.Fatalf("tls config: %v", err)
@@ -115,7 +115,7 @@ func main() {
 			log.Fatalf("server: %v", err)
 		}
 	} else {
-		log.Printf("CS2 Panel listening on http://%s", addr)
+		log.Printf("UniLAN Panel listening on http://%s", addr)
 		if err := http.ListenAndServe(addr, handler); err != nil {
 			log.Fatalf("server: %v", err)
 		}
@@ -145,7 +145,7 @@ func ensureSelfSignedCert() (certPath, keyPath string, err error) {
 
 	template := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: "CS2 Panel"},
+		Subject:      pkix.Name{CommonName: "UniLAN Panel"},
 		NotBefore:    time.Now(),
 		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,

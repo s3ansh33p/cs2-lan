@@ -18,11 +18,11 @@ import (
 	"sync"
 	"time"
 
-	"cs2-panel/internal/db"
-	"cs2-panel/internal/docker"
-	"cs2-panel/internal/gametracker"
-	"cs2-panel/internal/rcon"
-	webfs "cs2-panel/web"
+	"unilan/internal/db"
+	"unilan/internal/docker"
+	"unilan/internal/gametracker"
+	"unilan/internal/rcon"
+	webfs "unilan/web"
 )
 
 var htmlTagRe = regexp.MustCompile(`<[^>]*>`)
