@@ -1,6 +1,6 @@
 # CS2 LAN
 
-Run and manage multiple CS2 dedicated servers from one machine, with an optional web panel for tournament management. All server instances share a single copy of the game files (~60GB). Built on [joedwards32/CS2](https://github.com/joedwards32/CS2).
+Run and manage multiple CS2 dedicated servers from one machine, with an optional web panel for event scheduling and tournament management. All server instances share a single copy of the game files (~60GB). Built on [joedwards32/CS2](https://github.com/joedwards32/CS2).
 
 ## Setup
 
@@ -101,6 +101,16 @@ Clicking into a server (`/admin/server/{name}`) gives you:
 
 ---
 
+## Event Schedule
+
+The homepage (`/`) displays a Google Calendar-style timeline for the event. Admins configure the event time bounds in Settings, then create and manage schedule items via a drag-and-drop calendar at `/admin/schedule`. Items can be dragged to move, resized from the bottom edge, and clicked to edit.
+
+Each item has a title, start/end time, color (10 presets), and an optional rich description supporting bold, italic, and links. A live "now" line tracks the current time on both public and admin views. All changes sync instantly to connected clients via WebSocket.
+
+![Public Schedule](docs/schedule-public.png)
+
+---
+
 ## Tournament mode
 
 The panel includes a full single-elimination tournament system. Everything updates in real-time over WebSockets — both the admin view and the public bracket.
@@ -138,7 +148,7 @@ Scores can also be set manually if needed — useful for resolving disputes or r
 
 ### Public bracket view
 
-The root page (`/`) is the public-facing tournament view, accessible without login. It shows:
+Tournament brackets are accessible at `/tournament/{id}` (or via the "All Tournaments" link on the homepage). Each bracket page shows:
 
 - The full bracket with team names, match scores, and game status (pending/live/completed)
 - Live games display a "Connect" button with the `connect` command players can copy
@@ -161,8 +171,8 @@ Everything updates live via WebSocket — no page refreshes needed.
 ┌───────────────────────────────────────────────────┐
 │              Web Panel (Go binary)                │
 │                                                   │
-│  HTTP server ─── Admin UI + Public bracket        │
-│  WebSockets ──── Live logs, scores, bracket       │
+│  HTTP server ─── Admin UI + Public schedule/bracket│
+│  WebSockets ──── Live logs, scores, schedule      │
 │  RCON client ─── Server commands + polling        │
 │  Docker API ──── Container lifecycle              │
 │  Game tracker ── Log parsing + score recording    │
@@ -186,7 +196,7 @@ The panel communicates with servers via RCON (connection-pooled with idle timeou
 
 ### Database
 
-SQLite with WAL mode. Stores tournaments, teams, team members, bracket matches, individual games (with half-by-half score breakdowns), round history, and per-player stats. The schema auto-migrates on startup.
+SQLite with WAL mode. Stores schedule items, tournaments, teams, team members, bracket matches, individual games (with half-by-half score breakdowns), round history, and per-player stats. The schema auto-migrates on startup.
 
 ### Server config
 
