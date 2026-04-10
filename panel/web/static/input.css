@@ -3,6 +3,9 @@
 @source "../../web/static/app.js";
 @source "../../web/static/admin.js";
 @source "../../web/static/bracket.js";
+@source "../../web/static/schedule_common.js";
+@source "../../web/static/schedule.js";
+@source "../../web/static/schedule_admin.js";
 
 @layer components {
     .input-field {

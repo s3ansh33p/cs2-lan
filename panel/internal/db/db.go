@@ -50,6 +50,9 @@ func (db *DB) migrate() error {
 	db.Exec(`INSERT OR IGNORE INTO settings (key, value) VALUES ('site_name', 'UniLAN')`)
 	db.Exec(`INSERT OR IGNORE INTO settings (key, value) VALUES ('announcement', '')`)
 	db.Exec(`INSERT OR IGNORE INTO settings (key, value) VALUES ('announcement_link', '')`)
+	db.Exec(`INSERT OR IGNORE INTO settings (key, value) VALUES ('event_start', '')`)
+	db.Exec(`INSERT OR IGNORE INTO settings (key, value) VALUES ('event_end', '')`)
+
 	return nil
 }
 
@@ -159,6 +162,15 @@ CREATE INDEX IF NOT EXISTS idx_matches_tournament ON matches(tournament_id);
 CREATE INDEX IF NOT EXISTS idx_games_match ON games(match_id);
 CREATE INDEX IF NOT EXISTS idx_game_rounds_game ON game_rounds(game_id);
 CREATE INDEX IF NOT EXISTS idx_game_player_stats_game ON game_player_stats(game_id);
+
+CREATE TABLE IF NOT EXISTS schedule_items (
+	id INTEGER PRIMARY KEY,
+	start_at TEXT NOT NULL DEFAULT '',
+	end_at TEXT NOT NULL DEFAULT '',
+	title TEXT NOT NULL,
+	description TEXT NOT NULL DEFAULT '',
+	color TEXT NOT NULL DEFAULT 'blue'
+);
 
 CREATE TABLE IF NOT EXISTS server_tracker_state (
 	server_name TEXT PRIMARY KEY,

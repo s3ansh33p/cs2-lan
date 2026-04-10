@@ -14,6 +14,10 @@
                 var a = document.createElement('a');
                 a.href = link;
                 a.className = 'underline hover:text-orange-200';
+                if (link.indexOf('http://') === 0 || link.indexOf('https://') === 0) {
+                    a.target = '_blank';
+                    a.rel = 'noopener noreferrer';
+                }
                 a.appendChild(text);
                 banner.appendChild(a);
             } else {

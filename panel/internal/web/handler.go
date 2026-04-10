@@ -32,6 +32,38 @@ func sanitize(s string) string {
 	return strings.TrimSpace(htmlTagRe.ReplaceAllString(s, ""))
 }
 
+var (
+	descAllowedRe = regexp.MustCompile(`(?i)<(/?)(a|b|i|em|strong|br)\b`)
+	descHrefRe    = regexp.MustCompile(`(?i)href\s*=\s*"([^"]*)"`)
+)
+
+// sanitizeDesc allows a small set of safe HTML tags, strips everything else.
+// For <a> tags, only href is kept; javascript: URLs are removed.
+func sanitizeDesc(s string) string {
+	s = strings.TrimSpace(s)
+	return htmlTagRe.ReplaceAllStringFunc(s, func(tag string) string {
+		if !descAllowedRe.MatchString(tag) {
+			return ""
+		}
+		lower := strings.ToLower(tag)
+		if strings.HasPrefix(lower, "<a ") || lower == "<a>" {
+			m := descHrefRe.FindStringSubmatch(tag)
+			if len(m) < 2 || m[1] == "" {
+				return ""
+			}
+			href := m[1]
+			if strings.HasPrefix(strings.ToLower(href), "javascript:") {
+				return ""
+			}
+			if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
+				return `<a href="` + href + `" target="_blank" rel="noopener noreferrer">`
+			}
+			return `<a href="` + href + `">`
+		}
+		return tag
+	})
+}
+
 // broadcaster is a simple pub/sub signal hub. Subscribers receive a struct{}
 // on their channel whenever notify is called. Used for dashboard and tournament list.
 type broadcaster struct {
@@ -105,6 +137,11 @@ type Handler struct {
 	announcement  string
 	announceLink  string
 	announceBcast broadcaster
+
+	// Schedule broadcast: compute once, send to all WS clients
+	schedMu    sync.RWMutex
+	schedData  []byte // cached JSON message
+	scheduleBcast broadcaster
 }
 
 func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, database *db.DB, composeFile, defaultRCON string) (*Handler, error) {
@@ -117,6 +154,9 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, da
 		"upper": strings.ToUpper,
 		"siteName": func() string {
 			return database.GetSetting("site_name")
+		},
+		"isExternal": func(link string) bool {
+			return strings.HasPrefix(link, "http://") || strings.HasPrefix(link, "https://")
 		},
 		"divf": func(a, b int) float64 {
 			if b == 0 {
@@ -150,7 +190,7 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, da
 
 	// Each page gets its own clone of base so {{define "content"}} doesn't collide
 	pages := make(map[string]*template.Template)
-	for _, page := range []string{"dashboard.html", "server.html", "launch.html", "bracket.html", "admin_tournament.html", "tournaments.html", "settings.html"} {
+	for _, page := range []string{"dashboard.html", "server.html", "launch.html", "bracket.html", "admin_tournament.html", "tournaments.html", "settings.html", "home.html", "admin_schedule.html"} {
 		t, err := template.Must(base.Clone()).ParseFS(tmplFS, page)
 		if err != nil {
 			return nil, fmt.Errorf("parse %s: %w", page, err)
@@ -211,7 +251,7 @@ func (h *Handler) render(w http.ResponseWriter, name string, data any) {
 	// For page templates that use layout, execute "layout"; for partials/login, execute the named define
 	execName := name
 	switch name {
-	case "dashboard.html", "server.html", "launch.html", "bracket.html", "admin_tournament.html", "tournaments.html", "settings.html":
+	case "dashboard.html", "server.html", "launch.html", "bracket.html", "admin_tournament.html", "tournaments.html", "settings.html", "home.html", "admin_schedule.html":
 		execName = "layout"
 	}
 
@@ -334,6 +374,8 @@ func (h *Handler) SettingsPage(w http.ResponseWriter, r *http.Request) {
 		"SiteName":         h.db.GetSetting("site_name"),
 		"Announcement":     ann,
 		"AnnouncementLink": annLink,
+		"EventStart":       h.db.GetSetting("event_start"),
+		"EventEnd":         h.db.GetSetting("event_end"),
 	})
 }
 

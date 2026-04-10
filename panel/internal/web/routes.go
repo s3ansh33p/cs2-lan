@@ -27,8 +27,8 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	mux.HandleFunc("POST /login", a.HandleLogin)
 	mux.HandleFunc("POST /logout", a.HandleLogout)
 
-	// Public routes — active tournament at root
-	mux.HandleFunc("GET /{$}", h.PublicBracket)
+	// Public routes — homepage with schedule
+	mux.HandleFunc("GET /{$}", h.HomePage)
 	mux.HandleFunc("POST /teams", h.PublicCreateTeam)
 	mux.HandleFunc("POST /teams/{id}/members", h.PublicAddMember)
 	mux.HandleFunc("POST /teams/{id}/members/{mid}/delete", h.PublicRemoveMember)
@@ -42,6 +42,7 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	mux.HandleFunc("GET /tournament/{tid}/game/{gid}/stats", h.PublicGameStats)
 	mux.HandleFunc("GET /tournament/{tid}/ws", h.BracketWebSocket)
 	mux.HandleFunc("GET /announce/ws", h.AnnounceWebSocket)
+	mux.HandleFunc("GET /schedule/ws", h.ScheduleWebSocket)
 
 	// Protected admin routes
 	protected := http.NewServeMux()
@@ -50,6 +51,11 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	protected.HandleFunc("GET /admin/api/dashboard/ws", h.DashboardWebSocket)
 	protected.HandleFunc("GET /admin/settings", h.SettingsPage)
 	protected.HandleFunc("POST /admin/settings/site-name", h.SetSiteName)
+	protected.HandleFunc("POST /admin/settings/event-bounds", h.SetEventBounds)
+	protected.HandleFunc("GET /admin/schedule", h.AdminSchedule)
+	protected.HandleFunc("POST /admin/schedule/create", h.AdminCreateScheduleItem)
+	protected.HandleFunc("POST /admin/schedule/{id}/update", h.AdminUpdateScheduleItem)
+	protected.HandleFunc("POST /admin/schedule/{id}/delete", h.AdminDeleteScheduleItem)
 	protected.HandleFunc("POST /admin/announcement", h.SetAnnouncement)
 	protected.HandleFunc("GET /admin/launch", h.LaunchPage)
 	protected.HandleFunc("POST /admin/launch", h.LaunchServer)
