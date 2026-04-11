@@ -101,7 +101,7 @@ func (h *Handler) PublicTournamentList(w http.ResponseWriter, r *http.Request) {
 	activeID, _ := h.db.GetActiveTournamentID()
 
 	h.render(w, "tournaments.html", map[string]any{
-		"Title":       "All Tournaments",
+		"Title":       "Tournaments",
 		"Tournaments": tournaments,
 		"ActiveID":    activeID,
 	})
