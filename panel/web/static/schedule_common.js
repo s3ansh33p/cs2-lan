@@ -173,7 +173,7 @@ function renderItems(layer, rawItems, startMs, opts) {
         var left = (p._lane / (p._lanes || 1) * 100), w = (100 / (p._lanes || 1));
         var c = COLORS[p.color] || COLORS.blue;
 
-        html += '<div class="absolute rounded border overflow-hidden select-none' + (opts.interactive ? '' : ' pointer-events-none') + '"' +
+        html += '<div class="absolute rounded border overflow-hidden' + (opts.interactive ? '' : ' pointer-events-none') + '"' +
             ' data-id="' + p.id + '"' +
             ' style="top:' + top + 'px;height:' + h + 'px;left:' + left + '%;width:calc(' + w + '% - 4px);' +
             'background:' + c.bg + ';border-color:' + c.border + ';color:' + c.text + '">';

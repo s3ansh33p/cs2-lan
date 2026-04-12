@@ -1133,7 +1133,7 @@ var _mapPools = {
     deathmatch: ['de_ancient', 'de_anubis', 'de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_overpass', 'de_vertigo'],
     armsrace: ['ar_baggage', 'ar_pool_day', 'ar_shoots'],
     demolition: ['ar_baggage', 'ar_pool_day', 'ar_shoots'],
-    wingman: ['de_ancient', 'de_anubis', 'de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_overpass', 'de_vertigo']
+    wingman: ['de_inferno', 'de_nuke', 'de_overpass', 'de_vertigo', 'de_poseidon', 'de_sanctum']
 };
 var _allMaps = ['de_ancient', 'de_anubis', 'de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_overpass', 'de_vertigo',
     'cs_alpine', 'cs_italy', 'cs_office', 'ar_baggage', 'ar_pool_day', 'ar_shoots',
@@ -1620,8 +1620,9 @@ function renderBracketMatch(m) {
             html += '<form onsubmit="return submitBracketForm(this, \'/admin/match/' + m.id + '/game\')" class="flex items-center gap-1">';
             html += '<input type="hidden" name="game_number" value="' + nextGameNum + '">';
             html += '<select name="map_name" class="bg-slate-600 border border-slate-500 rounded px-1 py-0.5 text-white text-xs">';
-            var compMaps = typeof _mapPools !== 'undefined' ? (_mapPools.competitive || []) : [];
-            var maps = compMaps.length > 0 ? compMaps : (typeof _allMaps !== 'undefined' ? _allMaps : []);
+            var gm = typeof _tournamentGameMode !== 'undefined' ? _tournamentGameMode : 'competitive';
+            var poolMaps = typeof _mapPools !== 'undefined' ? (_mapPools[gm] || _mapPools.competitive || []) : [];
+            var maps = poolMaps.length > 0 ? poolMaps : (typeof _allMaps !== 'undefined' ? _allMaps : []);
             for (var mi = 0; mi < maps.length; mi++) {
                 html += '<option value="' + maps[mi] + '">' + maps[mi] + '</option>';
             }
@@ -1690,7 +1691,7 @@ function connectAdminBracketWS() {
                         renderAdminBracket(data.bracket);
                     }
                 }
-                if (data.teams) {
+                if (data.teams !== undefined) {
                     renderAdminTeams(data.teams);
                 }
             }

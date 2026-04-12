@@ -301,6 +301,7 @@ connectTournamentListWS();
 </div>
 <script>
 var _tournamentID = {{.Tournament.ID}};
+var _tournamentGameMode = "{{.Tournament.GameMode}}";
 var _tournamentStatus = "{{.Tournament.Status}}";
 var _isActive = {{if .IsActive}}true{{else}}false{{end}};
 var _isHidden = {{if .IsHidden}}true{{else}}false{{end}};

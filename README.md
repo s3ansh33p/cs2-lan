@@ -204,6 +204,48 @@ All servers load `lan-default.cfg` after `server.cfg`, which sets LAN-friendly d
 
 ---
 
+## Demo recording
+
+CSTV must be enabled on the server (`--tv` flag) for demo recording to work (practically this means enabling CSTV when launching the server in the web interface). You can then record demos via RCON (from the panel's RCON console or CLI):
+
+```
+tv_record mydemname
+tv_stoprecord
+```
+
+Or enable automatic recording so every match is captured (this is the default in the `lan-default.cfg`):
+
+```
+tv_autorecord 1
+```
+
+### Where demos are stored
+
+Auto-recorded demos are written to `/home/steam/cs2-dedicated/game/csgo/replays/` inside the container. Manual `tv_record` demos go to `/home/steam/cs2-dedicated/game/csgo/`. This path lives on the shared `cs2-base` Docker volume, so demo files persist even after a server is stopped and removed. All server instances share the same volume, so demos from different servers will sit in the same directory.
+
+### Copying demos out
+
+Copy a specific demo from a running (or stopped, if the container still exists) container:
+
+```bash
+docker cp cs2-comp:/home/steam/cs2-dedicated/game/csgo/replays/ ./demos/
+```
+
+Or access demos directly from the Docker volume on the host:
+
+```bash
+# Find the volume mountpoint
+docker volume inspect cs2-base --format '{{ .Mountpoint }}'
+
+# List all auto-recorded demo files
+sudo ls "$(docker volume inspect cs2-base --format '{{ .Mountpoint }}')/game/csgo/replays/"
+
+# Copy them somewhere
+sudo cp "$(docker volume inspect cs2-base --format '{{ .Mountpoint }}')/game/csgo/replays/"*.dem ./demos/
+```
+
+---
+
 ## Updating game files
 
 Stop all running servers first:
