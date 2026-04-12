@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -141,7 +141,7 @@ func (c *Client) StreamLogs(ctx context.Context, name string) (io.ReadCloser, bo
 		return nil, false, fmt.Errorf("inspect %s: %w", containerName, err)
 	}
 	isTTY := ctr.Config.Tty
-	log.Printf("StreamLogs %s: tty=%v", name, isTTY)
+	slog.Info("docker: stream logs", "server", name, "tty", isTTY)
 
 	reader, err := c.docker.ContainerLogs(ctx, containerName, container.LogsOptions{
 		ShowStdout: true,

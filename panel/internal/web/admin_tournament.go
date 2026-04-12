@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -90,11 +90,12 @@ func (h *Handler) CreateTournament(w http.ResponseWriter, r *http.Request) {
 
 	t, err := h.db.CreateTournament(name, teamSize, gameMode, serverIP, serverPassword)
 	if err != nil {
-		log.Printf("create tournament: %v", err)
+		slog.Error("tournament: create failed", "err", err)
 		http.Error(w, "Failed to create tournament", http.StatusInternalServerError)
 		return
 	}
 
+	slog.Info("tournament: created", "id", t.ID, "name", name)
 	h.tournamentListBcast.notify()
 	http.Redirect(w, r, adminTournamentRedirect(t.ID), http.StatusSeeOther)
 }
@@ -139,7 +140,9 @@ func (h *Handler) UpdateTournament(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.db.UpdateTournament(tid, name, teamSize, gameMode, regOpen, regClose, serverIP, serverPassword); err != nil {
-		log.Printf("update tournament: %v", err)
+		slog.Error("tournament: update failed", "id", tid, "err", err)
+	} else {
+		slog.Info("tournament: updated", "id", tid)
 	}
 	h.tournamentListBcast.notify()
 
@@ -153,7 +156,9 @@ func (h *Handler) tournamentAction(w http.ResponseWriter, r *http.Request, actio
 		return
 	}
 	if err := action(tid); err != nil {
-		log.Printf("%s tournament: %v", label, err)
+		slog.Error("tournament: "+label+" failed", "id", tid, "err", err)
+	} else {
+		slog.Info("tournament: "+label, "id", tid)
 	}
 	if doBracket {
 		h.notifyBracket()
@@ -201,7 +206,9 @@ func (h *Handler) SetTournamentStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.db.SetTournamentStatus(tid, status); err != nil {
-		log.Printf("set tournament status: %v", err)
+		slog.Error("tournament: set status failed", "id", tid, "err", err)
+	} else {
+		slog.Info("tournament: status", "id", tid, "status", status)
 	}
 	h.notifyBracket()
 	h.tournamentListBcast.notify()
@@ -215,7 +222,9 @@ func (h *Handler) SetActiveTournament(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.db.SetActiveTournament(tid); err != nil {
-		log.Printf("set active tournament: %v", err)
+		slog.Error("tournament: set active failed", "id", tid, "err", err)
+	} else {
+		slog.Info("tournament: set active", "id", tid)
 	}
 	h.notifyBracket()
 	h.tournamentListBcast.notify()
@@ -243,7 +252,7 @@ func (h *Handler) AdminCreateTeam(w http.ResponseWriter, r *http.Request) {
 
 	teamID, err := h.db.CreateTeam(tid, name)
 	if err != nil {
-		log.Printf("create team: %v", err)
+		slog.Error("team: create failed", "tournament", tid, "err", err)
 		if isAJAX(r) {
 			http.Error(w, "Failed", http.StatusInternalServerError)
 		} else {
@@ -251,6 +260,7 @@ func (h *Handler) AdminCreateTeam(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	slog.Info("team: created", "id", teamID, "name", name, "tournament", tid)
 	h.notifyBracket()
 	if isAJAX(r) {
 		w.Header().Set("Content-Type", "application/json")
@@ -268,7 +278,9 @@ func (h *Handler) AdminDeleteTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.db.DeleteTeam(id); err != nil {
-		log.Printf("delete team: %v", err)
+		slog.Error("team: delete failed", "id", id, "err", err)
+	} else {
+		slog.Info("team: deleted", "id", id, "tournament", tid)
 	}
 	h.notifyBracket()
 	if isAJAX(r) {
@@ -296,7 +308,7 @@ func (h *Handler) AdminAddMember(w http.ResponseWriter, r *http.Request) {
 	}
 	mid, err := h.db.AddMember(teamID, steamName)
 	if err != nil {
-		log.Printf("add member: %v", err)
+		slog.Error("team: add member failed", "team", teamID, "err", err)
 		if isAJAX(r) {
 			http.Error(w, "Failed", http.StatusInternalServerError)
 		} else {
@@ -304,6 +316,7 @@ func (h *Handler) AdminAddMember(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	slog.Info("team: member added", "team", teamID, "member", mid, "name", steamName)
 	h.notifyBracket()
 	if isAJAX(r) {
 		w.Header().Set("Content-Type", "application/json")
@@ -325,7 +338,9 @@ func (h *Handler) AdminRemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.db.RemoveMember(id); err != nil {
-		log.Printf("remove member: %v", err)
+		slog.Error("team: remove member failed", "member", id, "err", err)
+	} else {
+		slog.Info("team: member removed", "member", id)
 	}
 	h.notifyBracket()
 	if isAJAX(r) {
@@ -352,7 +367,9 @@ func (h *Handler) AdminRenameTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.db.UpdateTeam(teamID, name); err != nil {
-		log.Printf("rename team: %v", err)
+		slog.Error("team: rename failed", "id", teamID, "err", err)
+	} else {
+		slog.Info("team: renamed", "id", teamID, "name", name)
 	}
 	h.notifyBracket()
 	if isAJAX(r) {
@@ -375,7 +392,9 @@ func (h *Handler) AdminDeleteBracket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.db.DeleteBracket(tid); err != nil {
-		log.Printf("delete bracket: %v", err)
+		slog.Error("bracket: delete failed", "tournament", tid, "err", err)
+	} else {
+		slog.Info("bracket: deleted", "tournament", tid)
 	}
 	h.notifyBracket()
 	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
@@ -418,11 +437,12 @@ func (h *Handler) AdminSeedBracket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.db.GenerateBracket(tid, teamIDs); err != nil {
-		log.Printf("generate bracket: %v", err)
+		slog.Error("bracket: seed failed", "tournament", tid, "err", err)
 		http.Error(w, "Failed to generate bracket: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	slog.Info("bracket: seeded", "tournament", tid, "teams", len(teamIDs))
 	h.notifyBracket()
 	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 }
@@ -437,7 +457,9 @@ func (h *Handler) AdminSetBestOf(w http.ResponseWriter, r *http.Request) {
 	}
 	bestOf, _ := strconv.Atoi(r.FormValue("best_of"))
 	if err := h.db.SetMatchBestOf(matchID, bestOf); err != nil {
-		log.Printf("set best of: %v", err)
+		slog.Error("bracket: bestof failed", "match", matchID, "err", err)
+	} else {
+		slog.Info("bracket: bestof", "match", matchID, "bestof", bestOf)
 	}
 	h.notifyBracket()
 	if isAJAX(r) {
@@ -459,7 +481,9 @@ func (h *Handler) AdminSetWinner(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.db.SetMatchWinner(matchID, winnerID); err != nil {
-		log.Printf("set winner: %v", err)
+		slog.Error("bracket: set winner failed", "match", matchID, "err", err)
+	} else {
+		slog.Info("bracket: winner set", "match", matchID, "winner", winnerID)
 	}
 	h.notifyBracket()
 	if isAJAX(r) {
@@ -476,7 +500,9 @@ func (h *Handler) AdminClearWinner(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.db.ClearMatchWinner(matchID); err != nil {
-		log.Printf("clear winner: %v", err)
+		slog.Error("bracket: clear winner failed", "match", matchID, "err", err)
+	} else {
+		slog.Info("bracket: winner cleared", "match", matchID)
 	}
 	h.notifyBracket()
 	if isAJAX(r) {
@@ -500,7 +526,9 @@ func (h *Handler) AdminCreateGame(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := h.db.CreateGame(matchID, gameNumber, mapName, team1StartsCT); err != nil {
-		log.Printf("create game: %v", err)
+		slog.Error("game: create failed", "match", matchID, "err", err)
+	} else {
+		slog.Info("game: created", "match", matchID, "number", gameNumber)
 	}
 	h.notifyBracket()
 	if isAJAX(r) {
@@ -526,7 +554,9 @@ func (h *Handler) AdminUpdateGame(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.db.UpdateGameScore(gameID, team1Score, team2Score, winnerID); err != nil {
-		log.Printf("update game: %v", err)
+		slog.Error("game: update failed", "id", gameID, "err", err)
+	} else {
+		slog.Info("game: updated", "id", gameID, "score", fmt.Sprintf("%d-%d", team1Score, team2Score))
 	}
 	h.notifyBracket()
 	if isAJAX(r) {
@@ -543,7 +573,9 @@ func (h *Handler) AdminResetGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.db.ResetGame(gameID); err != nil {
-		log.Printf("reset game: %v", err)
+		slog.Error("game: reset failed", "id", gameID, "err", err)
+	} else {
+		slog.Info("game: reset", "id", gameID)
 	}
 	h.notifyBracket()
 	if isAJAX(r) {
@@ -565,6 +597,7 @@ func (h *Handler) AdminSetGameSide(w http.ResponseWriter, r *http.Request) {
 		ct = 0
 	}
 	h.db.Exec(`UPDATE games SET team1_starts_ct=? WHERE id=?`, ct, gameID)
+	slog.Info("game: side set", "id", gameID, "team1_starts_ct", ct == 1)
 	h.notifyBracket()
 	if isAJAX(r) {
 		w.WriteHeader(http.StatusOK)
@@ -580,7 +613,9 @@ func (h *Handler) AdminDeleteGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.db.DeleteGame(gameID); err != nil {
-		log.Printf("delete game: %v", err)
+		slog.Error("game: delete failed", "id", gameID, "err", err)
+	} else {
+		slog.Info("game: deleted", "id", gameID)
 	}
 	h.notifyBracket()
 	if isAJAX(r) {
@@ -637,7 +672,9 @@ func (h *Handler) AdminSwapTeams(w http.ResponseWriter, r *http.Request) {
 	slot2 := r.FormValue("slot2")
 
 	if err := h.db.SwapTeams(match1ID, slot1, match2ID, slot2); err != nil {
-		log.Printf("swap teams: %v", err)
+		slog.Error("bracket: swap failed", "err", err)
+	} else {
+		slog.Info("bracket: teams swapped", "match1", match1ID, "match2", match2ID)
 	}
 	h.notifyBracket()
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
@@ -653,7 +690,7 @@ func (h *Handler) AdminTournamentDetailWS(w http.ResponseWriter, r *http.Request
 
 	conn, done, err := setupWSConn(w, r)
 	if err != nil {
-		log.Printf("ws tournament detail upgrade: %v", err)
+		slog.Warn("ws: tournament detail upgrade failed", "err", err)
 		return
 	}
 	defer conn.Close()
@@ -732,7 +769,7 @@ func (h *Handler) sendTournamentDetail(conn *websocket.Conn, tid int64) error {
 func (h *Handler) AdminTournamentListWS(w http.ResponseWriter, r *http.Request) {
 	conn, done, err := setupWSConn(w, r)
 	if err != nil {
-		log.Printf("ws tournament list upgrade: %v", err)
+		slog.Warn("ws: tournament list upgrade failed", "err", err)
 		return
 	}
 	defer conn.Close()

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -73,7 +73,7 @@ func (h *Handler) buildBracketPage(ctx context.Context, tournament *db.Tournamen
 func (h *Handler) PublicBracket(w http.ResponseWriter, r *http.Request) {
 	tournament, err := h.db.GetActiveTournament()
 	if err != nil {
-		log.Printf("get tournament: %v", err)
+		slog.Error("tournament: get failed", "err", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -168,7 +168,7 @@ func (h *Handler) PublicCreateTeam(w http.ResponseWriter, r *http.Request) {
 
 	teamID, err := h.db.CreateTeam(tournament.ID, name)
 	if err != nil {
-		log.Printf("public create team: %v", err)
+		slog.Error("team: public create failed", "err", err)
 	}
 	h.notifyBracket()
 	if isAJAX(r) {
@@ -202,7 +202,7 @@ func (h *Handler) PublicAddMember(w http.ResponseWriter, r *http.Request) {
 
 	mid, addErr := h.db.AddMember(teamID, steamName)
 	if addErr != nil {
-		log.Printf("public add member: %v", addErr)
+		slog.Error("team: public add member failed", "err", addErr)
 	}
 	h.notifyBracket()
 	if isAJAX(r) {
@@ -223,7 +223,7 @@ func (h *Handler) PublicRemoveMember(w http.ResponseWriter, r *http.Request) {
 
 	mid, _ := strconv.ParseInt(r.PathValue("mid"), 10, 64)
 	if err := h.db.RemoveMember(mid); err != nil {
-		log.Printf("public remove member: %v", err)
+		slog.Error("team: public remove member failed", "err", err)
 	}
 	h.notifyBracket()
 	if isAJAX(r) {
@@ -253,7 +253,7 @@ func (h *Handler) PublicRenameTeam(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.db.UpdateTeam(teamID, name); err != nil {
-		log.Printf("public rename team: %v", err)
+		slog.Error("team: public rename failed", "err", err)
 	}
 	h.notifyBracket()
 	if isAJAX(r) {
@@ -338,7 +338,7 @@ func (h *Handler) BracketWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	conn, done, err := setupWSConn(w, r)
 	if err != nil {
-		log.Printf("ws bracket upgrade: %v", err)
+		slog.Warn("ws: bracket upgrade failed", "err", err)
 		return
 	}
 	defer conn.Close()

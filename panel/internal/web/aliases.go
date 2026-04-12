@@ -1,7 +1,7 @@
 package web
 
 import (
-	"log"
+	"log/slog"
 	"sync"
 
 	"unilan/internal/db"
@@ -20,7 +20,7 @@ func NewAliasStore(database *db.DB) *AliasStore {
 	}
 	loaded, err := database.LoadAliases()
 	if err != nil {
-		log.Printf("warning: failed to load aliases: %v", err)
+		slog.Warn("aliases: load failed", "err", err)
 	} else {
 		s.aliases = loaded
 	}
@@ -47,6 +47,6 @@ func (s *AliasStore) Set(name, alias string) {
 		s.aliases[name] = alias
 	}
 	if err := s.db.SetAlias(name, effectiveAlias); err != nil {
-		log.Printf("error: failed to persist alias for %q: %v", name, err)
+		slog.Error("aliases: persist failed", "name", name, "err", err)
 	}
 }

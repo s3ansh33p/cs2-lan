@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"html"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -41,6 +41,10 @@ func setupWSConn(w http.ResponseWriter, r *http.Request) (*websocket.Conn, chan 
 		return nil, nil, err
 	}
 
+	endpoint := r.URL.Path
+	ip := r.RemoteAddr
+	slog.Info("ws: connected", "endpoint", endpoint, "ip", ip)
+
 	conn.SetReadDeadline(time.Now().Add(pongWait))
 	conn.SetPongHandler(func(string) error {
 		conn.SetReadDeadline(time.Now().Add(pongWait))
@@ -52,6 +56,7 @@ func setupWSConn(w http.ResponseWriter, r *http.Request) (*websocket.Conn, chan 
 		defer close(done)
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
+				slog.Info("ws: disconnected", "endpoint", endpoint, "ip", ip)
 				return
 			}
 		}
@@ -65,7 +70,7 @@ func (h *Handler) LogsWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	conn, done, err := setupWSConn(w, r)
 	if err != nil {
-		log.Printf("ws upgrade: %v", err)
+		slog.Warn("ws: logs upgrade failed", "server", name, "err", err)
 		return
 	}
 	defer conn.Close()
@@ -133,7 +138,7 @@ func (h *Handler) GameStateWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	conn, done, err := setupWSConn(w, r)
 	if err != nil {
-		log.Printf("ws game upgrade: %v", err)
+		slog.Warn("ws: game state upgrade failed", "server", name, "err", err)
 		return
 	}
 	defer conn.Close()
@@ -419,7 +424,7 @@ func (h *Handler) sendKillfeedNew(conn *websocket.Conn, newKills []gametracker.K
 func (h *Handler) DashboardWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, done, err := setupWSConn(w, r)
 	if err != nil {
-		log.Printf("ws dashboard upgrade: %v", err)
+		slog.Warn("ws: dashboard upgrade failed", "err", err)
 		return
 	}
 	defer conn.Close()

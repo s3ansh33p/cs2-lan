@@ -5,7 +5,7 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -40,7 +40,7 @@ func New(password string, db *sql.DB) *Auth {
 func (a *Auth) loadSessions() {
 	rows, err := a.db.Query("SELECT token, created_at FROM sessions")
 	if err != nil {
-		log.Printf("auth: load sessions: %v", err)
+		slog.Error("auth: load sessions", "err", err)
 		return
 	}
 	defer rows.Close()
@@ -54,7 +54,7 @@ func (a *Auth) loadSessions() {
 			a.sessions[token] = created
 		}
 	}
-	log.Printf("auth: restored %d sessions", len(a.sessions))
+	slog.Info("auth: sessions restored", "count", len(a.sessions))
 }
 
 func (a *Auth) cleanupLoop() {
@@ -62,14 +62,20 @@ func (a *Auth) cleanupLoop() {
 	defer ticker.Stop()
 	for range ticker.C {
 		a.mu.Lock()
+		before := len(a.sessions)
 		for token, created := range a.sessions {
 			if time.Since(created) > sessionMaxAge {
 				delete(a.sessions, token)
 			}
 		}
+		removed := before - len(a.sessions)
+		remaining := len(a.sessions)
 		a.mu.Unlock()
 		if a.db != nil {
 			a.db.Exec("DELETE FROM sessions WHERE created_at < ?", time.Now().Add(-sessionMaxAge))
+		}
+		if removed > 0 {
+			slog.Info("auth: cleanup", "removed", removed, "remaining", remaining)
 		}
 	}
 }
@@ -135,6 +141,7 @@ func (a *Auth) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	password := r.FormValue("password")
 	if !a.CheckPassword(password) {
+		slog.Warn("auth: login failed", "ip", r.RemoteAddr)
 		http.Redirect(w, r, "/login?error=1", http.StatusSeeOther)
 		return
 	}
@@ -149,6 +156,7 @@ func (a *Auth) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(sessionMaxAge.Seconds()),
 	})
+	slog.Info("auth: login success", "ip", r.RemoteAddr)
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
@@ -162,6 +170,7 @@ func (a *Auth) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		Path:   "/",
 		MaxAge: -1,
 	})
+	slog.Info("auth: logout", "ip", r.RemoteAddr)
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 

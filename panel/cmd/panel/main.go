@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
@@ -24,6 +25,7 @@ import (
 	"unilan/internal/db"
 	"unilan/internal/docker"
 	"unilan/internal/gametracker"
+	"unilan/internal/logger"
 	"unilan/internal/rcon"
 	"unilan/internal/web"
 )
@@ -37,6 +39,7 @@ func main() {
 	tlsEnabled := flag.Bool("tls", false, "Enable HTTPS with auto-generated self-signed certificate")
 	tlsCert := flag.String("tls-cert", "", "Path to TLS certificate file (optional, auto-generated if not set)")
 	tlsKey := flag.String("tls-key", "", "Path to TLS key file (optional, auto-generated if not set)")
+	logFile := flag.String("log-file", "panel.log", "Path to log file")
 	flag.Parse()
 
 	if *password == "" {
@@ -45,17 +48,28 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize file logging — must happen before anything else
+	lf, err := logger.Setup(*logFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: open log file: %v\n", err)
+		os.Exit(1)
+	}
+	defer lf.Close()
+
 	absCompose, err := filepath.Abs(*composeFile)
 	if err != nil {
-		log.Fatalf("resolve compose file: %v", err)
+		slog.Error("resolve compose file", "err", err)
+		os.Exit(1)
 	}
 	if _, err := os.Stat(absCompose); err != nil {
-		log.Fatalf("compose file not found: %s", absCompose)
+		slog.Error("compose file not found", "path", absCompose)
+		os.Exit(1)
 	}
 
 	dc, err := docker.New()
 	if err != nil {
-		log.Fatalf("docker: %v", err)
+		slog.Error("docker init failed", "err", err)
+		os.Exit(1)
 	}
 
 	rm := rcon.NewManager()
@@ -73,7 +87,8 @@ func main() {
 
 	database, err := db.Open(*dbPath)
 	if err != nil {
-		log.Fatalf("database: %v", err)
+		slog.Error("database open failed", "err", err)
+		os.Exit(1)
 	}
 	defer database.Close()
 
@@ -84,40 +99,53 @@ func main() {
 
 	h, err := web.NewHandler(dc, rm, tm, database, absCompose, *defaultRCON)
 	if err != nil {
-		log.Fatalf("handler: %v", err)
+		slog.Error("handler init failed", "err", err)
+		os.Exit(1)
 	}
 
-	handler := web.SetupRoutes(a, h)
+	mux := web.SetupRoutes(a, h)
+	handler := web.LoggingMiddleware(mux)
 
 	addr := fmt.Sprintf("0.0.0.0:%d", *port)
-	log.Printf("Compose file: %s", absCompose)
+
+	slog.Info("startup",
+		"port", *port,
+		"tls", *tlsEnabled,
+		"compose", absCompose,
+		"db", *dbPath,
+		"log_file", *logFile,
+	)
 
 	if *tlsEnabled {
 		certFile, keyFile := *tlsCert, *tlsKey
 		if certFile == "" || keyFile == "" {
 			certFile, keyFile, err = ensureSelfSignedCert()
 			if err != nil {
-				log.Fatalf("tls: %v", err)
+				slog.Error("tls cert generation failed", "err", err)
+				os.Exit(1)
 			}
 		}
-		log.Printf("UniLAN Panel listening on https://%s", addr)
+		slog.Info(fmt.Sprintf("listening on https://%s", addr))
 		tlsCfg, err := tlsConfig(certFile, keyFile)
 		if err != nil {
-			log.Fatalf("tls config: %v", err)
+			slog.Error("tls config failed", "err", err)
+			os.Exit(1)
 		}
 		srv := &http.Server{
 			Addr:      addr,
 			Handler:   handler,
 			TLSConfig: tlsCfg,
-			ErrorLog:  log.New(&tlsErrorFilter{}, "", 0),
+			ErrorLog:  newTLSErrorLogger(lf),
 		}
 		if err := srv.ListenAndServeTLS("", ""); err != nil {
-			log.Fatalf("server: %v", err)
+			slog.Error("server exited", "err", err)
+			os.Exit(1)
 		}
 	} else {
-		log.Printf("UniLAN Panel listening on http://%s", addr)
+		slog.Info(fmt.Sprintf("listening on http://%s", addr))
 		if err := http.ListenAndServe(addr, handler); err != nil {
-			log.Fatalf("server: %v", err)
+			slog.Error("server exited", "err", err)
+			os.Exit(1)
 		}
 	}
 }
@@ -130,11 +158,11 @@ func ensureSelfSignedCert() (certPath, keyPath string, err error) {
 
 	// Reuse existing cert if valid
 	if _, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
-		log.Printf("Using existing self-signed cert: %s", certPath)
+		slog.Info("reusing existing self-signed cert", "path", certPath)
 		return certPath, keyPath, nil
 	}
 
-	log.Printf("Generating self-signed TLS certificate...")
+	slog.Info("generating self-signed TLS certificate")
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -191,8 +219,7 @@ func ensureSelfSignedCert() (certPath, keyPath string, err error) {
 	}
 	keyOut.Close()
 
-	log.Printf("Self-signed cert saved to %s (valid 1 year)", certPath)
-	log.Printf("Browsers will show a warning — click through to accept")
+	slog.Info("self-signed cert saved", "path", certPath, "validity", "1 year")
 	return certPath, keyPath, nil
 }
 
@@ -206,8 +233,16 @@ func tlsConfig(certFile, keyFile string) (*tls.Config, error) {
 	}, nil
 }
 
+// newTLSErrorLogger returns a log.Logger that suppresses noisy TLS handshake
+// errors and writes everything else to the given writer.
+func newTLSErrorLogger(w *os.File) *log.Logger {
+	return log.New(&tlsErrorFilter{w: w}, "", 0)
+}
+
 // tlsErrorFilter suppresses noisy TLS handshake errors from the server log.
-type tlsErrorFilter struct{}
+type tlsErrorFilter struct {
+	w *os.File
+}
 
 func (f *tlsErrorFilter) Write(p []byte) (n int, err error) {
 	msg := string(p)
@@ -222,5 +257,5 @@ func (f *tlsErrorFilter) Write(p []byte) (n int, err error) {
 			return len(p), nil
 		}
 	}
-	return os.Stderr.Write(p)
+	return f.w.Write(p)
 }

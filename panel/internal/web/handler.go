@@ -10,7 +10,7 @@ import (
 	"html"
 	"html/template"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -243,7 +243,7 @@ func generateRCONPassword() string {
 func (h *Handler) render(w http.ResponseWriter, name string, data any) {
 	t, ok := h.pages[name]
 	if !ok {
-		log.Printf("template %s not found", name)
+		slog.Error("template not found", "name", name)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -257,7 +257,7 @@ func (h *Handler) render(w http.ResponseWriter, name string, data any) {
 
 	var buf bytes.Buffer
 	if err := t.ExecuteTemplate(&buf, execName, data); err != nil {
-		log.Printf("render %s: %v", name, err)
+		slog.Error("render failed", "template", name, "err", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -282,7 +282,7 @@ type serverWithStatus struct {
 func (h *Handler) enrichServers(ctx context.Context) []serverWithStatus {
 	servers, err := h.docker.ListServers(ctx)
 	if err != nil {
-		log.Printf("list servers: %v", err)
+		slog.Error("list servers", "err", err)
 		return nil
 	}
 	result := make([]serverWithStatus, len(servers))
@@ -385,6 +385,7 @@ func (h *Handler) SetSiteName(w http.ResponseWriter, r *http.Request) {
 		name = "UniLAN"
 	}
 	h.db.SetSetting("site_name", name)
+	slog.Info("settings: site_name", "name", name)
 	http.Redirect(w, r, "/admin/settings", http.StatusSeeOther)
 }
 
@@ -445,6 +446,7 @@ func (h *Handler) LaunchServer(w http.ResponseWriter, r *http.Request) {
 
 	err := h.docker.Launch(r.Context(), req, h.composeFile)
 	if err != nil {
+		slog.Error("server: launch failed", "name", req.Name, "err", err)
 		h.render(w, "launch.html", map[string]any{
 			"Title":       "Launch Server",
 			"Error":       err.Error(),
@@ -454,6 +456,7 @@ func (h *Handler) LaunchServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	slog.Info("server: launched", "name", req.Name, "port", req.Port, "mode", req.Mode, "map", req.Map, "players", req.Players)
 	go h.notifyDashboard()
 
 	// If launched from a bracket match, link the server to the game
@@ -479,7 +482,7 @@ func (h *Handler) LaunchServer(w http.ResponseWriter, r *http.Request) {
 			}
 			if gameID > 0 {
 				h.db.LinkGameToServer(gameID, req.Name)
-				log.Printf("linked server %s to game %d (match %d, game %d)", req.Name, gameID, mid, gn)
+				slog.Info("server: linked to game", "server", req.Name, "game", gameID, "match", mid, "game_number", gn)
 				h.notifyBracket()
 			}
 		}
@@ -608,6 +611,7 @@ func (h *Handler) RCONCommand(w http.ResponseWriter, r *http.Request) {
 	addr := fmt.Sprintf("localhost:%d", info.Port)
 	resp, err := h.rcon.Execute(addr, info.RCONPassword, command)
 	if err != nil {
+		slog.Warn("rcon: command failed", "server", name, "cmd", command, "err", err)
 		h.render(w, "rcon_output.html", map[string]any{
 			"Command":  command,
 			"Response": fmt.Sprintf("Error: %v", err),
@@ -615,6 +619,8 @@ func (h *Handler) RCONCommand(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	slog.Info("rcon: command", "server", name, "cmd", command, "ip", r.RemoteAddr)
 
 	// Filter out game event log lines from RCON response
 	var filtered []string
@@ -662,10 +668,11 @@ func (h *Handler) KillfeedPartial(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) RestartServer(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	slog.Info("server: restarting", "name", name, "ip", r.RemoteAddr)
 
 	info, err := h.docker.InspectServer(r.Context(), "cs2-"+name)
 	if err != nil {
-		log.Printf("restart %s: inspect failed: %v", name, err)
+		slog.Error("server: restart inspect failed", "name", name, "err", err)
 		http.Error(w, "Server not found", http.StatusNotFound)
 		return
 	}
@@ -694,7 +701,7 @@ func (h *Handler) RestartServer(w http.ResponseWriter, r *http.Request) {
 		h.db.DeleteTrackerState(name) // clear so fresh server gets clean state
 		h.notifyDashboard()
 		if err := h.docker.StopServer(context.Background(), name); err != nil {
-			log.Printf("restart %s: stop failed: %v", name, err)
+			slog.Error("server: restart stop failed", "name", name, "err", err)
 		}
 
 		tvEnabled := "0"
@@ -713,7 +720,7 @@ func (h *Handler) RestartServer(w http.ResponseWriter, r *http.Request) {
 			ExtraCfg: info.ExtraCfg,
 		}
 		if err := h.docker.Launch(context.Background(), req, h.composeFile); err != nil {
-			log.Printf("restart %s: launch failed: %v", name, err)
+			slog.Error("server: restart launch failed", "name", name, "err", err)
 		}
 
 		h.restartMu.Lock()
@@ -726,6 +733,7 @@ func (h *Handler) RestartServer(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) StopServer(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	slog.Info("server: stopping", "name", name, "ip", r.RemoteAddr)
 
 	// Redirect immediately, stop in background
 	if r.Header.Get("HX-Request") == "true" {
@@ -745,7 +753,7 @@ func (h *Handler) StopServer(w http.ResponseWriter, r *http.Request) {
 		h.db.DeleteTrackerState(name)
 		h.notifyDashboard()
 		if err := h.docker.StopServer(context.Background(), name); err != nil {
-			log.Printf("stop server %s: %v", name, err)
+			slog.Error("server: stop failed", "name", name, "err", err)
 		}
 
 		h.stoppingMu.Lock()
@@ -760,6 +768,7 @@ func (h *Handler) RenameServer(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	alias := r.FormValue("alias")
 	h.aliases.Set(name, alias)
+	slog.Info("server: renamed", "name", name, "alias", alias)
 	w.WriteHeader(http.StatusOK)
 }
 

@@ -2,6 +2,7 @@ package rcon
 
 import (
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -42,6 +43,7 @@ func (m *Manager) Execute(addr, password, command string) (string, error) {
 	resp, err := conn.Execute(command)
 	if err != nil {
 		// Connection may be stale, remove and retry once
+		slog.Warn("rcon: reconnecting", "addr", addr)
 		m.closeAddr(addr)
 		conn, err = m.getConn(addr, password)
 		if err != nil {
@@ -86,6 +88,7 @@ func (m *Manager) getConn(addr, password string) (*gorcon.Conn, error) {
 	m.conns[addr] = &connEntry{conn: conn, lastUsed: time.Now()}
 	m.mu.Unlock()
 
+	slog.Info("rcon: connected", "addr", addr)
 	return conn, nil
 }
 
@@ -119,6 +122,7 @@ func (m *Manager) reaper() {
 				if time.Since(e.lastUsed) > idleTimeout {
 					e.conn.Close()
 					delete(m.conns, addr)
+					slog.Info("rcon: idle close", "addr", addr)
 				}
 			}
 			m.mu.Unlock()
@@ -146,8 +150,10 @@ type Player struct {
 }
 
 // CS2 status player line format:
-//    1      BOT    0    0     active      0 'Jaques'
-//    2    02:50    0    0     active 786432 127.0.0.1:53616 's3ansh33p'
+//
+//	1      BOT    0    0     active      0 'Jaques'
+//	2    02:50    0    0     active 786432 127.0.0.1:53616 's3ansh33p'
+//
 // Fields: id, time, ping, loss, state, rate, [addr], name
 var PlayerLineRe = regexp.MustCompile(`^\s*(\d+)\s+(\S+)\s+(\d+)\s+(\d+)\s+(\w+)\s+(\d+)\s+(?:(\S+)\s+)?'(.+?)'`)
 

@@ -3,7 +3,8 @@ package web
 import (
 	"database/sql"
 	"errors"
-	"log"
+	"fmt"
+	"log/slog"
 	"strings"
 
 	"unilan/internal/db"
@@ -65,28 +66,28 @@ func (h *Handler) handleGameOver(info gametracker.GameOverInfo) {
 	game, err := h.db.GetGameByServer(info.ServerName)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
-			log.Printf("game-over: lookup server %s: %v", info.ServerName, err)
+			slog.Error("game-over: lookup server", "server", info.ServerName, "err", err)
 		}
 		return
 	}
 
-	log.Printf("game-over: recording results for game %d (server %s)", game.ID, info.ServerName)
+	slog.Info("game-over: recording", "game", game.ID, "server", info.ServerName)
 
 	// Immediately mark as completed so handleRoundEnd stops updating this game
 	h.db.Exec(`UPDATE games SET status='completed' WHERE id=?`, game.ID)
 
 	match, err := h.db.GetMatchByID(game.MatchID)
 	if err != nil {
-		log.Printf("game-over: get match %d: %v", game.MatchID, err)
+		slog.Error("game-over: get match", "match", game.MatchID, "err", err)
 		return
 	}
 	if match.Team1ID == nil || match.Team2ID == nil {
-		log.Printf("game-over: match %d missing teams", game.MatchID)
+		slog.Warn("game-over: match missing teams", "match", game.MatchID)
 		return
 	}
 
-	log.Printf("game-over: score CT=%d T=%d, halfRound=%d, rounds=%d, players=%d",
-		info.Score.CT, info.Score.T, info.Score.HalfRound, len(info.Score.Rounds), len(info.Players))
+	slog.Info("game-over: raw scores", "ct", info.Score.CT, "t", info.Score.T,
+		"half_round", info.Score.HalfRound, "rounds", len(info.Score.Rounds), "players", len(info.Players))
 
 	// Calculate half-time splits from round history
 	var h1ct, h1t, h2ct, h2t int
@@ -146,11 +147,10 @@ func (h *Handler) handleGameOver(info gametracker.GameOverInfo) {
 		winnerID = match.Team2ID
 	}
 
-	log.Printf("game-over: team1=%d team2=%d winner=%v team1StartsCT=%v",
-		team1Score, team2Score, winnerID, game.Team1StartsCT)
+	slog.Info("game-over: scores mapped", "team1", team1Score, "team2", team2Score, "team1_starts_ct", game.Team1StartsCT)
 
 	if err := h.db.UpdateGameScore(game.ID, team1Score, team2Score, winnerID); err != nil {
-		log.Printf("game-over: update score: %v", err)
+		slog.Error("game-over: update score", "game", game.ID, "err", err)
 		return
 	}
 
@@ -182,7 +182,7 @@ func (h *Handler) handleGameOver(info gametracker.GameOverInfo) {
 
 	if len(stats) > 0 {
 		if err := h.db.SavePlayerStats(game.ID, stats); err != nil {
-			log.Printf("game-over: save stats: %v", err)
+			slog.Error("game-over: save stats", "game", game.ID, "err", err)
 		}
 	}
 
@@ -195,9 +195,9 @@ func (h *Handler) handleGameOver(info gametracker.GameOverInfo) {
 		h.checkMatchDecided(match, *winnerID)
 	}
 
-	log.Printf("game-over: recorded game %d — %s %d:%d %s on %s (halves: %d:%d / %d:%d)",
-		game.ID, match.Team1Name, team1Score, team2Score, match.Team2Name,
-		info.Score.CurrentMap, h1ct, h1t, h2ct, h2t)
+	slog.Info(fmt.Sprintf("game-over: %s %d:%d %s on %s (halves: %d:%d / %d:%d)",
+		match.Team1Name, team1Score, team2Score, match.Team2Name,
+		info.Score.CurrentMap, h1ct, h1t, h2ct, h2t), "game", game.ID)
 
 	// For Bo3+: if match not decided, auto-create next game on same server
 	if match.BestOf > 1 {
@@ -209,8 +209,7 @@ func (h *Handler) handleGameOver(info gametracker.GameOverInfo) {
 				nextID, err := h.db.CreateGame(match.ID, nextNum, "", game.Team1StartsCT)
 				if err == nil {
 					h.db.LinkGameToServer(nextID, game.ServerName)
-					log.Printf("game-over: auto-created game %d (game %d of Bo%d) on server %s",
-						nextID, nextNum, match.BestOf, game.ServerName)
+					slog.Info("game-over: auto-created next game", "game", nextID, "number", nextNum, "bestof", match.BestOf, "server", game.ServerName)
 				}
 			}
 		}
@@ -272,7 +271,9 @@ func (h *Handler) checkMatchDecided(match *db.Match, lastGameWinner int64) {
 
 	if match.BestOf == 1 {
 		if err := h.db.SetMatchWinner(match.ID, lastGameWinner); err != nil {
-			log.Printf("game-over: set winner: %v", err)
+			slog.Error("game-over: set winner", "match", match.ID, "err", err)
+		} else {
+			slog.Info("match: decided", "match", match.ID, "winner", lastGameWinner)
 		}
 		return
 	}
@@ -288,7 +289,9 @@ func (h *Handler) checkMatchDecided(match *db.Match, lastGameWinner int64) {
 	for teamID, w := range wins {
 		if w >= winsNeeded {
 			if err := h.db.SetMatchWinner(match.ID, teamID); err != nil {
-				log.Printf("game-over: set bo%d winner: %v", match.BestOf, err)
+				slog.Error("game-over: set winner", "match", match.ID, "bestof", match.BestOf, "err", err)
+			} else {
+				slog.Info("match: decided", "match", match.ID, "winner", teamID, "bestof", match.BestOf)
 			}
 			return
 		}

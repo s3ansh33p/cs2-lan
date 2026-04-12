@@ -3,7 +3,7 @@ package gametracker
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"unilan/internal/rcon"
 	"regexp"
 	"sort"
@@ -1047,12 +1047,12 @@ func (m *Manager) setupAndTrack(ctx context.Context, name string, gamePort int, 
 	for _, cmd := range []string{"sv_logecho 1", "log on", "mp_logdetail 3"} {
 		resp, err := m.rconFn(addr, rconPassword, cmd)
 		if err != nil {
-			log.Printf("gametracker %s: rcon %q: %v", name, cmd, err)
+			slog.Warn("gametracker: rcon setup", "server", name, "cmd", cmd, "err", err)
 		} else if resp != "" {
-			log.Printf("gametracker %s: rcon %q -> %s", name, cmd, resp)
+			slog.Info("gametracker: rcon setup", "server", name, "cmd", cmd, "resp", resp)
 		}
 	}
-	log.Printf("gametracker %s: mode=%s, logging enabled, starting log stream", name, state.gameMode)
+	slog.Info("gametracker: started", "server", name, "mode", state.gameMode)
 
 	// Start RCON poller for ping/duration (single goroutine per server)
 	go m.rconPoller(ctx, name, addr, rconPassword, state)
@@ -1063,7 +1063,7 @@ func (m *Manager) setupAndTrack(ctx context.Context, name string, gamePort int, 
 	for {
 		lines, cleanup, err := m.streamFn(ctx, name)
 		if err != nil {
-			log.Printf("gametracker %s: stream error: %v", name, err)
+			slog.Warn("gametracker: stream error", "server", name, "err", err)
 			select {
 			case <-ctx.Done():
 				return
@@ -1083,7 +1083,7 @@ func (m *Manager) setupAndTrack(ctx context.Context, name string, gamePort int, 
 				return
 			case line, ok := <-lines:
 				if !ok {
-					log.Printf("gametracker %s: stream ended, reconnecting...", name)
+					slog.Info("gametracker: stream ended, reconnecting", "server", name)
 					cleanup()
 					select {
 					case <-ctx.Done():
@@ -1291,7 +1291,7 @@ func parseLine(line string, state *ServerState) {
 			state.halfRound = playedRounds
 			state.maxRounds = playedRounds * 2
 			state.markMetaDirty()
-			log.Printf("gametracker %s: half time (round %d/%d)", state.serverName, playedRounds, state.maxRounds)
+			slog.Info("gametracker: half time", "server", state.serverName, "round", playedRounds, "max_rounds", state.maxRounds)
 		}
 		state.mu.Unlock()
 		state.addSystemMessage("Half Time")
@@ -1307,7 +1307,7 @@ func parseLine(line string, state *ServerState) {
 	// Game Over: detect mode and add to killfeed
 	// e.g. "Game Over: scrimcomp2v2 mg_active de_dust2 score 2:2 after 3 min"
 	if strings.Contains(line, "Game Over:") {
-		log.Printf("gametracker %s: game over", state.serverName)
+		slog.Info("gametracker: game over detected", "server", state.serverName)
 		parts := strings.Fields(line)
 		for i, p := range parts {
 			if p == "Over:" && i+1 < len(parts) {
@@ -1335,15 +1335,15 @@ func parseLine(line string, state *ServerState) {
 		if state.gameOverFn != nil {
 			score := state.GetScore()
 			scoreboard := state.GetScoreboard()
-			log.Printf("gametracker %s: game over CT %d : %d T (%d rounds, %d players)",
-				state.serverName, score.CT, score.T, len(score.Rounds), len(scoreboard))
+			slog.Info("gametracker: game over callback", "server", state.serverName,
+				"ct", score.CT, "t", score.T, "rounds", len(score.Rounds), "players", len(scoreboard))
 			go state.gameOverFn(GameOverInfo{
 				ServerName: state.serverName,
 				Score:      score,
 				Players:    scoreboard,
 			})
 		} else {
-			log.Printf("gametracker %s: game over (no callback)", state.serverName)
+			slog.Warn("gametracker: game over (no callback)", "server", state.serverName)
 		}
 		return
 	}

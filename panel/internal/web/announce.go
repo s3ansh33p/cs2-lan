@@ -2,7 +2,7 @@ package web
 
 import (
 	"html"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -22,6 +22,7 @@ func (h *Handler) SetAnnouncement(w http.ResponseWriter, r *http.Request) {
 	h.db.SetSetting("announcement", msg)
 	h.db.SetSetting("announcement_link", link)
 
+	slog.Info("announcement: updated", "text", msg, "link", link)
 	h.announceBcast.notify()
 	http.Redirect(w, r, "/admin/settings", http.StatusSeeOther)
 }
@@ -30,7 +31,7 @@ func (h *Handler) SetAnnouncement(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) AnnounceWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, done, err := setupWSConn(w, r)
 	if err != nil {
-		log.Printf("ws announce upgrade: %v", err)
+		slog.Warn("ws: announce upgrade failed", "err", err)
 		return
 	}
 	defer conn.Close()

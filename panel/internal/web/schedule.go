@@ -3,7 +3,7 @@ package web
 import (
 	"encoding/json"
 	"html/template"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -17,7 +17,7 @@ import (
 func (h *Handler) HomePage(w http.ResponseWriter, r *http.Request) {
 	items, err := h.db.ListScheduleItems()
 	if err != nil {
-		log.Printf("list schedule: %v", err)
+		slog.Error("schedule: list items", "err", err)
 	}
 	itemsJSON, _ := json.Marshal(items)
 
@@ -33,7 +33,7 @@ func (h *Handler) HomePage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) AdminSchedule(w http.ResponseWriter, r *http.Request) {
 	items, err := h.db.ListScheduleItems()
 	if err != nil {
-		log.Printf("list schedule: %v", err)
+		slog.Error("schedule: list items", "err", err)
 	}
 	itemsJSON, _ := json.Marshal(items)
 
@@ -63,7 +63,7 @@ func (h *Handler) AdminCreateScheduleItem(w http.ResponseWriter, r *http.Request
 	}
 
 	if _, err := h.db.CreateScheduleItem(startAt, endAt, title, desc, color); err != nil {
-		log.Printf("create schedule item: %v", err)
+		slog.Error("schedule: create failed", "title", title, "err", err)
 		if isAJAX(r) {
 			http.Error(w, "Failed to create", http.StatusInternalServerError)
 		} else {
@@ -72,6 +72,7 @@ func (h *Handler) AdminCreateScheduleItem(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	slog.Info("schedule: created", "title", title)
 	h.notifySchedule()
 
 	if isAJAX(r) {
@@ -96,7 +97,9 @@ func (h *Handler) AdminUpdateScheduleItem(w http.ResponseWriter, r *http.Request
 	color := sanitize(r.FormValue("color"))
 
 	if err := h.db.UpdateScheduleItem(id, startAt, endAt, title, desc, color); err != nil {
-		log.Printf("update schedule item: %v", err)
+		slog.Error("schedule: update failed", "id", id, "err", err)
+	} else {
+		slog.Info("schedule: updated", "id", id)
 	}
 
 	h.notifySchedule()
@@ -116,7 +119,9 @@ func (h *Handler) AdminDeleteScheduleItem(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := h.db.DeleteScheduleItem(id); err != nil {
-		log.Printf("delete schedule item: %v", err)
+		slog.Error("schedule: delete failed", "id", id, "err", err)
+	} else {
+		slog.Info("schedule: deleted", "id", id)
 	}
 
 	h.notifySchedule()
@@ -134,6 +139,7 @@ func (h *Handler) SetEventBounds(w http.ResponseWriter, r *http.Request) {
 	end := sanitize(r.FormValue("event_end"))
 	h.db.SetSetting("event_start", start)
 	h.db.SetSetting("event_end", end)
+	slog.Info("settings: event_bounds", "start", start, "end", end)
 	h.notifySchedule()
 	http.Redirect(w, r, "/admin/settings", http.StatusSeeOther)
 }
@@ -174,7 +180,7 @@ func (h *Handler) buildScheduleJSON() []byte {
 func (h *Handler) ScheduleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, done, err := setupWSConn(w, r)
 	if err != nil {
-		log.Printf("ws schedule upgrade: %v", err)
+		slog.Warn("ws: schedule upgrade failed", "err", err)
 		return
 	}
 	defer conn.Close()
