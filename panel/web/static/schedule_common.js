@@ -119,12 +119,7 @@ function renderGrid(containerId, rawItems, startMs, endMs, opts) {
 
 // ── Now line ──
 
-var _nowLineInterval = null;
-
 function createNowLine(layer, startMs, endMs) {
-    // Clean up any previous now-line interval
-    if (_nowLineInterval) { clearInterval(_nowLineInterval); _nowLineInterval = null; }
-
     var line = document.createElement('div');
     line.className = 'absolute right-0 pointer-events-none';
     line.style.cssText = 'height:2px;background:#f97316;z-index:20;display:none;left:0';
@@ -144,9 +139,9 @@ function createNowLine(layer, startMs, endMs) {
     // Sync to nearest :00 or :30 seconds
     var s = new Date(), sec = s.getSeconds(), ms = s.getMilliseconds();
     var toNext = ((sec < 30 ? 30 : 60) - sec) * 1000 - ms;
-    setTimeout(function() {
+    Page.timeout(function() {
         update();
-        _nowLineInterval = setInterval(update, 30000);
+        Page.interval(update, 30000);
     }, toNext);
 
     return { update: update, el: line };
@@ -203,19 +198,7 @@ function renderItems(layer, rawItems, startMs, opts) {
 // ── WebSocket ──
 
 function connectScheduleWS(onUpdate) {
-    var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var ws = new WebSocket(protocol + '//' + location.host + '/schedule/ws');
-    var retries = 0;
-    ws.onmessage = function(e) {
-        try {
-            retries = 0;
-            var d = JSON.parse(e.data);
-            if (d.type === 'schedule') onUpdate(d.items || [], d.eventStart, d.eventEnd);
-        } catch(err) { console.error('[schedule-ws]', err); }
-    };
-    ws.onclose = function() {
-        var delay = Math.min(5000 * Math.pow(2, retries), 60000);
-        retries++;
-        setTimeout(function() { connectScheduleWS(onUpdate); }, delay);
-    };
+    Page.subscribe('schedule', function(d) {
+        if (d.type === 'schedule') onUpdate(d.items || [], d.eventStart, d.eventEnd);
+    });
 }

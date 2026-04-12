@@ -21,7 +21,7 @@ func (h *Handler) HomePage(w http.ResponseWriter, r *http.Request) {
 	}
 	itemsJSON, _ := json.Marshal(items)
 
-	h.render(w, "home.html", map[string]any{
+	h.renderPage(w, r, "home.html", map[string]any{
 		"Title":      "",
 		"ItemsJSON":  template.JS(itemsJSON),
 		"EventStart": h.db.GetSetting("event_start"),
@@ -37,7 +37,7 @@ func (h *Handler) AdminSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	itemsJSON, _ := json.Marshal(items)
 
-	h.render(w, "admin_schedule.html", map[string]any{
+	h.renderPage(w, r, "admin_schedule.html", map[string]any{
 		"Title":      "Schedule",
 		"ItemsJSON":  template.JS(itemsJSON),
 		"EventStart": h.db.GetSetting("event_start"),
@@ -151,6 +151,10 @@ func (h *Handler) notifySchedule() {
 	h.schedData = data
 	h.schedMu.Unlock()
 	h.scheduleBcast.notify()
+
+	if h.hub != nil && data != nil {
+		h.hub.Publish("schedule", "schedule", json.RawMessage(data))
+	}
 }
 
 func (h *Handler) getScheduleData() []byte {

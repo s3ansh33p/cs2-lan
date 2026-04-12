@@ -22,14 +22,24 @@ type Tournament struct {
 	Name              string
 	TeamSize          int
 	GameMode          string // competitive, wingman, casual, etc.
+	GameType          string // cs2, valorant, or custom game name
+	BracketFormat     string // single_elim, double_elim, round_robin, hybrid
+	VetoFormat        string // comma-separated: ban,ban,pick,pick,ban,ban,last
 	RegistrationOpen  *time.Time
 	RegistrationClose *time.Time
 	ServerIP          string
 	ServerPassword    string
-	Status            string // draft, registration, locked, active, completed
-	CreatedAt         time.Time
-	DeletedAt         *time.Time
-	HiddenAt          *time.Time
+	BracketGroupCount   int // number of round-robin groups (hybrid format)
+	BracketAdvanceCount int // teams per group advancing to playoffs (hybrid format)
+	Status              string // draft, registration, locked, active, completed
+	CreatedAt           time.Time
+	DeletedAt           *time.Time
+	HiddenAt            *time.Time
+}
+
+// IsCS2 returns true if the tournament is a CS2 tournament.
+func (t *Tournament) IsCS2() bool {
+	return t.GameType == "" || t.GameType == "cs2"
 }
 
 // CanRegister returns true if the tournament is accepting team registrations.
@@ -47,13 +57,13 @@ func (t *Tournament) CanRegister() bool {
 	return true
 }
 
-const tournamentColumns = `id, name, team_size, game_mode, registration_open, registration_close,
-	server_ip, server_password, status, created_at, deleted_at, hidden_at`
+const tournamentColumns = `id, name, team_size, game_mode, game_type, bracket_format, veto_format, registration_open, registration_close,
+	server_ip, server_password, bracket_group_count, bracket_advance_count, status, created_at, deleted_at, hidden_at`
 
 func scanTournament(row interface{ Scan(...any) error }) (*Tournament, error) {
 	t := &Tournament{}
-	err := row.Scan(&t.ID, &t.Name, &t.TeamSize, &t.GameMode, &t.RegistrationOpen, &t.RegistrationClose,
-		&t.ServerIP, &t.ServerPassword, &t.Status, &t.CreatedAt, &t.DeletedAt, &t.HiddenAt)
+	err := row.Scan(&t.ID, &t.Name, &t.TeamSize, &t.GameMode, &t.GameType, &t.BracketFormat, &t.VetoFormat, &t.RegistrationOpen, &t.RegistrationClose,
+		&t.ServerIP, &t.ServerPassword, &t.BracketGroupCount, &t.BracketAdvanceCount, &t.Status, &t.CreatedAt, &t.DeletedAt, &t.HiddenAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -150,13 +160,19 @@ func (db *DB) UnhideTournament(id int64) error {
 	return err
 }
 
-func (db *DB) CreateTournament(name string, teamSize int, gameMode, serverIP, serverPassword string) (*Tournament, error) {
+func (db *DB) CreateTournament(name string, teamSize int, gameMode, gameType, bracketFormat, serverIP, serverPassword string) (*Tournament, error) {
 	if gameMode == "" {
 		gameMode = "competitive"
 	}
+	if gameType == "" {
+		gameType = "cs2"
+	}
+	if bracketFormat == "" {
+		bracketFormat = "single_elim"
+	}
 
-	res, err := db.Exec(`INSERT INTO tournament (name, team_size, game_mode, server_ip, server_password)
-		VALUES (?, ?, ?, ?, ?)`, name, teamSize, gameMode, serverIP, serverPassword)
+	res, err := db.Exec(`INSERT INTO tournament (name, team_size, game_mode, game_type, bracket_format, server_ip, server_password)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, name, teamSize, gameMode, gameType, bracketFormat, serverIP, serverPassword)
 	if err != nil {
 		return nil, err
 	}
@@ -164,13 +180,16 @@ func (db *DB) CreateTournament(name string, teamSize int, gameMode, serverIP, se
 	if err != nil {
 		return nil, fmt.Errorf("last insert id: %w", err)
 	}
-	return &Tournament{ID: id, Name: name, TeamSize: teamSize, GameMode: gameMode, ServerIP: serverIP, ServerPassword: serverPassword, Status: TournamentDraft}, nil
+	return &Tournament{ID: id, Name: name, TeamSize: teamSize, GameMode: gameMode, GameType: gameType, BracketFormat: bracketFormat, ServerIP: serverIP, ServerPassword: serverPassword, Status: TournamentDraft}, nil
 }
 
-func (db *DB) UpdateTournament(id int64, name string, teamSize int, gameMode string, regOpen, regClose *time.Time, serverIP, serverPassword string) error {
-	_, err := db.Exec(`UPDATE tournament SET name=?, team_size=?, game_mode=?, registration_open=?,
-		registration_close=?, server_ip=?, server_password=? WHERE id=?`,
-		name, teamSize, gameMode, regOpen, regClose, serverIP, serverPassword, id)
+func (db *DB) UpdateTournament(id int64, name string, teamSize int, gameMode, gameType, bracketFormat, vetoFormat string, regOpen, regClose *time.Time, serverIP, serverPassword string, groupCount, advanceCount int) error {
+	if bracketFormat == "" {
+		bracketFormat = "single_elim"
+	}
+	_, err := db.Exec(`UPDATE tournament SET name=?, team_size=?, game_mode=?, game_type=?, bracket_format=?, veto_format=?, registration_open=?,
+		registration_close=?, server_ip=?, server_password=?, bracket_group_count=?, bracket_advance_count=? WHERE id=?`,
+		name, teamSize, gameMode, gameType, bracketFormat, vetoFormat, regOpen, regClose, serverIP, serverPassword, groupCount, advanceCount, id)
 	return err
 }
 

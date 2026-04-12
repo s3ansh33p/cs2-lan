@@ -1,4 +1,3 @@
-{{define "scripts"}}<script src="/static/schedule_common.js"></script><script src="/static/schedule_admin.js"></script>{{end}}
 {{define "content"}}
 <div class="mb-6">
     <h1 class="text-2xl font-bold mb-1">Schedule</h1>
@@ -12,4 +11,6 @@ var _eventEnd = "{{.EventEnd}}";
 </script>
 
 <div id="schedule-grid" class="bg-slate-800 border border-slate-700 rounded-lg overflow-hidden"></div>
+
+<script>initAdmin();</script>
 {{end}}

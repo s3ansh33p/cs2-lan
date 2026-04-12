@@ -21,6 +21,7 @@ type bracketPageData struct {
 	Tournament   *db.Tournament
 	Teams        []db.Team
 	Bracket      []db.Match
+	Standings    []db.GroupStanding
 	CanRegister  bool
 	ConnectInfo  string
 	GamePorts    map[string]int
@@ -42,6 +43,9 @@ func (h *Handler) buildBracketPage(ctx context.Context, tournament *db.Tournamen
 	data.Teams, _ = h.db.ListTeams(tournament.ID)
 	data.Bracket, _ = h.db.GetBracket(tournament.ID)
 	data.CanRegister = tournament.CanRegister()
+	if tournament.BracketFormat == "round_robin" || tournament.BracketFormat == "hybrid" {
+		data.Standings, _ = h.db.GetGroupStandings(tournament.ID)
+	}
 
 	if tournament.ServerIP != "" {
 		data.ConnectInfo = fmt.Sprintf("connect %s", tournament.ServerIP)
@@ -83,11 +87,12 @@ func (h *Handler) PublicBracket(w http.ResponseWriter, r *http.Request) {
 		title = tournament.Name
 	}
 	data := h.buildBracketPage(r.Context(), tournament, title)
-	h.render(w, "bracket.html", map[string]any{
+	h.renderPage(w, r, "bracket.html", map[string]any{
 		"Title":        data.Title,
 		"Tournament":   data.Tournament,
 		"Teams":        data.Teams,
 		"Bracket":      data.Bracket,
+		"Standings":    data.Standings,
 		"CanRegister":  data.CanRegister,
 		"ConnectInfo":  data.ConnectInfo,
 		"GamePorts":    data.GamePorts,
@@ -100,7 +105,7 @@ func (h *Handler) PublicTournamentList(w http.ResponseWriter, r *http.Request) {
 	tournaments, _ := h.db.ListTournaments()
 	activeID, _ := h.db.GetActiveTournamentID()
 
-	h.render(w, "tournaments.html", map[string]any{
+	h.renderPage(w, r, "tournaments.html", map[string]any{
 		"Title":       "Tournaments",
 		"Tournaments": tournaments,
 		"ActiveID":    activeID,
@@ -122,11 +127,12 @@ func (h *Handler) PublicTournamentBracket(w http.ResponseWriter, r *http.Request
 	}
 
 	data := h.buildBracketPage(r.Context(), tournament, tournament.Name)
-	h.render(w, "bracket.html", map[string]any{
+	h.renderPage(w, r, "bracket.html", map[string]any{
 		"Title":        data.Title,
 		"Tournament":   data.Tournament,
 		"Teams":        data.Teams,
 		"Bracket":      data.Bracket,
+		"Standings":    data.Standings,
 		"CanRegister":  data.CanRegister,
 		"ConnectInfo":  data.ConnectInfo,
 		"GamePorts":    data.GamePorts,
@@ -284,6 +290,27 @@ func (h *Handler) notifyBracket(tournamentID ...int64) {
 		default:
 		}
 	}
+
+	// Publish to unified hub (bracket for public viewers, tournament detail for admin)
+	if h.hub != nil {
+		var tids []int64
+		if len(tournamentID) > 0 {
+			tids = tournamentID
+		} else {
+			// No specific ID — find all tournaments with active hub subscribers
+			tids = h.hub.SubscribedTournamentIDs()
+		}
+		for _, tid := range tids {
+			data := h.buildBracketJSON(tid)
+			if data != nil {
+				h.hub.Publish(fmt.Sprintf("bracket:%d", tid), "bracket", json.RawMessage(data))
+			}
+			detail := h.buildTournamentDetailJSON(tid)
+			if detail != nil {
+				h.hub.Publish(fmt.Sprintf("tournament:%d", tid), "tournament_detail", json.RawMessage(detail))
+			}
+		}
+	}
 }
 
 func (h *Handler) subscribeBracket(tournamentID int64) (<-chan struct{}, func()) {
@@ -370,6 +397,16 @@ func (h *Handler) BracketWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) sendBracketState(conn *websocket.Conn, tournamentID int64) error {
+	data := h.buildBracketJSON(tournamentID)
+	if data == nil {
+		return nil
+	}
+	conn.SetWriteDeadline(time.Now().Add(writeWait))
+	return conn.WriteMessage(websocket.TextMessage, data)
+}
+
+// buildBracketJSON builds the bracket state JSON for a tournament.
+func (h *Handler) buildBracketJSON(tournamentID int64) []byte {
 	tournament, err := h.db.GetTournamentByID(tournamentID)
 	if err != nil || tournament == nil {
 		return nil
@@ -393,21 +430,32 @@ func (h *Handler) sendBracketState(conn *websocket.Conn, tournamentID int64) err
 		H1T    int    `json:"h1t"`
 		H2CT   int    `json:"h2ct"`
 		H2T    int    `json:"h2t"`
+		Demo   bool   `json:"demo"`
 	}
 	type teamRef struct {
 		ID   int64  `json:"id"`
 		Name string `json:"name"`
 	}
+	type vetoJSON struct {
+		Step     int    `json:"step"`
+		Action   string `json:"action"`
+		TeamName string `json:"teamName,omitempty"`
+		MapName  string `json:"mapName"`
+	}
 	type matchJSON struct {
-		ID     int64      `json:"id"`
-		Round  int        `json:"round"`
-		Pos    int        `json:"pos"`
-		BestOf int        `json:"bestOf"`
-		Team1  teamRef    `json:"team1"`
-		Team2  teamRef    `json:"team2"`
-		Winner int64      `json:"winner"`
-		IsBye  bool       `json:"isBye"`
-		Games  []gameJSON `json:"games"`
+		ID             int64      `json:"id"`
+		Round          int        `json:"round"`
+		Pos            int        `json:"pos"`
+		BestOf         int        `json:"bestOf"`
+		Team1          teamRef    `json:"team1"`
+		Team2          teamRef    `json:"team2"`
+		Winner         int64      `json:"winner"`
+		IsBye          bool       `json:"isBye"`
+		Section        string     `json:"section"`
+		GroupID        int        `json:"groupId,omitempty"`
+		LoserNextMatch int64      `json:"loserNextMatch,omitempty"`
+		Games          []gameJSON `json:"games"`
+		Vetoes         []vetoJSON `json:"vetoes,omitempty"`
 	}
 
 	// Build server port lookup
@@ -419,8 +467,17 @@ func (h *Handler) sendBracketState(conn *websocket.Conn, tournamentID int64) err
 
 	var matches []matchJSON
 	for _, m := range bracket {
+		section := m.BracketSection
+		if section == "" {
+			section = "winners"
+		}
+		var loserNext int64
+		if m.LoserNextMatchID != nil {
+			loserNext = *m.LoserNextMatchID
+		}
 		mj := matchJSON{
 			ID: m.ID, Round: m.Round, Pos: m.Position, BestOf: m.BestOf, IsBye: m.IsBye,
+			Section: section, GroupID: m.GroupID, LoserNextMatch: loserNext,
 			Team1: teamRef{Name: html.EscapeString(m.Team1Name)}, Team2: teamRef{Name: html.EscapeString(m.Team2Name)},
 		}
 		if m.Team1ID != nil {
@@ -435,7 +492,7 @@ func (h *Handler) sendBracketState(conn *websocket.Conn, tournamentID int64) err
 		for _, g := range m.Games {
 			gj := gameJSON{ID: g.ID, Num: g.GameNumber, Map: g.MapName, T1: g.Team1Score, T2: g.Team2Score,
 				Status: g.Status, Server: g.ServerName, T1CT: g.Team1StartsCT,
-				H1CT: g.H1CT, H1T: g.H1T, H2CT: g.H2CT, H2T: g.H2T}
+				H1CT: g.H1CT, H1T: g.H1T, H2CT: g.H2CT, H2T: g.H2T, Demo: g.DemoPath != ""}
 			// Look up port for live games
 			if g.Status == db.GameLive && g.ServerName != "" {
 				if port, ok := serverPorts[g.ServerName]; ok {
@@ -443,6 +500,17 @@ func (h *Handler) sendBracketState(conn *websocket.Conn, tournamentID int64) err
 				}
 			}
 			mj.Games = append(mj.Games, gj)
+		}
+		// Include veto data if any steps exist
+		if vetoes, err := h.db.GetMatchVetoes(m.ID); err == nil && len(vetoes) > 0 {
+			for _, v := range vetoes {
+				mj.Vetoes = append(mj.Vetoes, vetoJSON{
+					Step:     v.Step,
+					Action:   v.Action,
+					TeamName: v.TeamName,
+					MapName:  v.MapName,
+				})
+			}
 		}
 		matches = append(matches, mj)
 	}
@@ -478,28 +546,66 @@ func (h *Handler) sendBracketState(conn *websocket.Conn, tournamentID int64) err
 		}
 	}
 
-	msg := struct {
-		Type        string      `json:"type"`
-		Bracket     []matchJSON `json:"bracket"`
-		Teams       []teamJSON  `json:"teams"`
-		TeamSize    int         `json:"teamSize"`
-		Status      string      `json:"status"`
-		Name        string      `json:"name"`
-		CanRegister bool        `json:"canRegister"`
-		ConnectInfo string      `json:"connectInfo,omitempty"`
-	}{
-		Type:        "bracket",
-		Bracket:     matches,
-		Teams:       teamsOut,
-		TeamSize:    tournament.TeamSize,
-		Status:      tournament.Status,
-		Name:        html.EscapeString(tournament.Name),
-		CanRegister: tournament.CanRegister(),
-		ConnectInfo: html.EscapeString(connectInfo),
+	bracketFormat := tournament.BracketFormat
+	if bracketFormat == "" {
+		bracketFormat = "single_elim"
 	}
 
-	conn.SetWriteDeadline(time.Now().Add(writeWait))
-	return conn.WriteJSON(msg)
+	// Include standings for round robin
+	type standingJSON struct {
+		TeamID    int64  `json:"teamId"`
+		TeamName  string `json:"teamName"`
+		GroupID   int    `json:"groupId"`
+		Wins      int    `json:"wins"`
+		Losses    int    `json:"losses"`
+		MapDiff   int    `json:"mapDiff"`
+		RoundDiff int    `json:"roundDiff"`
+		Points    int    `json:"points"`
+	}
+	var standingsOut []standingJSON
+	if bracketFormat == "round_robin" || bracketFormat == "hybrid" {
+		if standings, err := h.db.GetGroupStandings(tournament.ID); err == nil {
+			for _, s := range standings {
+				standingsOut = append(standingsOut, standingJSON{
+					TeamID:    s.TeamID,
+					TeamName:  html.EscapeString(s.TeamName),
+					GroupID:   s.GroupID,
+					Wins:      s.Wins,
+					Losses:    s.Losses,
+					MapDiff:   s.MapDiff,
+					RoundDiff: s.RoundDiff,
+					Points:    s.Points,
+				})
+			}
+		}
+	}
+
+	msg := struct {
+		Type          string         `json:"type"`
+		Bracket       []matchJSON    `json:"bracket"`
+		Teams         []teamJSON     `json:"teams"`
+		Standings     []standingJSON `json:"standings,omitempty"`
+		TeamSize      int            `json:"teamSize"`
+		Status        string         `json:"status"`
+		Name          string         `json:"name"`
+		BracketFormat string         `json:"bracketFormat"`
+		CanRegister   bool           `json:"canRegister"`
+		ConnectInfo   string         `json:"connectInfo,omitempty"`
+	}{
+		Type:          "bracket",
+		Bracket:       matches,
+		Teams:         teamsOut,
+		Standings:     standingsOut,
+		TeamSize:      tournament.TeamSize,
+		Status:        tournament.Status,
+		Name:          html.EscapeString(tournament.Name),
+		BracketFormat: bracketFormat,
+		CanRegister:   tournament.CanRegister(),
+		ConnectInfo:   html.EscapeString(connectInfo),
+	}
+
+	data, _ := json.Marshal(msg)
+	return data
 }
 
 // PublicGameStats returns HTML with round history bar + player stats table.

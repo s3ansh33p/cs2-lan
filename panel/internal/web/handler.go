@@ -12,6 +12,8 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -142,6 +144,9 @@ type Handler struct {
 	schedMu    sync.RWMutex
 	schedData  []byte // cached JSON message
 	scheduleBcast broadcaster
+
+	// Unified WebSocket hub (topic-based multiplexed connections)
+	hub *WSHub
 }
 
 func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, database *db.DB, composeFile, defaultRCON string) (*Handler, error) {
@@ -226,9 +231,11 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, da
 		bracketSubs:     make(map[int64][]chan struct{}),
 		announcement:    database.GetSetting("announcement"),
 		announceLink:    database.GetSetting("announcement_link"),
+		hub:             NewWSHub(),
 	}
 	go h.dashboardPoller()
 	h.setupGameOverHook()
+	h.setupReadyHook()
 	return h, nil
 }
 
@@ -238,6 +245,38 @@ func generateRCONPassword() string {
 		panic("crypto/rand failed: " + err.Error())
 	}
 	return hex.EncodeToString(b)
+}
+
+// isHTMX returns true if the request was made by HTMX (boosted navigation).
+func isHTMX(r *http.Request) bool {
+	return r.Header.Get("HX-Request") == "true"
+}
+
+// renderPage renders a page template. For HTMX requests, it renders just the
+// "content" block (no layout wrapper). For normal requests, it renders the full
+// page with layout. This enables HTMX boosted link navigation where only the
+// content area is swapped.
+func (h *Handler) renderPage(w http.ResponseWriter, r *http.Request, name string, data any) {
+	t, ok := h.pages[name]
+	if !ok {
+		slog.Error("template not found", "name", name)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	execName := "layout"
+	if isHTMX(r) {
+		execName = "content"
+	}
+
+	var buf bytes.Buffer
+	if err := t.ExecuteTemplate(&buf, execName, data); err != nil {
+		slog.Error("render failed", "template", name, "exec", execName, "err", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	buf.WriteTo(w)
 }
 
 func (h *Handler) render(w http.ResponseWriter, name string, data any) {
@@ -353,12 +392,16 @@ func (h *Handler) notifyDashboard() {
 	h.dashData = data
 	h.dashMu.Unlock()
 	h.dashBcast.notify()
+
+	if h.hub != nil && data != nil {
+		h.hub.Publish("dashboard", "dashboard", json.RawMessage(data))
+	}
 }
 
 func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	// Just check if servers exist — WS fills in live data immediately
 	servers, _ := h.docker.ListServers(r.Context())
-	h.render(w, "dashboard.html", map[string]any{
+	h.renderPage(w, r, "dashboard.html", map[string]any{
 		"Servers": servers,
 		"Title":   "Dashboard",
 	})
@@ -369,7 +412,7 @@ func (h *Handler) SettingsPage(w http.ResponseWriter, r *http.Request) {
 	ann := h.announcement
 	annLink := h.announceLink
 	h.announceMu.RUnlock()
-	h.render(w, "settings.html", map[string]any{
+	h.renderPage(w, r, "settings.html", map[string]any{
 		"Title":            "Settings",
 		"SiteName":         h.db.GetSetting("site_name"),
 		"Announcement":     ann,
@@ -408,11 +451,17 @@ func (h *Handler) LaunchPage(w http.ResponseWriter, r *http.Request) {
 		nextPort++
 	}
 
-	h.render(w, "launch.html", map[string]any{
+	h.renderPage(w, r, "launch.html", map[string]any{
 		"Title":       "Launch Server",
 		"DefaultRCON": h.defaultRCON,
 		"NextPort":    nextPort,
 	})
+}
+
+// wantsJSON returns true if the request prefers a JSON response (AJAX modal).
+func wantsJSON(r *http.Request) bool {
+	return r.Header.Get("Accept") == "application/json" ||
+		r.Header.Get("X-Requested-With") == "fetch"
 }
 
 func (h *Handler) LaunchServer(w http.ResponseWriter, r *http.Request) {
@@ -444,10 +493,16 @@ func (h *Handler) LaunchServer(w http.ResponseWriter, r *http.Request) {
 		req.RCON = generateRCONPassword()
 	}
 
-	err := h.docker.Launch(r.Context(), req, h.composeFile)
+	submittedPort := req.Port
+	req, err := h.docker.Launch(r.Context(), req, h.composeFile)
 	if err != nil {
 		slog.Error("server: launch failed", "name", req.Name, "err", err)
-		h.render(w, "launch.html", map[string]any{
+		if wantsJSON(r) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		h.renderPage(w, r, "launch.html", map[string]any{
 			"Title":       "Launch Server",
 			"Error":       err.Error(),
 			"DefaultRCON": h.defaultRCON,
@@ -456,6 +511,9 @@ func (h *Handler) LaunchServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Port != submittedPort {
+		slog.Info("server: port conflict resolved", "name", req.Name, "requested", submittedPort, "assigned", req.Port)
+	}
 	slog.Info("server: launched", "name", req.Name, "port", req.Port, "mode", req.Mode, "map", req.Map, "players", req.Players)
 	go h.notifyDashboard()
 
@@ -486,6 +544,16 @@ func (h *Handler) LaunchServer(w http.ResponseWriter, r *http.Request) {
 				h.notifyBracket()
 			}
 		}
+	}
+
+	if wantsJSON(r) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok":   true,
+			"name": req.Name,
+			"port": req.Port,
+		})
+		return
 	}
 
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
@@ -544,7 +612,13 @@ func (h *Handler) ServerDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.render(w, "server.html", map[string]any{
+	// Check if there's a live game linked
+	hasLinkedGame := false
+	if _, err := h.db.GetGameByServer(name); err == nil {
+		hasLinkedGame = true
+	}
+
+	h.renderPage(w, r, "server.html", map[string]any{
 		"Title":          h.aliases.Get(info.Name),
 		"Alias":          h.aliases.Get(info.Name),
 		"Server":         info,
@@ -558,6 +632,7 @@ func (h *Handler) ServerDetail(w http.ResponseWriter, r *http.Request) {
 		"Team1Name":      team1Name,
 		"Team2Name":      team2Name,
 		"Team1StartsCT":  team1StartsCT,
+		"HasLinkedGame":  hasLinkedGame,
 	})
 }
 
@@ -719,7 +794,7 @@ func (h *Handler) RestartServer(w http.ResponseWriter, r *http.Request) {
 			TV:       tvEnabled == "1",
 			ExtraCfg: info.ExtraCfg,
 		}
-		if err := h.docker.Launch(context.Background(), req, h.composeFile); err != nil {
+		if _, err := h.docker.Launch(context.Background(), req, h.composeFile); err != nil {
 			slog.Error("server: restart launch failed", "name", name, "err", err)
 		}
 
@@ -787,5 +862,36 @@ type CombinedPlayer struct {
 	Weapons  []string // display names of non-grenade weapons
 	Grenades []string // short grenade abbreviations
 	Online   bool
+}
+
+// ServeDemo serves a demo file for download.
+func (h *Handler) ServeDemo(w http.ResponseWriter, r *http.Request) {
+	gameID, err := strconv.ParseInt(r.PathValue("gameID"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid game ID", http.StatusBadRequest)
+		return
+	}
+
+	game, err := h.db.GetGameByID(gameID)
+	if err != nil {
+		http.Error(w, "Game not found", http.StatusNotFound)
+		return
+	}
+
+	if game.DemoPath == "" {
+		http.Error(w, "No demo available", http.StatusNotFound)
+		return
+	}
+
+	// Check file exists
+	info, err := os.Stat(game.DemoPath)
+	if err != nil || info.IsDir() {
+		http.Error(w, "Demo file not found", http.StatusNotFound)
+		return
+	}
+
+	filename := filepath.Base(game.DemoPath)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	http.ServeFile(w, r, game.DemoPath)
 }
 

@@ -7,6 +7,7 @@ panel/tournament.db-wal
 panel/tournament.db-shm
 
 # Broad safety nets
+*.log
 *.pem
 *.db
 *.db-wal

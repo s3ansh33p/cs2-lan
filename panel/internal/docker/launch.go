@@ -24,18 +24,35 @@ type LaunchRequest struct {
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
-func (c *Client) Launch(ctx context.Context, req LaunchRequest, composeFile string) error {
+func (c *Client) Launch(ctx context.Context, req LaunchRequest, composeFile string) (LaunchRequest, error) {
 	if !validName.MatchString(req.Name) {
-		return fmt.Errorf("invalid server name %q: must be alphanumeric (hyphens/underscores allowed)", req.Name)
+		return req, fmt.Errorf("invalid server name %q: must be alphanumeric (hyphens/underscores allowed)", req.Name)
 	}
 	if req.Port < 1024 || req.Port > 65535 {
-		return fmt.Errorf("port must be between 1024 and 65535")
+		return req, fmt.Errorf("port must be between 1024 and 65535")
 	}
 
 	// Check for existing container
 	_, err := c.docker.ContainerInspect(ctx, "cs2-"+req.Name)
 	if err == nil {
-		return fmt.Errorf("server %q already exists", req.Name)
+		return req, fmt.Errorf("server %q already exists", req.Name)
+	}
+
+	// Resolve port conflicts against running servers
+	servers, err := c.ListServers(ctx)
+	if err != nil {
+		return req, fmt.Errorf("failed to list servers for port check: %w", err)
+	}
+	usedPorts := make(map[int]bool)
+	for _, s := range servers {
+		usedPorts[s.Port] = true
+		usedPorts[s.TVPort] = true
+	}
+	for usedPorts[req.Port] || usedPorts[req.Port+1000] {
+		req.Port++
+		if req.Port > 65535 {
+			return req, fmt.Errorf("no available port found")
+		}
 	}
 
 	tvPort := req.Port + 1000
@@ -74,7 +91,7 @@ func (c *Client) Launch(ctx context.Context, req LaunchRequest, composeFile stri
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("docker compose run failed: %w\n%s", err, strings.TrimSpace(string(output)))
+		return req, fmt.Errorf("docker compose run failed: %w\n%s", err, strings.TrimSpace(string(output)))
 	}
-	return nil
+	return req, nil
 }

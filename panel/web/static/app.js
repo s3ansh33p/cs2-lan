@@ -1,5 +1,14 @@
-function renderPublicBracket(matches) {
-    renderBracketLayout(document.querySelector('.bracket-container'), matches, renderPublicMatch);
+function renderPublicBracket(matches, standings) {
+    var container = document.querySelector('.bracket-container');
+    if (isHybrid(matches)) {
+        renderHybridBracket(container, matches, standings, renderPublicMatch);
+    } else if (isRoundRobin(matches)) {
+        renderRoundRobinBracket(container, matches, standings, renderPublicMatch);
+    } else if (hasDoubleElim(matches)) {
+        renderDoubleElimBracket(container, matches, renderPublicMatch);
+    } else {
+        renderBracketLayout(container, matches, renderPublicMatch);
+    }
 }
 
 function renderPublicMatch(m) {
@@ -46,9 +55,29 @@ function renderPublicMatch(m) {
             if (game.status === 'completed' && game.id) {
                 var statsLabel = (mapDisplayName(game.map) || 'Game ' + game.num) + ' \u2014 ' + t1name + ' ' + game.t1 + ':' + game.t2 + ' ' + t2name;
                 html += '<button onclick="showMatchStats(' + game.id + ', \'' + statsLabel.replace(/'/g, "\\'") + '\')" class="text-slate-400 hover:text-white ml-auto">Stats</button>';
+                if (game.demo) {
+                    html += '<a href="/demo/' + game.id + '" class="text-slate-400 hover:text-white" title="Download demo"><svg class="w-4 h-4 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg></a>';
+                }
             }
             html += '</div>';
         }
+        html += '</div>';
+    }
+    // Veto results (compact display)
+    if (m.vetoes && m.vetoes.length > 0) {
+        var bans = [], picks = [];
+        for (var vi = 0; vi < m.vetoes.length; vi++) {
+            var v = m.vetoes[vi];
+            var ml = mapDisplayName(v.mapName) || v.mapName;
+            if (v.action === 'ban') {
+                bans.push(ml);
+            } else {
+                picks.push(ml);
+            }
+        }
+        html += '<div class="border-t border-slate-600/50 px-3 py-1 text-xs text-slate-500">';
+        if (picks.length > 0) html += '<span class="text-slate-400">Maps: ' + picks.join(', ') + '</span>';
+        if (bans.length > 0) html += (picks.length > 0 ? ' | ' : '') + '<span class="text-slate-600">Bans: ' + bans.join(', ') + '</span>';
         html += '</div>';
     }
     html += '</div>';
@@ -82,8 +111,10 @@ function closeMatchStats() {
     if (section) section.classList.add('hidden');
 }
 
-// Build connect command string for a live game
+// Build connect command string for a live game (CS2 only)
 function buildConnectCmd(game) {
+    var gameType = (typeof _tournamentGameType !== 'undefined') ? _tournamentGameType : 'cs2';
+    if (gameType && gameType !== 'cs2') return '';
     var ip = (typeof _serverIP !== 'undefined') ? _serverIP : '';
     var pw = (typeof _serverPassword !== 'undefined') ? _serverPassword : '';
     if (!ip || !game.port) return '';
@@ -255,62 +286,41 @@ function renderPublicTeams(teams, teamSize, canRegister, status) {
 
 // ── Bracket Live Updates via WebSocket ──
 
-var _bracketWS = null;
-var _bracketRetries = 0;
 var _lastBracketJSON = '';
 var _lastTournamentStatus = '';
 function connectBracketWS() {
     // No live updates for completed tournaments
     if (typeof _tournamentStatus !== 'undefined' && _tournamentStatus === 'completed') return;
 
-    if (_bracketWS) { try { _bracketWS.close(); } catch(e) {} }
+    var topic = 'bracket:' + ((typeof _tournamentID !== 'undefined' && _tournamentID) ? _tournamentID : '0');
 
-    var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var wsPath = '/ws';
-    if (typeof _tournamentID !== 'undefined' && _tournamentID) {
-        wsPath = '/tournament/' + _tournamentID + '/ws';
-    }
-    var ws = new WebSocket(protocol + '//' + location.host + wsPath);
-    _bracketWS = ws;
+    Page.subscribe(topic, function(data) {
+        if (data.type === 'bracket') {
+            // If tournament status changed, reload to get new page structure
+            if (_lastTournamentStatus && data.status && data.status !== _lastTournamentStatus) {
+                location.reload();
+                return;
+            }
+            if (data.status) _lastTournamentStatus = data.status;
 
-    ws.onmessage = function(e) {
-        try {
-            _bracketRetries = 0;
-            var data = JSON.parse(e.data);
-            if (data.type === 'bracket') {
-                // If tournament status changed, reload to get new page structure
-                if (_lastTournamentStatus && data.status && data.status !== _lastTournamentStatus) {
-                    location.reload();
-                    return;
-                }
-                if (data.status) _lastTournamentStatus = data.status;
-
-                // Update bracket if data changed
-                if (data.bracket) {
-                    var key = JSON.stringify(data.bracket);
-                    if (key !== _lastBracketJSON) {
-                        _lastBracketJSON = key;
-                        var container = document.querySelector('.bracket-container');
-                        if (container) renderPublicBracket(data.bracket);
-                    }
-                }
-
-                // Update teams
-                if (data.teams !== undefined) {
-                    var ts = (typeof _teamSize !== 'undefined') ? _teamSize : (data.teamSize || 5);
-                    var cr = data.canRegister || false;
-                    var st = data.status || '';
-                    renderPublicTeams(data.teams, ts, cr, st);
+            // Update bracket if data changed
+            if (data.bracket) {
+                var key = JSON.stringify(data.bracket) + JSON.stringify(data.standings || []);
+                if (key !== _lastBracketJSON) {
+                    _lastBracketJSON = key;
+                    var container = document.querySelector('.bracket-container');
+                    if (container) renderPublicBracket(data.bracket, data.standings);
                 }
             }
-        } catch(err) { console.error('[bracket-ws] error:', err); }
-    };
 
-    ws.onclose = function() {
-        _bracketWS = null;
-        var delay = Math.min(5000 * Math.pow(2, _bracketRetries), 60000);
-        _bracketRetries++;
-        setTimeout(connectBracketWS, delay);
-    };
+            // Update teams
+            if (data.teams !== undefined) {
+                var ts = (typeof _teamSize !== 'undefined') ? _teamSize : (data.teamSize || 5);
+                var cr = data.canRegister || false;
+                var st = data.status || '';
+                renderPublicTeams(data.teams, ts, cr, st);
+            }
+        }
+    });
 }
 

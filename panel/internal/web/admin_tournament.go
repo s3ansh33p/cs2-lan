@@ -34,7 +34,7 @@ func (h *Handler) AdminTournament(w http.ResponseWriter, r *http.Request) {
 
 	hidden, _ := h.db.ListHiddenTournaments()
 
-	h.render(w, "admin_tournament.html", map[string]any{
+	h.renderPage(w, r, "admin_tournament.html", map[string]any{
 		"Title":       "Tournaments",
 		"Tournaments": tournaments,
 		"Deleted":     deleted,
@@ -61,11 +61,17 @@ func (h *Handler) AdminTournamentDetail(w http.ResponseWriter, r *http.Request) 
 	bracket, _ := h.db.GetBracket(tournament.ID)
 	activeID, _ := h.db.GetActiveTournamentID()
 
-	h.render(w, "admin_tournament.html", map[string]any{
+	var standings []db.GroupStanding
+	if tournament.BracketFormat == "round_robin" || tournament.BracketFormat == "hybrid" {
+		standings, _ = h.db.GetGroupStandings(tournament.ID)
+	}
+
+	h.renderPage(w, r, "admin_tournament.html", map[string]any{
 		"Title":      tournament.Name,
 		"Tournament": tournament,
 		"Teams":      teams,
 		"Bracket":    bracket,
+		"Standings":  standings,
 		"IsActive":   tournament.ID == activeID,
 		"IsHidden":   tournament.HiddenAt != nil,
 		"ActiveID":   activeID,
@@ -85,10 +91,18 @@ func (h *Handler) CreateTournament(w http.ResponseWriter, r *http.Request) {
 	if gameMode == "" {
 		gameMode = "competitive"
 	}
+	gameType := r.FormValue("game_type")
+	if gameType == "other" {
+		gameType = sanitize(r.FormValue("game_type_custom"))
+	}
+	if gameType == "" {
+		gameType = "cs2"
+	}
+	bracketFormat := r.FormValue("bracket_format")
 	serverIP := r.FormValue("server_ip")
 	serverPassword := r.FormValue("server_password")
 
-	t, err := h.db.CreateTournament(name, teamSize, gameMode, serverIP, serverPassword)
+	t, err := h.db.CreateTournament(name, teamSize, gameMode, gameType, bracketFormat, serverIP, serverPassword)
 	if err != nil {
 		slog.Error("tournament: create failed", "err", err)
 		http.Error(w, "Failed to create tournament", http.StatusInternalServerError)
@@ -96,7 +110,7 @@ func (h *Handler) CreateTournament(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("tournament: created", "id", t.ID, "name", name)
-	h.tournamentListBcast.notify()
+	h.notifyTournamentList(t.ID)
 	http.Redirect(w, r, adminTournamentRedirect(t.ID), http.StatusSeeOther)
 }
 
@@ -122,8 +136,29 @@ func (h *Handler) UpdateTournament(w http.ResponseWriter, r *http.Request) {
 	if gameMode == "" {
 		gameMode = tournament.GameMode
 	}
+	gameType := r.FormValue("game_type")
+	if gameType == "other" {
+		gameType = sanitize(r.FormValue("game_type_custom"))
+	}
+	if gameType == "" {
+		gameType = tournament.GameType
+	}
+	bracketFormat := r.FormValue("bracket_format")
+	if bracketFormat == "" {
+		bracketFormat = tournament.BracketFormat
+	}
 	serverIP := r.FormValue("server_ip")
 	serverPassword := r.FormValue("server_password")
+	vetoFormat := sanitize(r.FormValue("veto_format"))
+
+	groupCount, _ := strconv.Atoi(r.FormValue("bracket_group_count"))
+	advanceCount, _ := strconv.Atoi(r.FormValue("bracket_advance_count"))
+	if advanceCount <= 0 {
+		advanceCount = tournament.BracketAdvanceCount
+	}
+	if advanceCount <= 0 {
+		advanceCount = 2
+	}
 
 	var regOpen, regClose *time.Time
 	if v := r.FormValue("registration_open"); v != "" {
@@ -139,12 +174,12 @@ func (h *Handler) UpdateTournament(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.db.UpdateTournament(tid, name, teamSize, gameMode, regOpen, regClose, serverIP, serverPassword); err != nil {
+	if err := h.db.UpdateTournament(tid, name, teamSize, gameMode, gameType, bracketFormat, vetoFormat, regOpen, regClose, serverIP, serverPassword, groupCount, advanceCount); err != nil {
 		slog.Error("tournament: update failed", "id", tid, "err", err)
 	} else {
 		slog.Info("tournament: updated", "id", tid)
 	}
-	h.tournamentListBcast.notify()
+	h.notifyTournamentList(tid)
 
 	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 }
@@ -161,9 +196,9 @@ func (h *Handler) tournamentAction(w http.ResponseWriter, r *http.Request, actio
 		slog.Info("tournament: "+label, "id", tid)
 	}
 	if doBracket {
-		h.notifyBracket()
+		h.notifyBracket(tid)
 	}
-	h.tournamentListBcast.notify()
+	h.notifyTournamentList(tid)
 	if isAJAX(r) {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -210,8 +245,8 @@ func (h *Handler) SetTournamentStatus(w http.ResponseWriter, r *http.Request) {
 	} else {
 		slog.Info("tournament: status", "id", tid, "status", status)
 	}
-	h.notifyBracket()
-	h.tournamentListBcast.notify()
+	h.notifyBracket(tid)
+	h.notifyTournamentList(tid)
 	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 }
 
@@ -226,8 +261,8 @@ func (h *Handler) SetActiveTournament(w http.ResponseWriter, r *http.Request) {
 	} else {
 		slog.Info("tournament: set active", "id", tid)
 	}
-	h.notifyBracket()
-	h.tournamentListBcast.notify()
+	h.notifyBracket(tid)
+	h.notifyTournamentList(tid)
 	if isAJAX(r) {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -261,7 +296,7 @@ func (h *Handler) AdminCreateTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("team: created", "id", teamID, "name", name, "tournament", tid)
-	h.notifyBracket()
+	h.notifyBracket(tid)
 	if isAJAX(r) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"id": teamID, "name": name})
@@ -282,7 +317,7 @@ func (h *Handler) AdminDeleteTeam(w http.ResponseWriter, r *http.Request) {
 	} else {
 		slog.Info("team: deleted", "id", id, "tournament", tid)
 	}
-	h.notifyBracket()
+	h.notifyBracket(tid)
 	if isAJAX(r) {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -317,7 +352,7 @@ func (h *Handler) AdminAddMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("team: member added", "team", teamID, "member", mid, "name", steamName)
-	h.notifyBracket()
+	h.notifyBracket(tid)
 	if isAJAX(r) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
@@ -342,7 +377,7 @@ func (h *Handler) AdminRemoveMember(w http.ResponseWriter, r *http.Request) {
 	} else {
 		slog.Info("team: member removed", "member", id)
 	}
-	h.notifyBracket()
+	h.notifyBracket(tid)
 	if isAJAX(r) {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -371,7 +406,7 @@ func (h *Handler) AdminRenameTeam(w http.ResponseWriter, r *http.Request) {
 	} else {
 		slog.Info("team: renamed", "id", teamID, "name", name)
 	}
-	h.notifyBracket()
+	h.notifyBracket(tid)
 	if isAJAX(r) {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -396,7 +431,7 @@ func (h *Handler) AdminDeleteBracket(w http.ResponseWriter, r *http.Request) {
 	} else {
 		slog.Info("bracket: deleted", "tournament", tid)
 	}
-	h.notifyBracket()
+	h.notifyBracket(tid)
 	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 }
 
@@ -436,14 +471,60 @@ func (h *Handler) AdminSeedBracket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.db.GenerateBracket(tid, teamIDs); err != nil {
-		slog.Error("bracket: seed failed", "tournament", tid, "err", err)
+	// Choose bracket generation based on tournament format
+	tournament, err := h.db.GetTournamentByID(tid)
+	if err != nil || tournament == nil {
+		http.Error(w, "Tournament not found", http.StatusNotFound)
+		return
+	}
+
+	switch tournament.BracketFormat {
+	case "double_elim":
+		err = h.db.GenerateDoubleElimBracket(tid, teamIDs)
+	case "round_robin":
+		groupCount, _ := strconv.Atoi(r.FormValue("group_count"))
+		err = h.db.GenerateRoundRobin(tid, teamIDs, groupCount)
+	case "hybrid":
+		groupCount, _ := strconv.Atoi(r.FormValue("group_count"))
+		advanceCount, _ := strconv.Atoi(r.FormValue("advance_count"))
+		if advanceCount <= 0 {
+			advanceCount = 2
+		}
+		err = h.db.GenerateHybridBracket(tid, teamIDs, groupCount, advanceCount)
+	default:
+		err = h.db.GenerateBracket(tid, teamIDs)
+	}
+	if err != nil {
+		slog.Error("bracket: seed failed", "tournament", tid, "format", tournament.BracketFormat, "err", err)
 		http.Error(w, "Failed to generate bracket: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	slog.Info("bracket: seeded", "tournament", tid, "teams", len(teamIDs))
-	h.notifyBracket()
+	slog.Info("bracket: seeded", "tournament", tid, "format", tournament.BracketFormat, "teams", len(teamIDs))
+	h.notifyBracket(tid)
+	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
+}
+
+func (h *Handler) AdminGeneratePlayoffs(w http.ResponseWriter, r *http.Request) {
+	tid, err := parseTID(r)
+	if err != nil {
+		http.Error(w, "Invalid tournament ID", http.StatusBadRequest)
+		return
+	}
+
+	playoffFormat := r.FormValue("playoff_format")
+	if playoffFormat != "double_elim" {
+		playoffFormat = "single_elim"
+	}
+
+	if err := h.db.GeneratePlayoffBracket(tid, playoffFormat); err != nil {
+		slog.Error("bracket: generate playoffs failed", "tournament", tid, "err", err)
+		http.Error(w, "Failed to generate playoffs: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("bracket: playoffs generated", "tournament", tid, "format", playoffFormat)
+	h.notifyBracket(tid)
 	http.Redirect(w, r, adminTournamentRedirect(tid), http.StatusSeeOther)
 }
 
@@ -485,6 +566,7 @@ func (h *Handler) AdminSetWinner(w http.ResponseWriter, r *http.Request) {
 	} else {
 		slog.Info("bracket: winner set", "match", matchID, "winner", winnerID)
 	}
+	h.updateGroupStandingsIfNeeded(matchID)
 	h.notifyBracket()
 	if isAJAX(r) {
 		w.WriteHeader(http.StatusOK)
@@ -504,12 +586,27 @@ func (h *Handler) AdminClearWinner(w http.ResponseWriter, r *http.Request) {
 	} else {
 		slog.Info("bracket: winner cleared", "match", matchID)
 	}
+	h.updateGroupStandingsIfNeeded(matchID)
 	h.notifyBracket()
 	if isAJAX(r) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 	http.Redirect(w, r, "/admin/tournament", http.StatusSeeOther)
+}
+
+// updateGroupStandingsIfNeeded recalculates group standings if the match belongs to a round-robin group.
+func (h *Handler) updateGroupStandingsIfNeeded(matchID int64) {
+	match, err := h.db.GetMatchByID(matchID)
+	if err != nil || match == nil {
+		return
+	}
+	if match.BracketSection != "group" {
+		return
+	}
+	if err := h.db.UpdateGroupStandings(match.TournamentID, match.GroupID); err != nil {
+		slog.Error("standings: update failed", "tournament", match.TournamentID, "group", match.GroupID, "err", err)
+	}
 }
 
 func (h *Handler) AdminCreateGame(w http.ResponseWriter, r *http.Request) {
@@ -721,6 +818,16 @@ func (h *Handler) AdminTournamentDetailWS(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) sendTournamentDetail(conn *websocket.Conn, tid int64) error {
+	data := h.buildTournamentDetailJSON(tid)
+	if data == nil {
+		return nil
+	}
+	conn.SetWriteDeadline(time.Now().Add(writeWait))
+	return conn.WriteMessage(websocket.TextMessage, data)
+}
+
+// buildTournamentDetailJSON builds tournament detail JSON for a specific tournament.
+func (h *Handler) buildTournamentDetailJSON(tid int64) []byte {
 	tournament, err := h.db.GetTournamentByID(tid)
 	if err != nil || tournament == nil {
 		return nil
@@ -735,11 +842,19 @@ func (h *Handler) sendTournamentDetail(conn *websocket.Conn, tid int64) error {
 		regClose = tournament.RegistrationClose.Format("2006-01-02T15:04")
 	}
 
+	bracketFormat := tournament.BracketFormat
+	if bracketFormat == "" {
+		bracketFormat = "single_elim"
+	}
+
 	msg := struct {
 		Type              string `json:"type"`
 		Name              string `json:"name"`
 		TeamSize          int    `json:"teamSize"`
 		GameMode          string `json:"gameMode"`
+		GameType          string `json:"gameType"`
+		BracketFormat     string `json:"bracketFormat"`
+		VetoFormat        string `json:"vetoFormat"`
 		Status            string `json:"status"`
 		Hidden            bool   `json:"hidden"`
 		Active            bool   `json:"active"`
@@ -752,6 +867,9 @@ func (h *Handler) sendTournamentDetail(conn *websocket.Conn, tid int64) error {
 		Name:              html.EscapeString(tournament.Name),
 		TeamSize:          tournament.TeamSize,
 		GameMode:          tournament.GameMode,
+		GameType:          tournament.GameType,
+		BracketFormat:     bracketFormat,
+		VetoFormat:        tournament.VetoFormat,
 		Status:            tournament.Status,
 		Hidden:            tournament.HiddenAt != nil,
 		Active:            tournament.ID == activeID,
@@ -761,8 +879,8 @@ func (h *Handler) sendTournamentDetail(conn *websocket.Conn, tid int64) error {
 		ServerPassword:    tournament.ServerPassword,
 	}
 
-	conn.SetWriteDeadline(time.Now().Add(writeWait))
-	return conn.WriteJSON(msg)
+	data, _ := json.Marshal(msg)
+	return data
 }
 
 // AdminTournamentListWS pushes tournament list updates to admin clients.
@@ -799,7 +917,182 @@ func (h *Handler) AdminTournamentListWS(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// AdminRemapPlayer remaps an unmatched player stat to a roster member.
+func (h *Handler) AdminRemapPlayer(w http.ResponseWriter, r *http.Request) {
+	matchID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid match ID", http.StatusBadRequest)
+		return
+	}
+	gameID, err := strconv.ParseInt(r.PathValue("gid"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid game ID", http.StatusBadRequest)
+		return
+	}
+	originalName := r.FormValue("original_name")
+	targetMember := r.FormValue("target_member")
+	if originalName == "" || targetMember == "" {
+		http.Error(w, "Missing original_name or target_member", http.StatusBadRequest)
+		return
+	}
+
+	match, err := h.db.GetMatchByID(matchID)
+	if err != nil {
+		http.Error(w, "Match not found", http.StatusNotFound)
+		return
+	}
+
+	// Determine which team the target member belongs to
+	var teamID int64
+	if match.Team1ID != nil {
+		members, _ := h.db.ListMembers(*match.Team1ID)
+		for _, m := range members {
+			if strings.EqualFold(m.SteamName, targetMember) {
+				teamID = *match.Team1ID
+				break
+			}
+		}
+	}
+	if teamID == 0 && match.Team2ID != nil {
+		members, _ := h.db.ListMembers(*match.Team2ID)
+		for _, m := range members {
+			if strings.EqualFold(m.SteamName, targetMember) {
+				teamID = *match.Team2ID
+				break
+			}
+		}
+	}
+	if teamID == 0 {
+		http.Error(w, "Target member not found in either team roster", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.db.RemapPlayerStat(gameID, originalName, targetMember, teamID); err != nil {
+		slog.Error("remap: failed", "game", gameID, "original", originalName, "target", targetMember, "err", err)
+		http.Error(w, "Remap failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("remap: success", "game", gameID, "original", originalName, "target", targetMember, "team", teamID)
+	h.notifyBracket()
+
+	if isAJAX(r) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/admin/tournament"), http.StatusSeeOther)
+}
+
+// AdminGameStatsAdmin returns HTML with all player stats (matched + unmatched) for admin view.
+func (h *Handler) AdminGameStatsAdmin(w http.ResponseWriter, r *http.Request) {
+	matchID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid match ID", http.StatusBadRequest)
+		return
+	}
+	gameID, err := strconv.ParseInt(r.PathValue("gid"), 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid game ID", http.StatusBadRequest)
+		return
+	}
+
+	stats, _ := h.db.GetGameStatsAdmin(gameID)
+
+	match, err := h.db.GetMatchByID(matchID)
+	if err != nil {
+		http.Error(w, "Match not found", http.StatusNotFound)
+		return
+	}
+
+	// Collect all roster members for both teams
+	type rosterMember struct {
+		Name   string
+		TeamID int64
+	}
+	var roster []rosterMember
+	if match.Team1ID != nil {
+		members, _ := h.db.ListMembers(*match.Team1ID)
+		for _, m := range members {
+			roster = append(roster, rosterMember{Name: m.SteamName, TeamID: *match.Team1ID})
+		}
+	}
+	if match.Team2ID != nil {
+		members, _ := h.db.ListMembers(*match.Team2ID)
+		for _, m := range members {
+			roster = append(roster, rosterMember{Name: m.SteamName, TeamID: *match.Team2ID})
+		}
+	}
+
+	// Build set of already-matched player names
+	matchedNames := make(map[string]bool)
+	for _, s := range stats {
+		if s.Matched {
+			matchedNames[strings.ToLower(s.PlayerName)] = true
+		}
+	}
+
+	// Find unmatched stats
+	var unmatched []db.PlayerStat
+	for _, s := range stats {
+		if !s.Matched {
+			unmatched = append(unmatched, s)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	type unmatchedJSON struct {
+		OriginalName string  `json:"originalName"`
+		TeamID       int64   `json:"teamId"`
+		Kills        int     `json:"kills"`
+		Deaths       int     `json:"deaths"`
+		Assists      int     `json:"assists"`
+		HSPercent    float64 `json:"hsPercent"`
+		KDR          float64 `json:"kdr"`
+		ADR          float64 `json:"adr"`
+	}
+	type rosterJSON struct {
+		Name   string `json:"name"`
+		TeamID int64  `json:"teamId"`
+	}
+	type response struct {
+		Unmatched []unmatchedJSON `json:"unmatched"`
+		Roster    []rosterJSON    `json:"roster"`
+	}
+
+	resp := response{}
+	for _, s := range unmatched {
+		resp.Unmatched = append(resp.Unmatched, unmatchedJSON{
+			OriginalName: s.OriginalName,
+			TeamID:       s.TeamID,
+			Kills:        s.Kills,
+			Deaths:       s.Deaths,
+			Assists:      s.Assists,
+			HSPercent:    s.HSPercent,
+			KDR:          s.KDR,
+			ADR:          s.ADR,
+		})
+	}
+	for _, rm := range roster {
+		if !matchedNames[strings.ToLower(rm.Name)] {
+			resp.Roster = append(resp.Roster, rosterJSON{Name: rm.Name, TeamID: rm.TeamID})
+		}
+	}
+
+	json.NewEncoder(w).Encode(resp)
+}
+
 func (h *Handler) sendTournamentList(conn *websocket.Conn) error {
+	data := h.buildTournamentListJSON()
+	if data == nil {
+		return nil
+	}
+	conn.SetWriteDeadline(time.Now().Add(writeWait))
+	return conn.WriteMessage(websocket.TextMessage, data)
+}
+
+// buildTournamentListJSON builds the tournament list JSON for admin clients.
+func (h *Handler) buildTournamentListJSON() []byte {
 	tournaments, _ := h.db.ListTournaments()
 	deleted, _ := h.db.ListDeletedTournaments()
 	hidden, _ := h.db.ListHiddenTournaments()
@@ -811,13 +1104,14 @@ func (h *Handler) sendTournamentList(conn *websocket.Conn) error {
 		Status    string `json:"status"`
 		TeamSize  int    `json:"teamSize"`
 		GameMode  string `json:"gameMode"`
+		GameType  string `json:"gameType"`
 		CreatedAt string `json:"createdAt"`
 	}
 
 	toJSON := func(t []db.Tournament) []tournamentJSON {
 		out := make([]tournamentJSON, len(t))
 		for i, v := range t {
-			out[i] = tournamentJSON{ID: v.ID, Name: html.EscapeString(v.Name), Status: v.Status, TeamSize: v.TeamSize, GameMode: v.GameMode, CreatedAt: v.CreatedAt.Format("Jan 2, 2006")}
+			out[i] = tournamentJSON{ID: v.ID, Name: html.EscapeString(v.Name), Status: v.Status, TeamSize: v.TeamSize, GameMode: v.GameMode, GameType: v.GameType, CreatedAt: v.CreatedAt.Format("Jan 2, 2006")}
 		}
 		return out
 	}
@@ -836,6 +1130,29 @@ func (h *Handler) sendTournamentList(conn *websocket.Conn) error {
 		ActiveID:    activeID,
 	}
 
-	conn.SetWriteDeadline(time.Now().Add(writeWait))
-	return conn.WriteJSON(msg)
+	data, _ := json.Marshal(msg)
+	return data
+}
+
+// notifyTournamentList broadcasts tournament list updates via both the old broadcaster and the unified hub.
+func (h *Handler) notifyTournamentList(tournamentIDs ...int64) {
+	h.tournamentListBcast.notify()
+
+	if h.hub == nil {
+		return
+	}
+
+	data := h.buildTournamentListJSON()
+	if data != nil {
+		h.hub.Publish("tournaments", "tournament_list", json.RawMessage(data))
+	}
+
+	// Publish detail updates for the specific tournaments that changed.
+	// This avoids relying on ListTournaments() which filters out hidden/deleted entries.
+	for _, tid := range tournamentIDs {
+		detail := h.buildTournamentDetailJSON(tid)
+		if detail != nil {
+			h.hub.Publish(fmt.Sprintf("tournament:%d", tid), "tournament_detail", json.RawMessage(detail))
+		}
+	}
 }

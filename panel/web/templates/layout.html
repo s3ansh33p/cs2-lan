@@ -12,6 +12,7 @@
     <link rel="icon" type="image/x-icon" href="/static/favicon/favicon.ico">
     <link rel="manifest" href="/static/favicon/site.webmanifest">
     <script src="/static/htmx.min.js"></script>
+    <script src="/static/wshub.js"></script>
     <link rel="stylesheet" href="/static/tailwind.css">
     <style>
         body { background-color: #0f172a; }
@@ -23,19 +24,19 @@
 </head>
 <body class="bg-slate-900 text-slate-200 min-h-screen">
     {{block "nav" .}}
-    <nav class="bg-slate-800 border-b border-slate-700">
+    <nav class="bg-slate-800 border-b border-slate-700" hx-boost="true" hx-target="#main-content" hx-swap="innerHTML show:window:top" hx-push-url="true">
         <div class="px-4 sm:px-6 py-3 flex items-center justify-between">
             <div class="flex items-center gap-4 sm:gap-6">
-                <a href="/admin" class="text-lg font-bold text-orange-400 hover:text-orange-300">{{siteName}}</a>
+                <a href="/admin/" class="text-lg font-bold text-orange-400 hover:text-orange-300">{{siteName}}</a>
                 <div class="hidden sm:flex items-center gap-6">
-                    <a href="/admin" class="text-slate-300 hover:text-white text-sm">Dashboard</a>
+                    <a href="/admin/" class="text-slate-300 hover:text-white text-sm">Dashboard</a>
                     <a href="/admin/launch" class="text-slate-300 hover:text-white text-sm">Launch Server</a>
                     <a href="/admin/tournament" class="text-slate-300 hover:text-white text-sm">Tournament</a>
                     <a href="/admin/schedule" class="text-slate-300 hover:text-white text-sm">Schedule</a>
                     <a href="/admin/settings" class="text-slate-300 hover:text-white text-sm">Settings</a>
                 </div>
             </div>
-            <form method="POST" action="/logout" class="hidden sm:block">
+            <form method="POST" action="/logout" hx-boost="false" class="hidden sm:block">
                 <button type="submit" class="text-slate-400 hover:text-white text-sm">Logout</button>
             </form>
             <button onclick="this.closest('nav').querySelector('#mobile-menu').classList.toggle('hidden')" class="sm:hidden text-slate-400 hover:text-white cursor-pointer" aria-label="Menu">
@@ -43,12 +44,12 @@
             </button>
         </div>
         <div id="mobile-menu" class="hidden sm:hidden border-t border-slate-700 px-4 py-2 space-y-1">
-            <a href="/admin" class="block py-2 text-slate-300 hover:text-white text-sm">Dashboard</a>
+            <a href="/admin/" class="block py-2 text-slate-300 hover:text-white text-sm">Dashboard</a>
             <a href="/admin/launch" class="block py-2 text-slate-300 hover:text-white text-sm">Launch Server</a>
             <a href="/admin/tournament" class="block py-2 text-slate-300 hover:text-white text-sm">Tournament</a>
             <a href="/admin/schedule" class="block py-2 text-slate-300 hover:text-white text-sm">Schedule</a>
             <a href="/admin/settings" class="block py-2 text-slate-300 hover:text-white text-sm">Settings</a>
-            <form method="POST" action="/logout" class="pt-1 border-t border-slate-700">
+            <form method="POST" action="/logout" hx-boost="false" class="pt-1 border-t border-slate-700">
                 <button type="submit" class="block w-full text-left py-2 text-slate-400 hover:text-white text-sm">Logout</button>
             </form>
         </div>
@@ -56,9 +57,9 @@
     {{end}}
     {{template "announce" .}}
 
-    {{block "scripts" .}}<script src="/static/bracket.js"></script><script src="/static/admin.js"></script>{{end}}
+    {{block "scripts" .}}<script src="/static/bracket.js"></script><script src="/static/admin.js"></script><script src="/static/schedule_common.js"></script><script src="/static/schedule_admin.js"></script>{{end}}
 
-    <main class="max-w-7xl mx-auto px-4 py-6">
+    <main id="main-content" class="max-w-7xl mx-auto px-4 py-6" hx-boost="true" hx-target="this" hx-swap="innerHTML show:window:top" hx-push-url="true">
         {{template "content" .}}
     </main>
 </body>

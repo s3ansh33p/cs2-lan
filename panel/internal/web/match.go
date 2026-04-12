@@ -1,10 +1,14 @@
 package web
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"unilan/internal/db"
@@ -154,7 +158,7 @@ func (h *Handler) handleGameOver(info gametracker.GameOverInfo) {
 		return
 	}
 
-	// Save player stats — map players to teams via steam names
+	// Save player stats — map players to teams via steam names, keep unmatched too
 	team1Names, team2Names := h.loadTeamNames(match)
 	var stats []db.PlayerStat
 	for _, p := range info.Players {
@@ -163,12 +167,31 @@ func (h *Handler) handleGameOver(info gametracker.GameOverInfo) {
 		}
 		nameLower := strings.ToLower(p.Name)
 		var teamID int64
+		var matched bool
+		var originalName string
 		if team1Names[nameLower] {
 			teamID = *match.Team1ID
+			matched = true
 		} else if team2Names[nameLower] {
 			teamID = *match.Team2ID
+			matched = true
 		} else {
-			continue
+			// Unmatched: determine team from CS2 side (CT/T) + game.Team1StartsCT
+			originalName = p.Name
+			isCT := p.Team == "CT"
+			if game.Team1StartsCT {
+				if isCT {
+					teamID = *match.Team1ID
+				} else {
+					teamID = *match.Team2ID
+				}
+			} else {
+				if isCT {
+					teamID = *match.Team2ID
+				} else {
+					teamID = *match.Team1ID
+				}
+			}
 		}
 
 		hsp, kdr := computeHSPKDR(p.Kills, p.Deaths, p.HeadshotKills, p.HSPercent, p.KDR)
@@ -177,6 +200,7 @@ func (h *Handler) handleGameOver(info gametracker.GameOverInfo) {
 			GameID: game.ID, TeamID: teamID, PlayerName: p.Name,
 			Kills: p.Kills, Deaths: p.Deaths, Assists: p.Assists,
 			HSPercent: hsp, KDR: kdr, ADR: p.ADR, MVPs: p.MVPs, EF: p.EF, UD: p.UD,
+			OriginalName: originalName, Matched: matched,
 		})
 	}
 
@@ -216,6 +240,75 @@ func (h *Handler) handleGameOver(info gametracker.GameOverInfo) {
 	}
 
 	h.notifyBracket()
+
+	// Copy demo file from container in background (can be large)
+	if game.ServerName != "" {
+		gameID := game.ID
+		serverName := game.ServerName
+		mapName := info.Score.CurrentMap
+		if mapName == "" {
+			mapName = game.MapName
+		}
+		go h.copyDemo(gameID, serverName, mapName)
+	}
+}
+
+// copyDemo copies the newest .dem file from a CS2 server container to the local demos/ directory.
+func (h *Handler) copyDemo(gameID int64, serverName, mapName string) {
+	ctx := context.Background()
+	containerName := "cs2-" + serverName
+	replayDir := "/home/steam/cs2-dedicated/game/csgo/replays/"
+
+	files, err := h.docker.ListContainerDir(ctx, containerName, replayDir)
+	if err != nil {
+		slog.Warn("demo: list replay dir", "server", serverName, "err", err)
+		return
+	}
+
+	// Filter for .dem files and pick the newest by name (they include timestamps)
+	var dems []string
+	for _, f := range files {
+		if strings.HasSuffix(f, ".dem") {
+			dems = append(dems, f)
+		}
+	}
+	if len(dems) == 0 {
+		slog.Info("demo: no .dem files found", "server", serverName)
+		return
+	}
+	sort.Strings(dems)
+	newest := dems[len(dems)-1]
+
+	// Ensure demos/ directory exists
+	if err := os.MkdirAll("demos", 0755); err != nil {
+		slog.Error("demo: create dir", "err", err)
+		return
+	}
+
+	// Copy from container
+	srcPath := replayDir + filepath.Base(newest)
+	localPath, err := h.docker.CopyFileFromContainer(ctx, containerName, srcPath, "demos")
+	if err != nil {
+		slog.Error("demo: copy from container", "server", serverName, "file", newest, "err", err)
+		return
+	}
+
+	// Rename to descriptive filename
+	safeName := strings.ReplaceAll(mapName, "/", "_")
+	dstName := fmt.Sprintf("game_%d_%s.dem", gameID, safeName)
+	dstPath := filepath.Join("demos", dstName)
+	if localPath != dstPath {
+		if err := os.Rename(localPath, dstPath); err != nil {
+			slog.Error("demo: rename", "from", localPath, "to", dstPath, "err", err)
+			dstPath = localPath // fall back to original path
+		}
+	}
+
+	if err := h.db.UpdateGameDemo(gameID, dstPath); err != nil {
+		slog.Error("demo: save path", "game", gameID, "err", err)
+		return
+	}
+	slog.Info("demo: saved", "game", gameID, "path", dstPath)
 }
 
 // handleRoundEnd updates live game scores after each round.
@@ -269,12 +362,17 @@ func (h *Handler) checkMatchDecided(match *db.Match, lastGameWinner int64) {
 		return
 	}
 
-	if match.BestOf == 1 {
-		if err := h.db.SetMatchWinner(match.ID, lastGameWinner); err != nil {
+	setWinner := func(winnerID int64) {
+		if err := h.db.SetMatchWinner(match.ID, winnerID); err != nil {
 			slog.Error("game-over: set winner", "match", match.ID, "err", err)
 		} else {
-			slog.Info("match: decided", "match", match.ID, "winner", lastGameWinner)
+			slog.Info("match: decided", "match", match.ID, "winner", winnerID)
 		}
+		h.updateGroupStandingsIfNeeded(match.ID)
+	}
+
+	if match.BestOf == 1 {
+		setWinner(lastGameWinner)
 		return
 	}
 
@@ -288,11 +386,7 @@ func (h *Handler) checkMatchDecided(match *db.Match, lastGameWinner int64) {
 	}
 	for teamID, w := range wins {
 		if w >= winsNeeded {
-			if err := h.db.SetMatchWinner(match.ID, teamID); err != nil {
-				slog.Error("game-over: set winner", "match", match.ID, "bestof", match.BestOf, "err", err)
-			} else {
-				slog.Info("match: decided", "match", match.ID, "winner", teamID, "bestof", match.BestOf)
-			}
+			setWinner(teamID)
 			return
 		}
 	}

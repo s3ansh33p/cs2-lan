@@ -41,6 +41,25 @@ func (db *DB) migrate() error {
 		`ALTER TABLE games ADD COLUMN half_round INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE tournament ADD COLUMN deleted_at DATETIME`,
 		`ALTER TABLE tournament ADD COLUMN hidden_at DATETIME`,
+
+		// Item 2: Multi-game tournament support
+		`ALTER TABLE tournament ADD COLUMN game_type TEXT NOT NULL DEFAULT 'cs2'`,
+
+		// Item 3: Bracket expansion
+		`ALTER TABLE tournament ADD COLUMN bracket_format TEXT NOT NULL DEFAULT 'single_elim'`,
+		`ALTER TABLE tournament ADD COLUMN bracket_group_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE tournament ADD COLUMN bracket_advance_count INTEGER NOT NULL DEFAULT 2`,
+		`ALTER TABLE tournament ADD COLUMN veto_format TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE matches ADD COLUMN bracket_section TEXT NOT NULL DEFAULT 'winners'`,
+		`ALTER TABLE matches ADD COLUMN group_id INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE matches ADD COLUMN loser_next_match_id INTEGER REFERENCES matches(id)`,
+
+		// Item 5: Demo file access
+		`ALTER TABLE games ADD COLUMN demo_path TEXT NOT NULL DEFAULT ''`,
+
+		// Item 6: Player name matching
+		`ALTER TABLE game_player_stats ADD COLUMN original_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE game_player_stats ADD COLUMN matched INTEGER NOT NULL DEFAULT 1`,
 	} {
 		db.Exec(q) // ignore errors (column already exists)
 	}
@@ -185,6 +204,50 @@ CREATE TABLE IF NOT EXISTS server_tracker_state (
 	is_paused INTEGER NOT NULL DEFAULT 0,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS map_vetoes (
+	id INTEGER PRIMARY KEY,
+	match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+	step INTEGER NOT NULL,
+	action TEXT NOT NULL,
+	team_id INTEGER REFERENCES teams(id),
+	map_name TEXT NOT NULL,
+	UNIQUE(match_id, step)
+);
+CREATE INDEX IF NOT EXISTS idx_map_vetoes_match ON map_vetoes(match_id);
+
+CREATE TABLE IF NOT EXISTS group_standings (
+	id INTEGER PRIMARY KEY,
+	tournament_id INTEGER NOT NULL REFERENCES tournament(id) ON DELETE CASCADE,
+	group_id INTEGER NOT NULL,
+	team_id INTEGER NOT NULL REFERENCES teams(id),
+	wins INTEGER NOT NULL DEFAULT 0,
+	losses INTEGER NOT NULL DEFAULT 0,
+	map_diff INTEGER NOT NULL DEFAULT 0,
+	round_diff INTEGER NOT NULL DEFAULT 0,
+	points INTEGER NOT NULL DEFAULT 0,
+	UNIQUE(tournament_id, group_id, team_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_standings_tournament ON group_standings(tournament_id);
+
+CREATE TABLE IF NOT EXISTS ready_state (
+	id INTEGER PRIMARY KEY,
+	game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+	server_name TEXT NOT NULL,
+	status TEXT NOT NULL DEFAULT 'waiting',
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	UNIQUE(game_id)
+);
+
+CREATE TABLE IF NOT EXISTS player_ready (
+	id INTEGER PRIMARY KEY,
+	ready_state_id INTEGER NOT NULL REFERENCES ready_state(id) ON DELETE CASCADE,
+	player_name TEXT NOT NULL,
+	team TEXT NOT NULL,
+	is_ready INTEGER NOT NULL DEFAULT 0,
+	UNIQUE(ready_state_id, player_name)
+);
+CREATE INDEX IF NOT EXISTS idx_player_ready_state ON player_ready(ready_state_id);
 `
 
 func (db *DB) LoadAliases() (map[string]string, error) {

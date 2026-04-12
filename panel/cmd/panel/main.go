@@ -56,6 +56,9 @@ func main() {
 	}
 	defer lf.Close()
 
+	// Ensure demos directory exists for demo file storage
+	os.MkdirAll("demos", 0755)
+
 	absCompose, err := filepath.Abs(*composeFile)
 	if err != nil {
 		slog.Error("resolve compose file", "err", err)

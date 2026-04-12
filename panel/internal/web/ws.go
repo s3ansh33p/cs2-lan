@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"unilan/internal/db"
 	"unilan/internal/docker"
 	"unilan/internal/gametracker"
 
@@ -326,6 +327,23 @@ type roundJSON struct {
 	Reason string `json:"rs"` // "elimination", "bomb", "defuse", "time"
 }
 
+// readyStateJSON holds the ready-up state for WebSocket push.
+type readyStateJSON struct {
+	Active  bool              `json:"active"`
+	Status  string            `json:"status,omitempty"`
+	CT      []readyPlayerJSON `json:"ct,omitempty"`
+	T       []readyPlayerJSON `json:"t,omitempty"`
+	CTReady int               `json:"ctReady"`
+	CTTotal int               `json:"ctTotal"`
+	TReady  int               `json:"tReady"`
+	TTotal  int               `json:"tTotal"`
+}
+
+type readyPlayerJSON struct {
+	Name    string `json:"name"`
+	IsReady bool   `json:"isReady"`
+}
+
 // sendPlayers sends a "players" message from tracker state (no RCON calls).
 func (h *Handler) sendPlayers(conn *websocket.Conn, name string) error {
 	players := buildPlayerList(name, h.tracker)
@@ -344,14 +362,67 @@ func (h *Handler) sendPlayers(conn *websocket.Conn, name string) error {
 		score = &scoreJSON{Round: round, CT: s.CT, T: s.T, GameMode: s.GameMode, Map: html.EscapeString(s.CurrentMap), Rounds: rounds, HalfRound: s.HalfRound, MaxRounds: s.MaxRounds, Warmup: s.InWarmup, Paused: s.IsPaused}
 	}
 
+	// Include ready state if active
+	var ready *readyStateJSON
+	if rs, err := h.db.GetReadyStateByServer(name); err == nil {
+		ready = h.buildReadyStateJSON(name, rs)
+	}
+
 	msg := struct {
 		Type    string           `json:"type"`
 		Players []gamePlayerJSON `json:"players"`
 		Score   *scoreJSON       `json:"score,omitempty"`
-	}{Type: "players", Players: players, Score: score}
+		Ready   *readyStateJSON  `json:"ready,omitempty"`
+	}{Type: "players", Players: players, Score: score, Ready: ready}
 
 	conn.SetWriteDeadline(time.Now().Add(writeWait))
 	return conn.WriteJSON(msg)
+}
+
+// buildReadyStateJSON builds the ready state JSON from a ReadyState record.
+func (h *Handler) buildReadyStateJSON(serverName string, rs *db.ReadyState) *readyStateJSON {
+	rj := &readyStateJSON{Active: true, Status: rs.Status}
+
+	players, _ := h.db.GetReadyPlayers(rs.ID)
+	readyMap := make(map[string]bool)
+	for _, p := range players {
+		readyMap[strings.ToLower(p.PlayerName)] = p.IsReady
+	}
+
+	game, err := h.db.GetGameByServer(serverName)
+	if err != nil {
+		game, _ = h.db.GetGameByServerAny(serverName)
+	}
+	if game == nil {
+		return rj
+	}
+
+	match, err := h.db.GetMatchByID(game.MatchID)
+	if err != nil {
+		return rj
+	}
+
+	roster := h.buildRoster(match, game.Team1StartsCT)
+	for _, rp := range roster {
+		pj := readyPlayerJSON{
+			Name:    rp.name,
+			IsReady: readyMap[strings.ToLower(rp.name)],
+		}
+		if rp.side == "CT" {
+			rj.CT = append(rj.CT, pj)
+			rj.CTTotal++
+			if pj.IsReady {
+				rj.CTReady++
+			}
+		} else {
+			rj.T = append(rj.T, pj)
+			rj.TTotal++
+			if pj.IsReady {
+				rj.TReady++
+			}
+		}
+	}
+	return rj
 }
 
 // buildPlayerList reads player data entirely from the tracker.

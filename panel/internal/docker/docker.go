@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"context"
@@ -9,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -264,6 +267,67 @@ func (c *Client) GetContainerStats(ctx context.Context, containerID string) (Con
 		MemUsageMB: memUsage,
 		MemLimitMB: memLimit,
 	}, nil
+}
+
+// CopyFileFromContainer copies a file from a container to a local directory.
+// It returns the full path of the written file.
+func (c *Client) CopyFileFromContainer(ctx context.Context, containerName, srcPath, dstDir string) (string, error) {
+	reader, _, err := c.docker.CopyFromContainer(ctx, containerName, srcPath)
+	if err != nil {
+		return "", fmt.Errorf("copy from container %s: %w", containerName, err)
+	}
+	defer reader.Close()
+
+	tr := tar.NewReader(reader)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", fmt.Errorf("read tar: %w", err)
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+		dstPath := filepath.Join(dstDir, filepath.Base(hdr.Name))
+		f, err := os.Create(dstPath)
+		if err != nil {
+			return "", fmt.Errorf("create %s: %w", dstPath, err)
+		}
+		if _, err := io.Copy(f, tr); err != nil {
+			f.Close()
+			return "", fmt.Errorf("write %s: %w", dstPath, err)
+		}
+		f.Close()
+		return dstPath, nil
+	}
+	return "", fmt.Errorf("no file found in tar from %s:%s", containerName, srcPath)
+}
+
+// ListContainerDir returns filenames in a directory inside a container.
+func (c *Client) ListContainerDir(ctx context.Context, containerName, dirPath string) ([]string, error) {
+	reader, _, err := c.docker.CopyFromContainer(ctx, containerName, dirPath)
+	if err != nil {
+		return nil, fmt.Errorf("copy dir from container %s: %w", containerName, err)
+	}
+	defer reader.Close()
+
+	var names []string
+	tr := tar.NewReader(reader)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read tar: %w", err)
+		}
+		if hdr.Typeflag == tar.TypeReg {
+			names = append(names, hdr.Name)
+		}
+	}
+	return names, nil
 }
 
 func parseEnvVars(env []string) map[string]string {

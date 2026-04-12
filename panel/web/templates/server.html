@@ -1,7 +1,7 @@
 {{define "content"}}
 <div class="mb-4">
     <div class="flex items-center gap-2 mb-2">
-        <a href="/admin" class="text-slate-400 hover:text-white text-sm">&larr; Dashboard</a>
+        <a href="/admin/" class="text-slate-400 hover:text-white text-sm">&larr; Dashboard</a>
         <span class="text-slate-600 text-sm">&middot;</span>
         <span class="text-slate-500 text-sm font-mono">:{{.Server.Port}}</span>
     </div>
@@ -14,6 +14,16 @@
             <span id="server-status" class="hidden text-xs font-medium rounded px-2 py-0.5"></span>
         </div>
         <div class="flex gap-2">
+            {{if .HasLinkedGame}}
+            <button id="restart-match-btn" onclick="restartMatch('{{.Server.Name}}')"
+                class="bg-purple-600 hover:bg-purple-700 text-white font-medium rounded px-4 py-2 text-sm transition-colors">
+                Restart Match
+            </button>
+            <button id="force-start-btn" onclick="forceStart('{{.Server.Name}}')"
+                class="hidden bg-yellow-600 hover:bg-yellow-700 text-white font-medium rounded px-4 py-2 text-sm transition-colors">
+                Force Start
+            </button>
+            {{end}}
             <button hx-post="/admin/server/{{.Server.Name}}/restart" hx-confirm="Restart server {{.Server.Name}}?"
                 class="bg-orange-600 hover:bg-orange-700 text-white font-medium rounded px-4 py-2 text-sm transition-colors">
                 Restart
@@ -51,6 +61,30 @@
         </div>
     </div>
     <div id="round-history" class="hidden mt-3 px-2 pb-2"></div>
+</div>
+
+<!-- Ready-Up Panel (shown when ready state is active) -->
+<div id="ready-panel" class="hidden bg-slate-800 border border-purple-500/50 rounded-lg p-4 mb-4">
+    <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+            <span class="text-purple-400 font-medium text-sm">Ready Up</span>
+            <span id="ready-status-badge" class="text-xs rounded px-2 py-0.5 bg-purple-500/20 text-purple-300">Waiting</span>
+        </div>
+        <div class="flex items-center gap-3 text-xs text-slate-400">
+            <span>CT: <span id="ready-ct-count" class="text-blue-400 font-medium">0/0</span></span>
+            <span>T: <span id="ready-t-count" class="text-yellow-400 font-medium">0/0</span></span>
+        </div>
+    </div>
+    <div class="grid grid-cols-2 gap-4">
+        <div>
+            <div class="text-xs font-medium text-blue-400 mb-2">Counter-Terrorists</div>
+            <div id="ready-ct-players" class="space-y-1"></div>
+        </div>
+        <div>
+            <div class="text-xs font-medium text-yellow-400 mb-2">Terrorists</div>
+            <div id="ready-t-players" class="space-y-1"></div>
+        </div>
+    </div>
 </div>
 
 <!-- Players -->
@@ -149,14 +183,18 @@
     var _team1Name = '{{.Team1Name}}';
     var _team2Name = '{{.Team2Name}}';
     var _team1StartsCT = {{if .Team1StartsCT}}true{{else}}false{{end}};
-    document.addEventListener('DOMContentLoaded', function() {
+    var _hasLinkedGame = {{if .HasLinkedGame}}true{{else}}false{{end}};
+    (function() {
         _currentGameMode = _initGameMode;
+        _serverStopped = false;
+        _serverRestarting = false;
         _rconServerName = '{{.Server.Name}}';
         if (_initScore) renderScore(_initScore);
         if (_initPlayers) renderPlayers(_initPlayers);
         initRconMapDropdown();
+        initRconAutocomplete();
         connectLogWS('{{.Server.Name}}');
         connectGameWS('{{.Server.Name}}');
-    });
+    })();
 </script>
 {{end}}

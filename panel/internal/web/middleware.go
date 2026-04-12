@@ -49,7 +49,12 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 			path = path + "?" + r.URL.RawQuery
 		}
 
-		slog.Info(fmt.Sprintf("http: %s %s %d %s", r.Method, path, rec.status, duration),
+		htmx := ""
+		if r.Header.Get("HX-Request") == "true" {
+			htmx = " [htmx]"
+		}
+
+		slog.Info(fmt.Sprintf("http: %s %s %d %s%s", r.Method, path, rec.status, duration, htmx),
 			"ip", r.RemoteAddr)
 	})
 }

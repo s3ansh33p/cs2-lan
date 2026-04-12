@@ -76,7 +76,7 @@
             class="bg-orange-500 hover:bg-orange-600 text-white font-medium rounded px-6 py-2 text-sm transition-colors">
             Launch
         </button>
-        <a href="/admin" class="bg-slate-700 hover:bg-slate-600 text-white font-medium rounded px-6 py-2 text-sm transition-colors">
+        <a href="/admin/" class="bg-slate-700 hover:bg-slate-600 text-white font-medium rounded px-6 py-2 text-sm transition-colors">
             Cancel
         </a>
     </div>
@@ -97,7 +97,7 @@ function updateMapOptions() {
         mapSelect.appendChild(opt);
     }
 }
-document.addEventListener('DOMContentLoaded', function() {
+(function() {
     // Pre-fill from query params (e.g. from bracket match launch)
     var params = new URLSearchParams(window.location.search);
     var fields = {name: 'name', port: 'port', mode: 'launch-mode', map: null, players: 'players', password: 'password'};
@@ -117,6 +117,6 @@ document.addEventListener('DOMContentLoaded', function() {
     var gameNum = params.get('game_number');
     if (matchId) document.getElementById('launch-match-id').value = matchId;
     if (gameNum) document.getElementById('launch-game-number').value = gameNum;
-});
+})();
 </script>
 {{end}}

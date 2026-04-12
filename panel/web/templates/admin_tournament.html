@@ -88,6 +88,20 @@
                     class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
             </div>
             <div>
+                <label class="block text-sm text-slate-400 mb-1">Game</label>
+                <select name="game_type" onchange="var c=this.closest('form').querySelector('.custom-game');if(c)c.style.display=this.value==='other'?'':'none'; var cs2=this.closest('form').querySelectorAll('.cs2-only');for(var i=0;i<cs2.length;i++)cs2[i].style.display=this.value==='cs2'?'':'none';"
+                    class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+                    <option value="cs2">CS2</option>
+                    <option value="valorant">Valorant</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
+            <div class="custom-game" style="display:none">
+                <label class="block text-sm text-slate-400 mb-1">Custom Game Name</label>
+                <input type="text" name="game_type_custom" placeholder="e.g. Overwatch"
+                    class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+            </div>
+            <div class="cs2-only">
                 <label class="block text-sm text-slate-400 mb-1">Game Mode</label>
                 <select name="game_mode"
                     class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
@@ -98,11 +112,21 @@
                 </select>
             </div>
             <div>
+                <label class="block text-sm text-slate-400 mb-1">Bracket Format</label>
+                <select name="bracket_format"
+                    class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+                    <option value="single_elim">Single Elimination</option>
+                    <option value="double_elim">Double Elimination</option>
+                    <option value="round_robin">Round Robin</option>
+                    <option value="hybrid">Hybrid (Groups + Playoffs)</option>
+                </select>
+            </div>
+            <div class="cs2-only">
                 <label class="block text-sm text-slate-400 mb-1">Server IP (shown to players for connect command)</label>
                 <input type="text" name="server_ip" placeholder="192.168.1.100"
                     class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
             </div>
-            <div>
+            <div class="cs2-only">
                 <label class="block text-sm text-slate-400 mb-1">Server Password (optional)</label>
                 <input type="text" name="server_password" placeholder=""
                     class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
@@ -182,24 +206,9 @@ function renderTournamentList(data) {
     trashEl.innerHTML = thtml;
 }
 
-var _tournamentListRetries = 0;
-function connectTournamentListWS() {
-    var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var ws = new WebSocket(protocol + '//' + location.host + '/admin/api/tournaments/ws');
-    ws.onmessage = function(e) {
-        try {
-            _tournamentListRetries = 0;
-            var data = JSON.parse(e.data);
-            if (data.type === 'tournament_list') renderTournamentList(data);
-        } catch(err) { console.error('[tournament-list-ws]', err); }
-    };
-    ws.onclose = function() {
-        var delay = Math.min(5000 * Math.pow(2, _tournamentListRetries), 60000);
-        _tournamentListRetries++;
-        setTimeout(connectTournamentListWS, delay);
-    };
-}
-connectTournamentListWS();
+Page.subscribe('tournaments', function(data) {
+    if (data.type === 'tournament_list') renderTournamentList(data);
+});
 </script>
 {{else}}
 
@@ -229,15 +238,56 @@ connectTournamentListWS();
                             class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
                     </div>
                 </div>
-                <div>
-                    <label class="block text-sm text-slate-400 mb-1">Game Mode</label>
-                    <select name="game_mode"
-                        class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
-                        <option value="competitive" {{if eq .Tournament.GameMode "competitive"}}selected{{end}}>Competitive</option>
-                        <option value="wingman" {{if eq .Tournament.GameMode "wingman"}}selected{{end}}>Wingman</option>
-                        <option value="casual" {{if eq .Tournament.GameMode "casual"}}selected{{end}}>Casual</option>
-                        <option value="deathmatch" {{if eq .Tournament.GameMode "deathmatch"}}selected{{end}}>Deathmatch</option>
-                    </select>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm text-slate-400 mb-1">Game</label>
+                        <select name="game_type" id="edit-game-type" onchange="toggleCS2Fields()"
+                            class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+                            <option value="cs2" {{if .Tournament.IsCS2}}selected{{end}}>CS2</option>
+                            <option value="valorant" {{if eq .Tournament.GameType "valorant"}}selected{{end}}>Valorant</option>
+                            <option value="other" {{if and (not .Tournament.IsCS2) (ne .Tournament.GameType "valorant")}}selected{{end}}>Other</option>
+                        </select>
+                    </div>
+                    <div id="edit-custom-game" style="{{if or .Tournament.IsCS2 (eq .Tournament.GameType "valorant")}}display:none{{end}}">
+                        <label class="block text-sm text-slate-400 mb-1">Custom Game Name</label>
+                        <input type="text" name="game_type_custom" value="{{if and (not .Tournament.IsCS2) (ne .Tournament.GameType "valorant")}}{{.Tournament.GameType}}{{end}}" placeholder="e.g. Overwatch"
+                            class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="edit-cs2-only" {{if not .Tournament.IsCS2}}style="display:none"{{end}}>
+                        <label class="block text-sm text-slate-400 mb-1">Game Mode</label>
+                        <select name="game_mode"
+                            class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+                            <option value="competitive" {{if eq .Tournament.GameMode "competitive"}}selected{{end}}>Competitive</option>
+                            <option value="wingman" {{if eq .Tournament.GameMode "wingman"}}selected{{end}}>Wingman</option>
+                            <option value="casual" {{if eq .Tournament.GameMode "casual"}}selected{{end}}>Casual</option>
+                            <option value="deathmatch" {{if eq .Tournament.GameMode "deathmatch"}}selected{{end}}>Deathmatch</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-slate-400 mb-1">Bracket Format</label>
+                        <select name="bracket_format" id="edit-bracket-format" onchange="_tournamentBracketFormat=this.value;if(typeof toggleGroupCountRow==='function')toggleGroupCountRow()"
+                            class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+                            <option value="single_elim" {{if eq .Tournament.BracketFormat "single_elim"}}selected{{end}}>Single Elimination</option>
+                            <option value="double_elim" {{if eq .Tournament.BracketFormat "double_elim"}}selected{{end}}>Double Elimination</option>
+                            <option value="round_robin" {{if eq .Tournament.BracketFormat "round_robin"}}selected{{end}}>Round Robin</option>
+                            <option value="hybrid" {{if eq .Tournament.BracketFormat "hybrid"}}selected{{end}}>Hybrid (Groups + Playoffs)</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="edit-hybrid-settings" class="grid grid-cols-2 gap-4" style="{{if ne .Tournament.BracketFormat "hybrid"}}display:none{{end}}">
+                    <div>
+                        <label class="block text-sm text-slate-400 mb-1">Number of Groups</label>
+                        <input type="number" name="bracket_group_count" value="{{.Tournament.BracketGroupCount}}" min="1" max="16"
+                            class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-slate-400 mb-1">Advance per Group</label>
+                        <input type="number" name="bracket_advance_count" value="{{if .Tournament.BracketAdvanceCount}}{{.Tournament.BracketAdvanceCount}}{{else}}2{{end}}" min="1" max="16"
+                            class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+                        <p class="text-xs text-slate-500 mt-1">Top N teams from each group advance to playoffs.</p>
+                    </div>
                 </div>
                 <div class="grid grid-cols-2 gap-4">
                     <div>
@@ -251,7 +301,13 @@ connectTournamentListWS();
                             class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
                     </div>
                 </div>
-                <div class="grid grid-cols-2 gap-4">
+                <div class="edit-cs2-only" {{if not .Tournament.IsCS2}}style="display:none"{{end}}>
+                    <label class="block text-sm text-slate-400 mb-1">Map Veto Format</label>
+                    <input type="text" name="veto_format" value="{{.Tournament.VetoFormat}}" placeholder="ban,ban,pick,pick,ban,ban,last"
+                        class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+                    <p class="text-xs text-slate-500 mt-1">Comma-separated sequence for Bo3. Leave empty for default (ban,ban,pick,pick,ban,ban,last).</p>
+                </div>
+                <div class="grid grid-cols-2 gap-4 edit-cs2-only" {{if not .Tournament.IsCS2}}style="display:none"{{end}}>
                     <div>
                         <label class="block text-sm text-slate-400 mb-1">Server IP</label>
                         <input type="text" name="server_ip" value="{{.Tournament.ServerIP}}" placeholder="192.168.1.100"
@@ -302,9 +358,26 @@ connectTournamentListWS();
 <script>
 var _tournamentID = {{.Tournament.ID}};
 var _tournamentGameMode = "{{.Tournament.GameMode}}";
+var _tournamentGameType = "{{.Tournament.GameType}}";
+var _tournamentBracketFormat = "{{.Tournament.BracketFormat}}";
+var _tournamentVetoFormat = "{{.Tournament.VetoFormat}}";
 var _tournamentStatus = "{{.Tournament.Status}}";
+var _tournamentName = "{{.Tournament.Name}}";
+var _tournamentTeamSize = {{.Tournament.TeamSize}};
+var _tournamentServerPassword = "{{.Tournament.ServerPassword}}";
 var _isActive = {{if .IsActive}}true{{else}}false{{end}};
 var _isHidden = {{if .IsHidden}}true{{else}}false{{end}};
+
+function toggleCS2Fields() {
+    var sel = document.getElementById('edit-game-type');
+    if (!sel) return;
+    var val = sel.value;
+    var custom = document.getElementById('edit-custom-game');
+    if (custom) custom.style.display = val === 'other' ? '' : 'none';
+    var cs2 = document.querySelectorAll('.edit-cs2-only');
+    for (var i = 0; i < cs2.length; i++) cs2[i].style.display = val === 'cs2' ? '' : 'none';
+    _tournamentGameType = val === 'other' ? 'other' : val;
+}
 
 function renderStatusPills() {
     var el = document.getElementById('status-pills');
@@ -358,39 +431,35 @@ function renderStatusButtons() {
 renderStatusPills();
 renderStatusButtons();
 
-var _detailRetries = 0;
-function connectDetailWS() {
-    var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var ws = new WebSocket(protocol + '//' + location.host + '/admin/tournament/' + _tournamentID + '/ws');
-    ws.onmessage = function(e) {
-        try {
-            _detailRetries = 0;
-            var d = JSON.parse(e.data);
-            if (d.type !== 'tournament_detail') return;
-            _tournamentStatus = d.status;
-            _isActive = d.active;
-            _isHidden = d.hidden;
-            renderStatusPills();
-            renderStatusButtons();
-            var f = document.querySelector('form[action$="/update"]');
-            if (f) {
-                var n = f.querySelector('[name="name"]'); if (n && document.activeElement !== n) n.value = d.name;
-                var ts = f.querySelector('[name="team_size"]'); if (ts && document.activeElement !== ts) ts.value = d.teamSize;
-                var gm = f.querySelector('[name="game_mode"]'); if (gm && document.activeElement !== gm) gm.value = d.gameMode;
-                var ro = f.querySelector('[name="registration_open"]'); if (ro && document.activeElement !== ro) ro.value = d.registrationOpen;
-                var rc = f.querySelector('[name="registration_close"]'); if (rc && document.activeElement !== rc) rc.value = d.registrationClose;
-                var si = f.querySelector('[name="server_ip"]'); if (si && document.activeElement !== si) si.value = d.serverIP;
-                var sp = f.querySelector('[name="server_password"]'); if (sp && document.activeElement !== sp) sp.value = d.serverPassword;
-            }
-        } catch(err) { console.error('[detail-ws]', err); }
-    };
-    ws.onclose = function() {
-        var delay = Math.min(5000 * Math.pow(2, _detailRetries), 60000);
-        _detailRetries++;
-        setTimeout(connectDetailWS, delay);
-    };
-}
-connectDetailWS();
+Page.subscribe('tournament:' + _tournamentID, function(d) {
+    if (d.type !== 'tournament_detail') return;
+    _tournamentStatus = d.status;
+    _isActive = d.active;
+    _isHidden = d.hidden;
+    if (d.gameType) _tournamentGameType = d.gameType;
+    if (d.bracketFormat) _tournamentBracketFormat = d.bracketFormat;
+    if (d.vetoFormat !== undefined) _tournamentVetoFormat = d.vetoFormat;
+    renderStatusPills();
+    renderStatusButtons();
+    var f = document.querySelector('form[action$="/update"]');
+    if (f) {
+        var n = f.querySelector('[name="name"]'); if (n && document.activeElement !== n) n.value = d.name;
+        var ts = f.querySelector('[name="team_size"]'); if (ts && document.activeElement !== ts) ts.value = d.teamSize;
+        var gm = f.querySelector('[name="game_mode"]'); if (gm && document.activeElement !== gm) gm.value = d.gameMode;
+        var gt = f.querySelector('[name="game_type"]'); if (gt && document.activeElement !== gt) {
+            if (d.gameType === 'cs2' || d.gameType === 'valorant') { gt.value = d.gameType; }
+            else { gt.value = 'other'; var gc = f.querySelector('[name="game_type_custom"]'); if (gc) gc.value = d.gameType; }
+            toggleCS2Fields();
+        }
+        var bf = f.querySelector('[name="bracket_format"]'); if (bf && document.activeElement !== bf) bf.value = d.bracketFormat || 'single_elim';
+        var vf = f.querySelector('[name="veto_format"]'); if (vf && document.activeElement !== vf) vf.value = d.vetoFormat || '';
+        if (typeof toggleGroupCountRow === 'function') toggleGroupCountRow();
+        var ro = f.querySelector('[name="registration_open"]'); if (ro && document.activeElement !== ro) ro.value = d.registrationOpen;
+        var rc = f.querySelector('[name="registration_close"]'); if (rc && document.activeElement !== rc) rc.value = d.registrationClose;
+        var si = f.querySelector('[name="server_ip"]'); if (si && document.activeElement !== si) si.value = d.serverIP;
+        var sp = f.querySelector('[name="server_password"]'); if (sp && document.activeElement !== sp) sp.value = d.serverPassword;
+    }
+});
 
 var _teamsData = [
 {{range .Teams}}{id:{{.ID}}, name:"{{.Name}}", members:[{{range .Members}}{id:{{.ID}}, teamId:{{.TeamID}}, steamName:"{{.SteamName}}"},{{end}}]},{{end}}
@@ -412,6 +481,16 @@ connectAdminBracketWS();
     <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/bracket/seed">
         <input type="hidden" name="team_ids" id="seed-order">
         <ul id="seed-list" class="space-y-1 mb-4"></ul>
+        <div id="group-count-row" class="mb-4" style="display:none">
+            <label class="block text-sm text-slate-400 mb-1">Number of Groups</label>
+            <input type="number" name="group_count" id="group-count-input" value="{{if .Tournament.BracketGroupCount}}{{.Tournament.BracketGroupCount}}{{else}}1{{end}}" min="1" max="16"
+                class="w-32 bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+        </div>
+        <div id="advance-count-row" class="mb-4" style="display:none">
+            <label class="block text-sm text-slate-400 mb-1">Teams Advancing per Group</label>
+            <input type="number" name="advance_count" id="advance-count-input" value="{{if .Tournament.BracketAdvanceCount}}{{.Tournament.BracketAdvanceCount}}{{else}}2{{end}}" min="1" max="16"
+                class="w-32 bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+        </div>
         <button id="seed-submit" type="submit" onclick="return prepSeedOrder()" class="bg-orange-600 hover:bg-orange-700 text-white font-medium rounded px-4 py-2 text-sm">
             {{if .Bracket}}Regenerate Bracket{{else}}Generate Bracket{{end}}
         </button>
@@ -419,6 +498,16 @@ connectAdminBracketWS();
 </div>
 <script>
 var _hasBracket = {{if .Bracket}}true{{else}}false{{end}};
+function toggleGroupCountRow() {
+    var row = document.getElementById('group-count-row');
+    var advRow = document.getElementById('advance-count-row');
+    var hybridSettings = document.getElementById('edit-hybrid-settings');
+    var isGroup = _tournamentBracketFormat === 'round_robin' || _tournamentBracketFormat === 'hybrid';
+    if (row) row.style.display = isGroup ? '' : 'none';
+    if (advRow) advRow.style.display = _tournamentBracketFormat === 'hybrid' ? '' : 'none';
+    if (hybridSettings) hybridSettings.style.display = _tournamentBracketFormat === 'hybrid' ? '' : 'none';
+}
+toggleGroupCountRow();
 function prepSeedOrder() {
     var items = document.querySelectorAll('#seed-list li');
     var ids = [];
@@ -516,6 +605,19 @@ renderSeedList(_teamsData);
     <div id="bracket-view" class="overflow-x-auto">
         <div class="bracket-container flex gap-8 items-start min-w-max py-4"></div>
     </div>
+    {{if eq .Tournament.BracketFormat "hybrid"}}
+    <div id="generate-playoffs-section" class="mt-4 pt-4 border-t border-slate-700" style="display:none">
+        <h3 class="text-md font-semibold mb-2">Generate Playoff Bracket</h3>
+        <p class="text-sm text-slate-400 mb-3">All group stage matches are complete. Select a playoff format and generate the bracket.</p>
+        <form method="POST" action="/admin/tournament/{{.Tournament.ID}}/generate-playoffs" class="flex items-center gap-3">
+            <select name="playoff_format" class="bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500">
+                <option value="single_elim">Single Elimination</option>
+                <option value="double_elim">Double Elimination</option>
+            </select>
+            <button type="submit" class="bg-orange-600 hover:bg-orange-700 text-white font-medium rounded px-4 py-2 text-sm">Generate Playoffs</button>
+        </form>
+    </div>
+    {{end}}
 </div>
 <script>
 var _bracketData = [
@@ -523,13 +625,108 @@ var _bracketData = [
 {id:{{.ID}}, round:{{.Round}}, pos:{{.Position}}, bestOf:{{.BestOf}},
  team1:{id:{{derefInt64 .Team1ID}}, name:"{{.Team1Name}}"},
  team2:{id:{{derefInt64 .Team2ID}}, name:"{{.Team2Name}}"},
- winner:{{derefInt64 .WinnerID}}, isBye:{{.IsBye}},
- games:[{{range .Games}}{id:{{.ID}}, num:{{.GameNumber}}, map:"{{.MapName}}", t1:{{.Team1Score}}, t2:{{.Team2Score}}, status:"{{.Status}}", server:"{{.ServerName}}", t1ct:{{.Team1StartsCT}}, h1ct:{{.H1CT}}, h1t:{{.H1T}}, h2ct:{{.H2CT}}, h2t:{{.H2T}}},{{end}}]},
+ winner:{{derefInt64 .WinnerID}}, isBye:{{.IsBye}}, section:"{{.BracketSection}}", groupId:{{.GroupID}},
+ games:[{{range .Games}}{id:{{.ID}}, num:{{.GameNumber}}, map:"{{.MapName}}", t1:{{.Team1Score}}, t2:{{.Team2Score}}, status:"{{.Status}}", server:"{{.ServerName}}", t1ct:{{.Team1StartsCT}}, h1ct:{{.H1CT}}, h1t:{{.H1T}}, h2ct:{{.H2CT}}, h2t:{{.H2T}}, demo:{{if .DemoPath}}true{{else}}false{{end}}},{{end}}]},
 {{end}}
 ];
-renderAdminBracket(_bracketData);
+var _bracketStandings = [
+{{range .Standings}}{teamId:{{.TeamID}}, teamName:"{{.TeamName}}", groupId:{{.GroupID}}, wins:{{.Wins}}, losses:{{.Losses}}, mapDiff:{{.MapDiff}}, roundDiff:{{.RoundDiff}}, points:{{.Points}}},
+{{end}}
+];
+renderAdminBracket(_bracketData, _bracketStandings);
+function updatePlayoffsButton(matches) {
+    var section = document.getElementById('generate-playoffs-section');
+    if (!section) return;
+    var groupMatches = matches.filter(function(m) { return (m.section || '') === 'group'; });
+    var hasPlayoffs = matches.some(function(m) { var s = m.section || ''; return s === 'winners' || s === 'losers' || s === 'grand_final'; });
+    var allGroupsDone = groupMatches.length > 0 && groupMatches.every(function(m) { return m.winner; });
+    section.style.display = (allGroupsDone && !hasPlayoffs) ? '' : 'none';
+}
+updatePlayoffsButton(_bracketData);
 connectAdminBracketWS();
 </script>
 {{end}}
+
+<!-- Launch Server Modal -->
+<div id="launch-modal" class="hidden fixed inset-0 z-50">
+    <div class="fixed inset-0 bg-black/60" onclick="closeLaunchModal()"></div>
+    <div class="fixed right-0 top-0 h-full w-full max-w-md bg-slate-800 shadow-xl overflow-y-auto">
+        <div class="p-6">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-semibold text-white">Launch Server</h2>
+                <button onclick="closeLaunchModal()" class="text-slate-400 hover:text-white text-xl">&times;</button>
+            </div>
+            <div id="launch-modal-error" class="hidden bg-red-900/50 border border-red-700 text-red-300 rounded px-4 py-3 mb-4 text-sm"></div>
+            <div id="launch-modal-success" class="hidden bg-green-900/50 border border-green-700 text-green-300 rounded px-4 py-3 mb-4 text-sm"></div>
+            <form id="launch-modal-form" onsubmit="submitLaunchModal(this); return false">
+                <input type="hidden" name="match_id" id="modal-match-id">
+                <input type="hidden" name="game_number" id="modal-game-number">
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm text-slate-400 mb-1">Server Name</label>
+                        <input type="text" name="name" id="modal-name" required
+                            class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-slate-400 mb-1">Port</label>
+                        <input type="number" name="port" id="modal-port" required placeholder="27015" value="27015"
+                            class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-slate-400 mb-1">Game Mode</label>
+                        <select name="mode" id="modal-mode" onchange="updateModalMapOptions()"
+                            class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm">
+                            <option value="competitive">Competitive</option>
+                            <option value="casual">Casual</option>
+                            <option value="deathmatch">Deathmatch</option>
+                            <option value="armsrace">Arms Race</option>
+                            <option value="demolition">Demolition</option>
+                            <option value="wingman">Wingman</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-slate-400 mb-1">Starting Map</label>
+                        <select name="map" id="modal-map"
+                            class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm">
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-slate-400 mb-1">Max Players</label>
+                        <input type="number" name="players" id="modal-players" placeholder="10"
+                            class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-slate-400 mb-1">Server Password (optional)</label>
+                        <input type="text" name="password" id="modal-password" placeholder="Leave empty for no password"
+                            class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-slate-400 mb-1">RCON Password <span class="text-slate-500">(auto-generated if empty)</span></label>
+                        <input type="text" name="rcon" id="modal-rcon" placeholder="Leave empty for random"
+                            class="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-orange-400 text-sm">
+                    </div>
+                    <div>
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" name="tv" id="modal-tv"
+                                class="w-4 h-4 rounded bg-slate-700 border-slate-600 text-orange-500 focus:ring-orange-400">
+                            <span class="text-sm text-slate-300">Enable CSTV</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="mt-6 flex gap-3">
+                    <button type="submit" id="modal-submit-btn"
+                        class="bg-orange-500 hover:bg-orange-600 text-white font-medium rounded px-6 py-2 text-sm transition-colors">
+                        Launch
+                    </button>
+                    <button type="button" onclick="closeLaunchModal()"
+                        class="bg-slate-700 hover:bg-slate-600 text-white font-medium rounded px-6 py-2 text-sm transition-colors">
+                        Cancel
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
 {{end}}
 {{end}}

@@ -24,6 +24,19 @@ func (h *Handler) SetAnnouncement(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("announcement: updated", "text", msg, "link", link)
 	h.announceBcast.notify()
+
+	if h.hub != nil {
+		h.hub.Publish("announce", "announcement", struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+			Link    string `json:"link,omitempty"`
+		}{
+			Type:    "announcement",
+			Message: html.EscapeString(msg),
+			Link:    html.EscapeString(link),
+		})
+	}
+
 	http.Redirect(w, r, "/admin/settings", http.StatusSeeOther)
 }
 

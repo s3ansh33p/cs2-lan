@@ -11,6 +11,12 @@ function getSlot(e) {
     return y2slot(e.clientY - r.top - GRID_PAD * SLOT_H, _totalSlots);
 }
 
+function _onTouchMove(e) {
+    if (!_drag) return; e.preventDefault();
+    onMove({ clientY: e.touches[0].clientY });
+}
+function _onTouchEnd() { if (_drag) onEnd(); }
+
 function attachDrag() {
     _layer.addEventListener('mousedown', function(e) {
         if (e.button !== 0) return;
@@ -31,11 +37,15 @@ function attachDrag() {
         else if (el) startDrag('move', fe, el);
         else startDrag('create', fe, null);
     }, { passive: false });
-    document.addEventListener('touchmove', function(e) {
-        if (!_drag) return; e.preventDefault();
-        onMove({ clientY: e.touches[0].clientY });
-    }, { passive: false });
-    document.addEventListener('touchend', function() { if (_drag) onEnd(); });
+    document.addEventListener('touchmove', _onTouchMove, { passive: false });
+    document.addEventListener('touchend', _onTouchEnd);
+
+    Page.onLeave(function() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onEnd);
+        document.removeEventListener('touchmove', _onTouchMove);
+        document.removeEventListener('touchend', _onTouchEnd);
+    });
 }
 
 function startDrag(mode, e, el) {
@@ -296,6 +306,3 @@ function initAdmin() {
     createNowLine(_layer, _startMs, _endMs);
     connectScheduleWS(function(items) { _items = items; rerender(); });
 }
-
-if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initAdmin);
-else initAdmin();

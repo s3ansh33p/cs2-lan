@@ -31,30 +31,13 @@
     }
     var cached = localStorage.getItem(MSG_KEY);
     if (cached) show(cached, localStorage.getItem(LINK_KEY));
-    var retries = 0;
-    function connect() {
-        var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        var ws = new WebSocket(protocol + '//' + location.host + '/announce/ws');
-        ws.onmessage = function(e) {
-            try {
-                retries = 0;
-                var d = JSON.parse(e.data);
-                if (d.type === 'announcement') {
-                    if (d.message) localStorage.setItem(MSG_KEY, d.message);
-                    else localStorage.removeItem(MSG_KEY);
-                    if (d.link) localStorage.setItem(LINK_KEY, d.link);
-                    else localStorage.removeItem(LINK_KEY);
-                    show(d.message, d.link);
-                }
-            } catch(err) { console.error('[announce-ws]', err); }
-        };
-        ws.onclose = function() {
-            var delay = Math.min(5000 * Math.pow(2, retries), 60000);
-            retries++;
-            setTimeout(connect, delay);
-        };
-    }
-    connect();
+    Page.on('announce', function(d) {
+        if (d.message) localStorage.setItem(MSG_KEY, d.message);
+        else localStorage.removeItem(MSG_KEY);
+        if (d.link) localStorage.setItem(LINK_KEY, d.link);
+        else localStorage.removeItem(LINK_KEY);
+        show(d.message, d.link);
+    });
 })();
 </script>
 {{end}}

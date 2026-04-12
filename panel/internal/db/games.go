@@ -30,6 +30,7 @@ type Game struct {
 	HalfRound     int // round number where half-time occurred
 	StartedAt     *time.Time
 	CompletedAt   *time.Time
+	DemoPath      string
 }
 
 type GameRound struct {
@@ -41,30 +42,32 @@ type GameRound struct {
 }
 
 type PlayerStat struct {
-	ID         int64
-	GameID     int64
-	TeamID     int64
-	PlayerName string
-	Kills      int
-	Deaths     int
-	Assists    int
-	HSPercent  float64
-	KDR        float64
-	ADR        float64
-	MVPs       int
-	EF         int
-	UD         float64
+	ID           int64
+	GameID       int64
+	TeamID       int64
+	PlayerName   string
+	Kills        int
+	Deaths       int
+	Assists      int
+	HSPercent    float64
+	KDR          float64
+	ADR          float64
+	MVPs         int
+	EF           int
+	UD           float64
+	OriginalName string
+	Matched      bool
 }
 
 const gameColumns = `id, match_id, game_number, map_name, team1_score, team2_score,
-	winner_id, server_name, status, team1_starts_ct, h1_ct, h1_t, h2_ct, h2_t, half_round, started_at, completed_at`
+	winner_id, server_name, status, team1_starts_ct, h1_ct, h1_t, h2_ct, h2_t, half_round, started_at, completed_at, demo_path`
 
 func scanGame(s interface{ Scan(...any) error }) (Game, error) {
 	var g Game
 	var startsCT int
 	err := s.Scan(&g.ID, &g.MatchID, &g.GameNumber, &g.MapName, &g.Team1Score,
 		&g.Team2Score, &g.WinnerID, &g.ServerName, &g.Status,
-		&startsCT, &g.H1CT, &g.H1T, &g.H2CT, &g.H2T, &g.HalfRound, &g.StartedAt, &g.CompletedAt)
+		&startsCT, &g.H1CT, &g.H1T, &g.H2CT, &g.H2T, &g.HalfRound, &g.StartedAt, &g.CompletedAt, &g.DemoPath)
 	g.Team1StartsCT = startsCT != 0
 	return g, err
 }
@@ -156,20 +159,25 @@ func (db *DB) SavePlayerStats(gameID int64, stats []PlayerStat) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(`INSERT INTO game_player_stats
-		(game_id, team_id, player_name, kills, deaths, assists, hs_percent, kdr, adr, mvps, ef, ud)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		(game_id, team_id, player_name, kills, deaths, assists, hs_percent, kdr, adr, mvps, ef, ud, original_name, matched)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(game_id, player_name) DO UPDATE SET
 		kills=excluded.kills, deaths=excluded.deaths, assists=excluded.assists,
 		hs_percent=excluded.hs_percent, kdr=excluded.kdr, adr=excluded.adr,
-		mvps=excluded.mvps, ef=excluded.ef, ud=excluded.ud`)
+		mvps=excluded.mvps, ef=excluded.ef, ud=excluded.ud,
+		original_name=excluded.original_name, matched=excluded.matched`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, s := range stats {
+		matched := 0
+		if s.Matched {
+			matched = 1
+		}
 		if _, err := stmt.Exec(gameID, s.TeamID, s.PlayerName, s.Kills, s.Deaths, s.Assists,
-			s.HSPercent, s.KDR, s.ADR, s.MVPs, s.EF, s.UD); err != nil {
+			s.HSPercent, s.KDR, s.ADR, s.MVPs, s.EF, s.UD, s.OriginalName, matched); err != nil {
 			return err
 		}
 	}
@@ -178,8 +186,8 @@ func (db *DB) SavePlayerStats(gameID int64, stats []PlayerStat) error {
 
 func (db *DB) GetGameStats(gameID int64) ([]PlayerStat, error) {
 	rows, err := db.Query(`SELECT id, game_id, team_id, player_name, kills, deaths, assists,
-		hs_percent, kdr, adr, mvps, ef, ud
-		FROM game_player_stats WHERE game_id=? ORDER BY kills DESC`, gameID)
+		hs_percent, kdr, adr, mvps, ef, ud, original_name, matched
+		FROM game_player_stats WHERE game_id=? AND matched=1 ORDER BY kills DESC`, gameID)
 	if err != nil {
 		return nil, err
 	}
@@ -188,16 +196,78 @@ func (db *DB) GetGameStats(gameID int64) ([]PlayerStat, error) {
 	var stats []PlayerStat
 	for rows.Next() {
 		var s PlayerStat
+		var matched int
 		if err := rows.Scan(&s.ID, &s.GameID, &s.TeamID, &s.PlayerName, &s.Kills, &s.Deaths,
-			&s.Assists, &s.HSPercent, &s.KDR, &s.ADR, &s.MVPs, &s.EF, &s.UD); err != nil {
+			&s.Assists, &s.HSPercent, &s.KDR, &s.ADR, &s.MVPs, &s.EF, &s.UD,
+			&s.OriginalName, &matched); err != nil {
 			return nil, err
 		}
+		s.Matched = matched != 0
 		stats = append(stats, s)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return stats, nil
+}
+
+// GetGameStatsAdmin returns ALL players (matched + unmatched), sorted by matched desc, kills desc.
+func (db *DB) GetGameStatsAdmin(gameID int64) ([]PlayerStat, error) {
+	rows, err := db.Query(`SELECT id, game_id, team_id, player_name, kills, deaths, assists,
+		hs_percent, kdr, adr, mvps, ef, ud, original_name, matched
+		FROM game_player_stats WHERE game_id=? ORDER BY matched DESC, kills DESC`, gameID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []PlayerStat
+	for rows.Next() {
+		var s PlayerStat
+		var matched int
+		if err := rows.Scan(&s.ID, &s.GameID, &s.TeamID, &s.PlayerName, &s.Kills, &s.Deaths,
+			&s.Assists, &s.HSPercent, &s.KDR, &s.ADR, &s.MVPs, &s.EF, &s.UD,
+			&s.OriginalName, &matched); err != nil {
+			return nil, err
+		}
+		s.Matched = matched != 0
+		stats = append(stats, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return stats, nil
+}
+
+// RemapPlayerStat reassigns an unmatched player to a roster name.
+// It deletes any existing row for the target name (to avoid UNIQUE conflict),
+// then updates the unmatched row's player_name, team_id, and sets matched=1.
+func (db *DB) RemapPlayerStat(gameID int64, originalName string, targetName string, teamID int64) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Remove any existing row for the target name in this game (conflict prevention)
+	if _, err := tx.Exec(`DELETE FROM game_player_stats WHERE game_id=? AND player_name=? AND player_name!=?`,
+		gameID, targetName, originalName); err != nil {
+		return fmt.Errorf("delete existing: %w", err)
+	}
+
+	// Update the unmatched row
+	res, err := tx.Exec(`UPDATE game_player_stats SET player_name=?, team_id=?, matched=1
+		WHERE game_id=? AND original_name=? AND matched=0`,
+		targetName, teamID, gameID, originalName)
+	if err != nil {
+		return fmt.Errorf("remap: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("no unmatched player found with original_name=%q", originalName)
+	}
+
+	return tx.Commit()
 }
 
 func (db *DB) SaveGameRounds(gameID int64, rounds []GameRound) error {
@@ -258,6 +328,21 @@ func (db *DB) DeleteGame(gameID int64) error {
 		return fmt.Errorf("delete game: %w", err)
 	}
 	return nil
+}
+
+// UpdateGameDemo sets the demo file path for a game.
+func (db *DB) UpdateGameDemo(gameID int64, demoPath string) error {
+	_, err := db.Exec(`UPDATE games SET demo_path=? WHERE id=?`, demoPath, gameID)
+	return err
+}
+
+// GetGameByID returns a single game by ID.
+func (db *DB) GetGameByID(gameID int64) (*Game, error) {
+	g, err := scanGame(db.QueryRow(`SELECT `+gameColumns+` FROM games WHERE id=?`, gameID))
+	if err != nil {
+		return nil, err
+	}
+	return &g, nil
 }
 
 // ResetGame clears a game's results and cascades: deletes rounds/stats,

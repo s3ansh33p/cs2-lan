@@ -25,6 +25,7 @@ var _logBuffer = []; // buffer lines while paused
 var _logShowEvents = false; // show game event lines in log viewer
 var _logRetries = 0;
 var _logMaxRetries = 3;
+var _logWS = null;
 
 function connectLogWS(serverName) {
     if (_serverStopped) return;
@@ -36,6 +37,7 @@ function connectLogWS(serverName) {
 
     var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     var ws = new WebSocket(protocol + '//' + location.host + '/admin/server/' + serverName + '/logs/ws');
+    _logWS = ws;
     var output = document.getElementById('log-output');
     var status = document.getElementById('log-status');
     var reconnectBtn = document.getElementById('log-reconnect');
@@ -205,36 +207,18 @@ function reconnectLogs() {
 }
 
 // Dashboard WebSocket
-var _dashWS = null;
-var _dashRetries = 0;
 var _lastDashJSON = '';
 function connectDashboardWS() {
-    if (_dashWS) { try { _dashWS.close(); } catch(e) {} }
-    var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var ws = new WebSocket(protocol + '//' + location.host + '/admin/api/dashboard/ws');
-    _dashWS = ws;
-
-    ws.onmessage = function(e) {
-        try {
-            _dashRetries = 0;
-            var data = JSON.parse(e.data);
-            if (data.type === 'dashboard') {
-                    var key = JSON.stringify(data.servers) + JSON.stringify(data.host);
-                    if (key !== _lastDashJSON) {
-                        _lastDashJSON = key;
-                        renderDashboard(data.servers);
-                        renderHostStats(data.host);
-                    }
-                }
-        } catch(err) { console.error('[ws] error:', err); }
-    };
-
-    ws.onclose = function() {
-        _dashWS = null;
-        var delay = Math.min(3000 * Math.pow(2, _dashRetries), 60000);
-        _dashRetries++;
-        setTimeout(connectDashboardWS, delay);
-    };
+    Page.subscribe('dashboard', function(data) {
+        if (data.type === 'dashboard') {
+            var key = JSON.stringify(data.servers) + JSON.stringify(data.host);
+            if (key !== _lastDashJSON) {
+                _lastDashJSON = key;
+                renderDashboard(data.servers);
+                renderHostStats(data.host);
+            }
+        }
+    });
 }
 
 function renderDashboard(servers) {
@@ -388,6 +372,7 @@ function connectGameWS(serverName) {
                 case 'players':
                     if (data.score) renderScore(data.score);
                     renderPlayers(data.players);
+                    if (data.ready !== undefined) renderReadyPanel(data.ready);
                     break;
                 case 'killfeed':
                     renderKillfeed(data.killfeed);
@@ -414,13 +399,19 @@ function connectGameWS(serverName) {
         if (_serverStopped) return;
         // If WS never connected and not restarting, server doesn't exist — redirect
         if (!_wsConnected && !_serverRestarting) {
-            window.location.href = '/admin';
+            window.location.href = '/admin/';
             return;
         }
         setTimeout(function() { connectGameWS(serverName); }, 3000);
     };
 
     ws.onerror = function() {};
+
+    Page.onLeave(function() {
+        _serverStopped = true; // prevent reconnect attempts
+        if (_logWS) { _logWS.close(); _logWS = null; }
+        if (_gameWS) { _gameWS.close(); _gameWS = null; }
+    });
 }
 
 function renderScore(score) {
@@ -1133,11 +1124,11 @@ var _mapPools = {
     deathmatch: ['de_ancient', 'de_anubis', 'de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_overpass', 'de_vertigo'],
     armsrace: ['ar_baggage', 'ar_pool_day', 'ar_shoots'],
     demolition: ['ar_baggage', 'ar_pool_day', 'ar_shoots'],
-    wingman: ['de_inferno', 'de_nuke', 'de_overpass', 'de_vertigo', 'de_poseidon', 'de_sanctum']
+    wingman: ['de_inferno', 'de_nuke', 'de_overpass', 'de_vertigo', 'de_shortdust', 'de_lake']
 };
 var _allMaps = ['de_ancient', 'de_anubis', 'de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_overpass', 'de_vertigo',
     'cs_alpine', 'cs_italy', 'cs_office', 'ar_baggage', 'ar_pool_day', 'ar_shoots',
-    'de_ancient_night', 'ar_shoots_night', 'de_poseidon', 'de_sanctum', 'de_stronghold', 'de_warden'];
+    'de_ancient_night', 'ar_shoots_night', 'de_shortdust', 'de_lake', 'de_stronghold', 'de_warden'];
 
 // RCON autocomplete
 var _rconCommands = [
@@ -1388,6 +1379,65 @@ function deleteGame(matchId, gameId) {
     });
 }
 
+// Toggle unmatched players panel for a completed game
+function toggleUnmatched(matchId, gameId, btn) {
+    var el = document.getElementById('unmatched-' + matchId + '-' + gameId);
+    if (!el) return;
+    if (!el.classList.contains('hidden')) {
+        el.classList.add('hidden');
+        return;
+    }
+    el.classList.remove('hidden');
+    el.innerHTML = '<span class="text-slate-500">Loading...</span>';
+    fetch('/admin/match/' + matchId + '/game/' + gameId + '/unmatched')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.unmatched || data.unmatched.length === 0) {
+                el.innerHTML = '<span class="text-green-400">All players matched.</span>';
+                return;
+            }
+            var html = '<div class="text-yellow-400 font-medium mb-1">Unmatched Players</div>';
+            for (var i = 0; i < data.unmatched.length; i++) {
+                var p = data.unmatched[i];
+                html += '<div class="flex items-center gap-2 py-1">';
+                html += '<span class="text-slate-300">' + p.originalName + '</span>';
+                html += '<span class="text-slate-500">' + p.kills + '/' + p.deaths + '/' + p.assists + '</span>';
+                html += '<select onchange="remapPlayer(' + matchId + ',' + gameId + ',\'' + p.originalName.replace(/'/g, "\\'") + '\',this.value)" class="bg-slate-600 border border-slate-500 rounded px-1 py-0.5 text-white text-xs">';
+                html += '<option value="">Assign to...</option>';
+                if (data.roster) {
+                    for (var j = 0; j < data.roster.length; j++) {
+                        html += '<option value="' + data.roster[j].name + '">' + data.roster[j].name + '</option>';
+                    }
+                }
+                html += '</select>';
+                html += '</div>';
+            }
+            el.innerHTML = html;
+        })
+        .catch(function() {
+            el.innerHTML = '<span class="text-red-400">Failed to load.</span>';
+        });
+}
+
+// Remap an unmatched player to a roster member
+function remapPlayer(matchId, gameId, originalName, targetMember) {
+    if (!targetMember) return;
+    fetch('/admin/match/' + matchId + '/game/' + gameId + '/remap', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest'},
+        body: 'original_name=' + encodeURIComponent(originalName) + '&target_member=' + encodeURIComponent(targetMember)
+    }).then(function(r) {
+        if (r.ok) {
+            // Reload unmatched panel to show updated state
+            var el = document.getElementById('unmatched-' + matchId + '-' + gameId);
+            if (el) {
+                el.classList.add('hidden');
+                toggleUnmatched(matchId, gameId);
+            }
+        }
+    });
+}
+
 // Generic AJAX form submit for bracket actions (prevents page reload)
 function submitBracketForm(form, url) {
     var data = new FormData(form);
@@ -1525,8 +1575,18 @@ function removeMember(teamId, memberId, btn) {
     });
 }
 
-function renderAdminBracket(matches) {
-    renderBracketLayout(document.querySelector('.bracket-container'), matches, renderBracketMatch, 340);
+function renderAdminBracket(matches, standings) {
+    var container = document.querySelector('.bracket-container');
+    if (isHybrid(matches)) {
+        renderHybridBracket(container, matches, standings, renderBracketMatch, 340);
+    } else if (isRoundRobin(matches)) {
+        renderRoundRobinBracket(container, matches, standings, renderBracketMatch);
+    } else if (hasDoubleElim(matches)) {
+        renderDoubleElimBracket(container, matches, renderBracketMatch, 340);
+    } else {
+        renderBracketLayout(container, matches, renderBracketMatch, 340);
+    }
+    if (typeof updatePlayoffsButton === 'function') updatePlayoffsButton(matches);
 }
 
 function renderBracketMatch(m) {
@@ -1569,7 +1629,7 @@ function renderBracketMatch(m) {
             } else if (game.status === 'live') {
                 html += '<span class="text-orange-400">' + (mapDisplayName(game.map) || 'Game ' + game.num) + '</span>';
                 html += '<span class="text-orange-300 font-mono">' + game.t1 + '-' + game.t2 + '</span>';
-                if (game.server) {
+                if (_isCS2Game && game.server) {
                     html += '<a href="/admin/server/' + game.server + '" class="bg-orange-500/20 text-orange-400 hover:bg-orange-500/30 font-bold rounded px-1.5 py-0.5">LIVE</a>';
                 } else {
                     html += '<span class="bg-orange-500/20 text-orange-400 font-bold rounded px-1.5 py-0.5">LIVE</span>';
@@ -1589,25 +1649,43 @@ function renderBracketMatch(m) {
                 html += '<button type="submit" class="bg-green-700 hover:bg-green-600 text-white rounded px-1.5 py-0.5">Save</button>';
                 html += '</form>';
             }
-            // Launch server link for non-completed games
-            if (game.status !== 'completed' && game.map) {
-                html += '<a href="/admin/match/' + m.id + '/launch?game_number=' + game.num + '&map_name=' + encodeURIComponent(game.map) + '" class="bg-slate-600 hover:bg-slate-500 text-white rounded px-1.5 py-0.5">Launch</a>';
+            // Launch server link for non-completed games (CS2 only)
+            var _isCS2Game = (typeof _tournamentGameType === 'undefined' || _tournamentGameType === '' || _tournamentGameType === 'cs2');
+            if (_isCS2Game && game.status !== 'completed' && game.map) {
+                html += '<button onclick="openLaunchModal(' + m.id + ',' + game.num + ',\'' + (game.map || '').replace(/'/g, "\\'") + '\')" class="bg-slate-600 hover:bg-slate-500 text-white rounded px-1.5 py-0.5">Launch</button>';
             }
-            // CT side indicator + swap
+            // CT side indicator + swap (CS2 only)
+            if (_isCS2Game) {
             var ctName = game.t1ct ? t1name : t2name;
             var newVal = game.t1ct ? '0' : '1';
             html += '<button onclick="swapSide(' + m.id + ',' + game.id + ',\'' + newVal + '\',this)" class="text-blue-400 hover:text-blue-300 text-xs" title="Click to swap sides">' +
                 '<span class="text-blue-400">CT:</span>' + ctName + '</button>';
+            }
             // Reset button for non-pending games
             if (game.status !== 'pending') {
                 html += '<button onclick="resetGame(' + m.id + ',' + game.id + ')" class="text-red-400 hover:text-red-300 text-xs" title="Reset game results">&#8635;</button>';
             }
+            // Demo download link
+            if (game.demo) {
+                html += '<a href="/demo/' + game.id + '" class="text-slate-400 hover:text-white text-xs" title="Download demo"><svg class="w-4 h-4 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg></a>';
+            }
             // Delete game button
             html += '<button onclick="deleteGame(' + m.id + ',' + game.id + ')" class="text-red-400 hover:text-red-300 text-xs" title="Delete game">&times;</button>';
+            // Unmatched players button for completed games
+            if (game.status === 'completed') {
+                html += '<button onclick="toggleUnmatched(' + m.id + ',' + game.id + ',this)" class="text-yellow-400 hover:text-yellow-300 text-xs" title="Check for unmatched players">?</button>';
+            }
             html += '</div>';
+            // Unmatched players container (hidden by default, loaded on demand)
+            if (game.status === 'completed') {
+                html += '<div id="unmatched-' + m.id + '-' + game.id + '" class="hidden px-3 py-2 bg-slate-800/50 border-t border-slate-600/30 text-xs"></div>';
+            }
         }
         html += '</div>';
     }
+
+    // Veto panel container (populated on demand)
+    html += '<div id="veto-panel-' + m.id + '" class="hidden"></div>';
 
     // Admin controls
     html += '<div class="px-2 py-1.5 border-t border-slate-600/50 flex flex-wrap gap-1 text-xs">';
@@ -1627,13 +1705,22 @@ function renderBracketMatch(m) {
                 html += '<option value="' + maps[mi] + '">' + maps[mi] + '</option>';
             }
             html += '</select>';
+            if (_isCS2Game) {
             html += '<select name="team1_starts_ct" class="bg-slate-600 border border-slate-500 rounded px-1 py-0.5 text-white text-xs">';
             html += '<option value="1">' + (m.team1.name || 'T1') + ' CT</option>';
             html += '<option value="0">' + (m.team2.name || 'T2') + ' CT</option>';
             html += '</select>';
+            }
             html += '<button type="submit" class="bg-orange-600 hover:bg-orange-500 text-white rounded px-1.5 py-0.5">+ Game</button>';
             html += '</form>';
         }
+    }
+
+    // Map Veto button (CS2 only, both teams present, no winner yet, bestOf > 1 or veto format configured)
+    var _isCS2Veto = (typeof _tournamentGameType === 'undefined' || _tournamentGameType === '' || _tournamentGameType === 'cs2');
+    var _hasVetoFormat = (typeof _tournamentVetoFormat !== 'undefined' && _tournamentVetoFormat !== '') || (m.bestOf > 1);
+    if (_isCS2Veto && _hasVetoFormat && bothTeams && !m.winner) {
+        html += '<button onclick="openVetoPanel(' + m.id + ')" class="bg-purple-600 hover:bg-purple-500 text-white rounded px-1.5 py-0.5">Map Veto</button>';
     }
 
     // Winner override buttons — AJAX
@@ -1659,49 +1746,402 @@ function renderBracketMatch(m) {
 }
 
 // Admin bracket live updates via WS
-var _adminBracketWS = null;
-var _adminBracketRetries = 0;
 var _lastAdminBracketJSON = '';
 function connectAdminBracketWS() {
     // No live updates for completed tournaments
     if (typeof _tournamentID === 'undefined' || !_tournamentID) return;
     if (typeof _tournamentStatus !== 'undefined' && _tournamentStatus === 'completed') return;
 
-    if (_adminBracketWS) { try { _adminBracketWS.close(); } catch(e) {} }
-
-    var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var ws = new WebSocket(protocol + '//' + location.host + '/tournament/' + _tournamentID + '/ws');
-    _adminBracketWS = ws;
-
-    ws.onmessage = function(e) {
-        try {
-            _adminBracketRetries = 0;
-            var data = JSON.parse(e.data);
-            if (data.type === 'bracket') {
-                // Update status pills and buttons if status changed
-                if (data.status && typeof _tournamentStatus !== 'undefined' && data.status !== _tournamentStatus) {
-                    _tournamentStatus = data.status;
-                    if (typeof renderStatusPills === 'function') renderStatusPills();
-                    if (typeof renderStatusButtons === 'function') renderStatusButtons();
-                }
-                if (data.bracket) {
-                    var key = JSON.stringify(data.bracket);
-                    if (key !== _lastAdminBracketJSON) {
-                        _lastAdminBracketJSON = key;
-                        renderAdminBracket(data.bracket);
-                    }
-                }
-                if (data.teams !== undefined) {
-                    renderAdminTeams(data.teams);
+    Page.subscribe('bracket:' + _tournamentID, function(data) {
+        if (data.type === 'bracket') {
+            if (data.status && typeof _tournamentStatus !== 'undefined' && data.status !== _tournamentStatus) {
+                _tournamentStatus = data.status;
+                if (typeof renderStatusPills === 'function') renderStatusPills();
+                if (typeof renderStatusButtons === 'function') renderStatusButtons();
+            }
+            if (data.bracket) {
+                var key = JSON.stringify(data.bracket) + JSON.stringify(data.standings || []);
+                if (key !== _lastAdminBracketJSON) {
+                    _lastAdminBracketJSON = key;
+                    renderAdminBracket(data.bracket, data.standings);
                 }
             }
-        } catch(err) { console.error('[bracket-ws] parse error:', err); }
-    };
+            if (data.teams !== undefined) {
+                renderAdminTeams(data.teams);
+            }
+        }
+    });
+}
 
-    ws.onclose = function() {
-        _adminBracketWS = null;
-        var delay = Math.min(5000 * Math.pow(2, _adminBracketRetries), 60000);
-        _adminBracketRetries++;
-        setTimeout(connectAdminBracketWS, delay);
-    };
+// ── Map Veto System ──
+
+function openVetoPanel(matchId) {
+    var panel = document.getElementById('veto-panel-' + matchId);
+    if (!panel) return;
+    if (!panel.classList.contains('hidden')) {
+        // Toggle off
+        panel.classList.add('hidden');
+        panel.innerHTML = '';
+        return;
+    }
+    panel.classList.remove('hidden');
+    panel.innerHTML = '<div class="px-3 py-2 text-xs text-slate-400">Loading veto...</div>';
+    fetchVetoState(matchId);
+}
+
+function fetchVetoState(matchId) {
+    fetch('/admin/match/' + matchId + '/veto', {
+        headers: {'X-Requested-With': 'XMLHttpRequest'}
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(state) { renderVetoPanel(matchId, state); })
+    .catch(function(err) {
+        var panel = document.getElementById('veto-panel-' + matchId);
+        if (panel) panel.innerHTML = '<div class="px-3 py-2 text-xs text-red-400">Failed to load veto state.</div>';
+    });
+}
+
+function renderVetoPanel(matchId, state) {
+    var panel = document.getElementById('veto-panel-' + matchId);
+    if (!panel) return;
+
+    var html = '<div class="border-t border-slate-600/50 bg-slate-800/50 px-3 py-3">';
+
+    // Header with step indicator
+    if (state.complete) {
+        html += '<div class="flex items-center justify-between mb-2">';
+        html += '<span class="text-xs font-semibold text-green-400">Veto Complete</span>';
+        html += '<button onclick="resetVeto(' + matchId + ')" class="text-xs text-red-400 hover:text-red-300">Reset Veto</button>';
+        html += '</div>';
+    } else {
+        html += '<div class="flex items-center justify-between mb-2">';
+        var stepLabel = 'Step ' + (state.nextStep + 1) + '/' + state.totalSteps + ': ';
+        if (state.nextAction === 'ban') {
+            stepLabel += (state.nextTeamName || 'Team') + ' bans';
+        } else if (state.nextAction === 'pick') {
+            stepLabel += (state.nextTeamName || 'Team') + ' picks';
+        } else if (state.nextAction === 'last') {
+            stepLabel += 'Remaining map';
+        }
+        html += '<span class="text-xs font-semibold text-purple-400">' + stepLabel + '</span>';
+        html += '<button onclick="resetVeto(' + matchId + ')" class="text-xs text-red-400 hover:text-red-300">Reset</button>';
+        html += '</div>';
+    }
+
+    // Veto history
+    if (state.vetoes && state.vetoes.length > 0) {
+        html += '<div class="flex flex-wrap gap-1 mb-2">';
+        for (var i = 0; i < state.vetoes.length; i++) {
+            var v = state.vetoes[i];
+            var mapLabel = mapDisplayName(v.mapName) || v.mapName;
+            if (v.action === 'ban') {
+                html += '<span class="inline-flex items-center gap-1 text-xs bg-red-900/40 text-red-400 rounded px-1.5 py-0.5 line-through">';
+                html += mapLabel;
+                if (v.teamName) html += ' <span class="text-red-500/60 no-underline">(' + v.teamName + ')</span>';
+                html += '</span>';
+            } else if (v.action === 'pick') {
+                html += '<span class="inline-flex items-center gap-1 text-xs bg-green-900/40 text-green-400 rounded px-1.5 py-0.5">';
+                html += mapLabel;
+                if (v.teamName) html += ' <span class="text-green-500/60">(' + v.teamName + ')</span>';
+                html += '</span>';
+            } else if (v.action === 'last') {
+                html += '<span class="inline-flex items-center gap-1 text-xs bg-blue-900/40 text-blue-400 rounded px-1.5 py-0.5">';
+                html += mapLabel + ' <span class="text-blue-500/60">(decider)</span>';
+                html += '</span>';
+            }
+        }
+        html += '</div>';
+    }
+
+    // Available maps grid (only if not complete)
+    if (!state.complete && state.availableMaps && state.availableMaps.length > 0) {
+        html += '<div class="grid grid-cols-3 gap-1">';
+        var usedSet = {};
+        if (state.vetoes) {
+            for (var i = 0; i < state.vetoes.length; i++) usedSet[state.vetoes[i].mapName] = state.vetoes[i].action;
+        }
+        for (var i = 0; i < state.mapPool.length; i++) {
+            var m = state.mapPool[i];
+            var label = mapDisplayName(m) || m;
+            var used = usedSet[m];
+            if (used === 'ban') {
+                html += '<button disabled class="text-xs bg-red-900/20 text-red-400/50 rounded px-2 py-1.5 line-through cursor-not-allowed">' + label + '</button>';
+            } else if (used === 'pick' || used === 'last') {
+                html += '<button disabled class="text-xs bg-green-900/20 text-green-400/50 rounded px-2 py-1.5 cursor-not-allowed">' + label + '</button>';
+            } else {
+                var actionColor = state.nextAction === 'ban' ? 'bg-red-700 hover:bg-red-600' : 'bg-green-700 hover:bg-green-600';
+                html += '<button onclick="submitVetoStep(' + matchId + ',\'' + m + '\')" class="text-xs ' + actionColor + ' text-white rounded px-2 py-1.5 font-medium">' + label + '</button>';
+            }
+        }
+        html += '</div>';
+    }
+
+    // Close button
+    html += '<div class="mt-2 text-right">';
+    html += '<button onclick="closeVetoPanel(' + matchId + ')" class="text-xs text-slate-400 hover:text-white">Close</button>';
+    html += '</div>';
+
+    html += '</div>';
+    panel.innerHTML = html;
+}
+
+function submitVetoStep(matchId, mapName) {
+    fetch('/admin/match/' + matchId + '/veto', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest'},
+        body: 'map_name=' + encodeURIComponent(mapName)
+    })
+    .then(function(r) {
+        if (!r.ok) return r.text().then(function(t) { throw new Error(t); });
+        return r.json();
+    })
+    .then(function(state) { renderVetoPanel(matchId, state); })
+    .catch(function(err) { console.error('[veto] submit error:', err); });
+}
+
+function resetVeto(matchId) {
+    if (!confirm('Reset all veto steps and remove pending games created by the veto?')) return;
+    fetch('/admin/match/' + matchId + '/veto', {
+        method: 'DELETE',
+        headers: {'X-Requested-With': 'XMLHttpRequest'}
+    })
+    .then(function() { fetchVetoState(matchId); })
+    .catch(function(err) { console.error('[veto] reset error:', err); });
+}
+
+function closeVetoPanel(matchId) {
+    var panel = document.getElementById('veto-panel-' + matchId);
+    if (panel) {
+        panel.classList.add('hidden');
+        panel.innerHTML = '';
+    }
+}
+
+// ── Ready-Up System ──
+
+function restartMatch(serverName) {
+    if (!confirm('Restart match and enter ready-up mode? Players will need to type .ready in chat.')) return;
+    fetch('/admin/server/' + serverName + '/restart-match', {
+        method: 'POST',
+        headers: {'X-Requested-With': 'XMLHttpRequest'}
+    }).then(function(r) {
+        if (!r.ok) return r.text().then(function(t) { alert('Error: ' + t); });
+        return r.json();
+    }).then(function(data) {
+        if (data && data.ok) {
+            // The WebSocket will push the ready state update
+        }
+    }).catch(function(err) { console.error('[ready] restart error:', err); });
+}
+
+function forceStart(serverName) {
+    if (!confirm('Force start the match without waiting for all players to ready up?')) return;
+    fetch('/admin/server/' + serverName + '/force-start', {
+        method: 'POST',
+        headers: {'X-Requested-With': 'XMLHttpRequest'}
+    }).then(function(r) {
+        if (!r.ok) return r.text().then(function(t) { alert('Error: ' + t); });
+        return r.json();
+    }).catch(function(err) { console.error('[ready] force-start error:', err); });
+}
+
+function renderReadyPanel(ready) {
+    var panel = document.getElementById('ready-panel');
+    var forceBtn = document.getElementById('force-start-btn');
+    var restartBtn = document.getElementById('restart-match-btn');
+    if (!panel) return;
+
+    if (!ready || !ready.active) {
+        panel.classList.add('hidden');
+        if (forceBtn) forceBtn.classList.add('hidden');
+        if (restartBtn) restartBtn.classList.remove('hidden');
+        return;
+    }
+
+    panel.classList.remove('hidden');
+
+    // Show/hide buttons based on state
+    var isWaiting = ready.status === 'waiting';
+    if (forceBtn) {
+        if (isWaiting) forceBtn.classList.remove('hidden');
+        else forceBtn.classList.add('hidden');
+    }
+    if (restartBtn) {
+        // Hide restart during active ready-up
+        if (isWaiting) restartBtn.classList.add('hidden');
+        else restartBtn.classList.remove('hidden');
+    }
+
+    // Status badge
+    var badge = document.getElementById('ready-status-badge');
+    if (badge) {
+        var statusText = ready.status.charAt(0).toUpperCase() + ready.status.slice(1);
+        if (ready.status === 'waiting') {
+            badge.className = 'text-xs rounded px-2 py-0.5 bg-purple-500/20 text-purple-300';
+            statusText = 'Waiting for Players';
+        } else if (ready.status === 'countdown') {
+            badge.className = 'text-xs rounded px-2 py-0.5 bg-orange-500/20 text-orange-300';
+            statusText = 'Starting...';
+        } else if (ready.status === 'started' || ready.status === 'force_started') {
+            badge.className = 'text-xs rounded px-2 py-0.5 bg-green-500/20 text-green-300';
+            statusText = 'Started';
+            // Hide panel after a brief delay since match has started
+            setTimeout(function() {
+                panel.classList.add('hidden');
+                if (forceBtn) forceBtn.classList.add('hidden');
+                if (restartBtn) restartBtn.classList.remove('hidden');
+            }, 3000);
+        }
+        badge.textContent = statusText;
+    }
+
+    // Counts
+    var ctCount = document.getElementById('ready-ct-count');
+    var tCount = document.getElementById('ready-t-count');
+    if (ctCount) ctCount.textContent = ready.ctReady + '/' + ready.ctTotal;
+    if (tCount) tCount.textContent = ready.tReady + '/' + ready.tTotal;
+
+    // Player lists
+    renderReadyPlayers('ready-ct-players', ready.ct || [], 'blue');
+    renderReadyPlayers('ready-t-players', ready.t || [], 'yellow');
+}
+
+function renderReadyPlayers(containerId, players, color) {
+    var el = document.getElementById(containerId);
+    if (!el) return;
+
+    if (!players.length) {
+        el.innerHTML = '<div class="text-xs text-slate-500">No roster players</div>';
+        return;
+    }
+
+    var html = '';
+    for (var i = 0; i < players.length; i++) {
+        var p = players[i];
+        var icon = p.isReady
+            ? '<span class="text-green-400">&#10003;</span>'
+            : '<span class="text-red-400">&#10007;</span>';
+        var nameColor = p.isReady ? 'text-slate-200' : 'text-slate-500';
+        html += '<div class="flex items-center gap-2 text-xs">' +
+            icon +
+            '<span class="' + nameColor + '">' + p.name + '</span>' +
+            '</div>';
+    }
+    el.innerHTML = html;
+}
+
+// ---- Launch Server Modal (tournament bracket) ----
+
+function updateModalMapOptions() {
+    var mode = document.getElementById('modal-mode');
+    var mapSelect = document.getElementById('modal-map');
+    if (!mode || !mapSelect) return;
+    var maps = (typeof _mapPools !== 'undefined' && _mapPools[mode.value]) || (typeof _allMaps !== 'undefined' ? _allMaps : []);
+    var current = mapSelect.value;
+    mapSelect.innerHTML = '';
+    for (var i = 0; i < maps.length; i++) {
+        var opt = document.createElement('option');
+        opt.value = maps[i];
+        opt.textContent = maps[i];
+        if (maps[i] === current) opt.selected = true;
+        mapSelect.appendChild(opt);
+    }
+}
+
+function openLaunchModal(matchId, gameNumber, mapName) {
+    var modal = document.getElementById('launch-modal');
+    if (!modal) return;
+
+    // Reset state
+    var errEl = document.getElementById('launch-modal-error');
+    var succEl = document.getElementById('launch-modal-success');
+    if (errEl) { errEl.classList.add('hidden'); errEl.textContent = ''; }
+    if (succEl) { succEl.classList.add('hidden'); succEl.textContent = ''; }
+    var btn = document.getElementById('modal-submit-btn');
+    if (btn) { btn.disabled = false; btn.textContent = 'Launch'; }
+
+    // Hidden fields
+    document.getElementById('modal-match-id').value = matchId;
+    document.getElementById('modal-game-number').value = gameNumber;
+
+    // Server name from tournament context
+    var tName = (typeof _tournamentName !== 'undefined' ? _tournamentName : 'match').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    if (tName.length > 12) tName = tName.substring(0, 12);
+    document.getElementById('modal-name').value = tName + '-m' + matchId + '-g' + gameNumber;
+
+    // Game mode
+    var modeSelect = document.getElementById('modal-mode');
+    var gm = typeof _tournamentGameMode !== 'undefined' && _tournamentGameMode ? _tournamentGameMode : 'competitive';
+    if (modeSelect) modeSelect.value = gm;
+
+    // Build map options, then set the map
+    updateModalMapOptions();
+    if (mapName) {
+        var mapSelect = document.getElementById('modal-map');
+        if (mapSelect) mapSelect.value = mapName;
+    }
+
+    // Max players from team size
+    var ts = typeof _tournamentTeamSize !== 'undefined' ? _tournamentTeamSize : 5;
+    document.getElementById('modal-players').value = ts * 2;
+
+    // Server password
+    var pw = typeof _tournamentServerPassword !== 'undefined' ? _tournamentServerPassword : '';
+    document.getElementById('modal-password').value = pw;
+
+    // RCON — leave empty for auto-generated
+    document.getElementById('modal-rcon').value = '';
+
+    // Port — use default, server will resolve conflicts
+    document.getElementById('modal-port').value = '27015';
+
+    // CSTV — default checked
+    document.getElementById('modal-tv').checked = true;
+
+    modal.classList.remove('hidden');
+}
+
+function closeLaunchModal() {
+    var modal = document.getElementById('launch-modal');
+    if (modal) modal.classList.add('hidden');
+}
+
+function submitLaunchModal(form) {
+    var errEl = document.getElementById('launch-modal-error');
+    var succEl = document.getElementById('launch-modal-success');
+    var btn = document.getElementById('modal-submit-btn');
+    if (errEl) { errEl.classList.add('hidden'); errEl.textContent = ''; }
+    if (succEl) { succEl.classList.add('hidden'); succEl.textContent = ''; }
+    if (btn) { btn.disabled = true; btn.textContent = 'Launching...'; }
+
+    var data = new URLSearchParams(new FormData(form));
+    // Checkbox: if not checked, the FormData won't include it, which is correct
+    // If checked, FormData includes tv=on
+
+    fetch('/admin/launch', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json'
+        },
+        body: data
+    }).then(function(resp) {
+        return resp.json();
+    }).then(function(result) {
+        if (result.error) {
+            if (errEl) { errEl.textContent = result.error; errEl.classList.remove('hidden'); }
+            if (btn) { btn.disabled = false; btn.textContent = 'Launch'; }
+        } else {
+            if (succEl) {
+                succEl.textContent = 'Server "' + result.name + '" launched on port ' + result.port;
+                succEl.classList.remove('hidden');
+            }
+            if (btn) { btn.textContent = 'Launched'; }
+            // Auto-close after a brief delay so the admin sees the success
+            setTimeout(closeLaunchModal, 1500);
+        }
+    }).catch(function(err) {
+        if (errEl) { errEl.textContent = 'Request failed: ' + err.message; errEl.classList.remove('hidden'); }
+        if (btn) { btn.disabled = false; btn.textContent = 'Launch'; }
+    });
 }

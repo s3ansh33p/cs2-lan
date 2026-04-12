@@ -210,6 +210,7 @@ type ServerState struct {
 	gameOverFn GameOverFunc
 	roundEndFn RoundEndFunc
 	persistFn  PersistFunc
+	readyFn    ReadyFunc
 
 	// Metadata dirty flag — set under mu, read in notify()
 	metaDirty bool
@@ -858,6 +859,11 @@ func (s *ServerState) addSystemMessage(msg string) {
 	s.notify()
 }
 
+// ResetStats zeroes all player stats and scores, keeping players connected.
+func (s *ServerState) ResetStats() {
+	s.resetWithMessage("Match Restarted — Ready Up")
+}
+
 func (s *ServerState) resetWithMessage(reason string) {
 	s.mu.Lock()
 	// Keep players but zero their stats
@@ -928,6 +934,9 @@ type RoundEndFunc func(info RoundEndInfo)
 // PersistFunc is called when metadata fields change and should be persisted.
 type PersistFunc func(serverName string, m TrackerMetadata)
 
+// ReadyFunc is called when a player sends ".ready" in chat.
+type ReadyFunc func(serverName, playerName, team string)
+
 type Manager struct {
 	mu         sync.Mutex
 	servers    map[string]*ServerState
@@ -937,6 +946,7 @@ type Manager struct {
 	gameOverFn GameOverFunc
 	roundEndFn RoundEndFunc
 	persistFn  PersistFunc
+	readyFn    ReadyFunc
 }
 
 func NewManager(streamFn LogStreamFunc, rconFn RCONFunc) *Manager {
@@ -969,6 +979,13 @@ func (m *Manager) OnMetadataChange(fn PersistFunc) {
 	m.mu.Unlock()
 }
 
+// OnPlayerReady registers a callback that fires when a player sends ".ready" in chat.
+func (m *Manager) OnPlayerReady(fn ReadyFunc) {
+	m.mu.Lock()
+	m.readyFn = fn
+	m.mu.Unlock()
+}
+
 // TrackServer starts tracking a server. Returns the state and whether it was newly created.
 func (m *Manager) TrackServer(name string, gamePort int, rconPassword, gameMode, initialMap string) (*ServerState, bool) {
 	m.mu.Lock()
@@ -984,6 +1001,7 @@ func (m *Manager) TrackServer(name string, gamePort int, rconPassword, gameMode,
 	s.gameOverFn = m.gameOverFn
 	s.roundEndFn = m.roundEndFn
 	s.persistFn = m.persistFn
+	s.readyFn = m.readyFn
 	m.servers[name] = s
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancels[name] = cancel
@@ -1196,6 +1214,9 @@ var (
 
 	// Team switch
 	teamSwitchRe = regexp.MustCompile(`"(.+?)<\d+><[^>]*>(?:<[^>]*>)?" switched from team \S+ to <?(CT|TERRORIST|Spectator|Unassigned)>?`)
+
+	// Chat: ".ready" command from player
+	sayReadyRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)>" say "\.ready"`)
 
 	// Player entered
 	enteredRe = regexp.MustCompile(`"(.+?)<(\d+)><(BOT|.+?)><.*?>" entered the game`)
@@ -1660,6 +1681,15 @@ func parseLine(line string, state *ServerState) {
 		}
 		state.mu.Unlock()
 		state.notify()
+		return
+	}
+
+	// Chat: ".ready" command
+	if m := sayReadyRe.FindStringSubmatch(line); m != nil {
+		playerName, team := m[1], m[2]
+		if state.readyFn != nil {
+			go state.readyFn(state.serverName, playerName, team)
+		}
 		return
 	}
 
