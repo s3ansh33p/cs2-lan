@@ -453,6 +453,7 @@ func (h *Handler) buildBracketJSON(tournamentID int64) []byte {
 		IsBye          bool       `json:"isBye"`
 		Section        string     `json:"section"`
 		GroupID        int        `json:"groupId,omitempty"`
+		NextMatch      int64      `json:"nextMatch,omitempty"`
 		LoserNextMatch int64      `json:"loserNextMatch,omitempty"`
 		Games          []gameJSON `json:"games"`
 		Vetoes         []vetoJSON `json:"vetoes,omitempty"`
@@ -471,13 +472,17 @@ func (h *Handler) buildBracketJSON(tournamentID int64) []byte {
 		if section == "" {
 			section = "winners"
 		}
+		var nextMatch int64
+		if m.NextMatchID != nil {
+			nextMatch = *m.NextMatchID
+		}
 		var loserNext int64
 		if m.LoserNextMatchID != nil {
 			loserNext = *m.LoserNextMatchID
 		}
 		mj := matchJSON{
 			ID: m.ID, Round: m.Round, Pos: m.Position, BestOf: m.BestOf, IsBye: m.IsBye,
-			Section: section, GroupID: m.GroupID, LoserNextMatch: loserNext,
+			Section: section, GroupID: m.GroupID, NextMatch: nextMatch, LoserNextMatch: loserNext,
 			Team1: teamRef{Name: html.EscapeString(m.Team1Name)}, Team2: teamRef{Name: html.EscapeString(m.Team2Name)},
 		}
 		if m.Team1ID != nil {

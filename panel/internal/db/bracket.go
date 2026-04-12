@@ -437,42 +437,27 @@ func (db *DB) GenerateDoubleElimBracket(tournamentID int64, teamIDs []int64) err
 	// -------------------------------------------------------------------
 	// 8. Handle LR1 byes from WR1 byes
 	// -------------------------------------------------------------------
-	// For each LR1 match, check if both feeding WB matches had byes.
-	// If one WB match was a bye, the LR1 match has a bye slot (no loser sent).
-	// If both were byes, the LR1 match itself is a bye with no teams.
+	// Check the feeding WR1 matches (via loser_next_match_id) to determine
+	// which LR1 matches are byes. Don't check LR1 teams directly — at generation
+	// time losers haven't been determined yet, so LR1 always starts with 0 teams.
 	for i := 0; i < lr1Matches; i++ {
 		lr1ID := lbMatchIDs[fmt.Sprintf("1-%d", i)]
 
-		// Check which WB matches feed this LR1 match
-		var team1, team2 *int64
-		tx.QueryRow(`SELECT team1_id, team2_id FROM matches WHERE id=?`, lr1ID).Scan(&team1, &team2)
+		// Count how many WR1 matches feeding this LR1 match are byes
+		var byeCount int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM matches WHERE loser_next_match_id=? AND is_bye=1`, lr1ID).Scan(&byeCount); err != nil {
+			continue
+		}
 
-		// A LR1 match is a bye if it has only one team (or zero)
-		hasTeam1 := team1 != nil
-		hasTeam2 := team2 != nil
-		if (hasTeam1 && !hasTeam2) || (!hasTeam1 && hasTeam2) {
-			// Single team bye - advance to next LB round
-			byeWinner := team1
-			if byeWinner == nil {
-				byeWinner = team2
-			}
-			tx.Exec(`UPDATE matches SET is_bye=1, winner_id=? WHERE id=?`, byeWinner, lr1ID)
-
-			// Advance bye winner to next LB round
-			var nextMatchID *int64
-			var pos int
-			tx.QueryRow(`SELECT next_match_id, position FROM matches WHERE id=?`, lr1ID).Scan(&nextMatchID, &pos)
-			if nextMatchID != nil {
-				col := "team1_id"
-				if pos%2 == 1 {
-					col = "team2_id"
-				}
-				tx.Exec(fmt.Sprintf(`UPDATE matches SET %s=? WHERE id=?`, col), *byeWinner, *nextMatchID)
-			}
-		} else if !hasTeam1 && !hasTeam2 {
-			// No teams at all - mark as bye
+		if byeCount >= 2 {
+			// Both feeders are byes — no losers will ever arrive
+			tx.Exec(`UPDATE matches SET is_bye=1 WHERE id=?`, lr1ID)
+		} else if byeCount == 1 {
+			// One feeder is a bye — only 1 loser will arrive.
+			// Mark as bye; advanceLoser will auto-resolve when the single team arrives.
 			tx.Exec(`UPDATE matches SET is_bye=1 WHERE id=?`, lr1ID)
 		}
+		// byeCount == 0: both feeders have 2 teams, losers arrive later. NOT a bye.
 	}
 
 	// -------------------------------------------------------------------
@@ -524,6 +509,7 @@ func (db *DB) advanceToNext(matchID int64, winnerID int64) error {
 // advanceLoser places the loser into the first available slot of the loser's next match.
 // Unlike advanceToNext (which uses position%2), losers bracket routing fills team1 first,
 // then team2, since the feeding pattern for losers doesn't follow consecutive-pair logic.
+// If the target match is a bye (only 1 team expected), auto-resolves and advances.
 func (db *DB) advanceLoser(matchID int64, loserID int64) error {
 	var loserNextMatchID *int64
 	err := db.QueryRow(`SELECT loser_next_match_id FROM matches WHERE id=?`, matchID).
@@ -534,8 +520,9 @@ func (db *DB) advanceLoser(matchID int64, loserID int64) error {
 
 	// Check which slot is available in the target match
 	var team1ID, team2ID *int64
-	err = db.QueryRow(`SELECT team1_id, team2_id FROM matches WHERE id=?`, *loserNextMatchID).
-		Scan(&team1ID, &team2ID)
+	var isBye bool
+	err = db.QueryRow(`SELECT team1_id, team2_id, is_bye FROM matches WHERE id=?`, *loserNextMatchID).
+		Scan(&team1ID, &team2ID, &isBye)
 	if err != nil {
 		return err
 	}
@@ -545,7 +532,17 @@ func (db *DB) advanceLoser(matchID int64, loserID int64) error {
 		col = "team2_id"
 	}
 	_, err = db.Exec(fmt.Sprintf(`UPDATE matches SET %s=? WHERE id=?`, col), loserID, *loserNextMatchID)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// If the target match is a bye (only 1 team expected), auto-resolve it
+	if isBye && team1ID == nil && team2ID == nil {
+		// This is the first (and only) team arriving — auto-win and advance
+		db.Exec(`UPDATE matches SET winner_id=? WHERE id=?`, loserID, *loserNextMatchID)
+		db.advanceToNext(*loserNextMatchID, loserID)
+	}
+	return nil
 }
 
 const matchColumns = `m.id, m.tournament_id, m.round, m.position, m.best_of,
@@ -1356,31 +1353,17 @@ func (db *DB) generatePlayoffDoubleElim(tournamentID int64, teamIDs []int64) err
 		}
 	}
 
-	// 8. Handle LR1 byes
+	// 8. Handle LR1 byes from WR1 byes
+	// Check feeding WR1 matches for byes instead of LR1 teams (losers aren't placed yet).
 	for i := 0; i < lr1Matches; i++ {
 		lr1ID := lbMatchIDs[fmt.Sprintf("1-%d", i)]
-		var team1, team2 *int64
-		tx.QueryRow(`SELECT team1_id, team2_id FROM matches WHERE id=?`, lr1ID).Scan(&team1, &team2)
-
-		hasTeam1 := team1 != nil
-		hasTeam2 := team2 != nil
-		if (hasTeam1 && !hasTeam2) || (!hasTeam1 && hasTeam2) {
-			byeWinner := team1
-			if byeWinner == nil {
-				byeWinner = team2
-			}
-			tx.Exec(`UPDATE matches SET is_bye=1, winner_id=? WHERE id=?`, byeWinner, lr1ID)
-			var nextMatchID *int64
-			var pos int
-			tx.QueryRow(`SELECT next_match_id, position FROM matches WHERE id=?`, lr1ID).Scan(&nextMatchID, &pos)
-			if nextMatchID != nil {
-				col := "team1_id"
-				if pos%2 == 1 {
-					col = "team2_id"
-				}
-				tx.Exec(fmt.Sprintf(`UPDATE matches SET %s=? WHERE id=?`, col), *byeWinner, *nextMatchID)
-			}
-		} else if !hasTeam1 && !hasTeam2 {
+		var byeCount int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM matches WHERE loser_next_match_id=? AND is_bye=1`, lr1ID).Scan(&byeCount); err != nil {
+			continue
+		}
+		if byeCount >= 2 {
+			tx.Exec(`UPDATE matches SET is_bye=1 WHERE id=?`, lr1ID)
+		} else if byeCount == 1 {
 			tx.Exec(`UPDATE matches SET is_bye=1 WHERE id=?`, lr1ID)
 		}
 	}

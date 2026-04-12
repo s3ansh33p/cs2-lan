@@ -16,9 +16,10 @@ function mapDisplayName(m) {
 
 // ── Public Bracket Rendering ──
 
-function renderBracketLayout(container, matches, renderFn, cardMinWidth) {
+function renderBracketLayout(container, matches, renderFn, cardMinWidth, labelPrefix) {
     if (!container || !matches.length) return;
     var minW = cardMinWidth || 220;
+    var lp = labelPrefix || '';
 
     // Group by round, index by (round, pos) for O(1) lookup
     var byKey = {};
@@ -30,9 +31,9 @@ function renderBracketLayout(container, matches, renderFn, cardMinWidth) {
     }
 
     function roundLabel(r) {
-        if (r === maxRound) return 'Final';
-        if (r === maxRound - 1) return 'Semis';
-        return 'Round ' + r;
+        if (r === maxRound) return lp + 'Final';
+        if (r === maxRound - 1) return lp + 'Semis';
+        return lp + 'Round ' + r;
     }
 
     // Recursively build nested bracket HTML from the final round backward.
@@ -42,9 +43,10 @@ function renderBracketLayout(container, matches, renderFn, cardMinWidth) {
     function buildSubtree(round, pos) {
         var match = byKey[round + ':' + pos];
         var card = match ? renderFn(match) : '<div class="text-xs text-slate-500 italic p-2">TBD</div>';
+        var midAttr = match ? ' data-match-id="' + match.id + '"' : '';
 
         if (round === 1) {
-            return '<div class="bracket-card" data-round="' + round + '" style="min-width:' + minW + 'px">' + card + '</div>';
+            return '<div class="bracket-card" data-round="' + round + '"' + midAttr + ' style="min-width:' + minW + 'px">' + card + '</div>';
         }
 
         var s1 = buildSubtree(round - 1, pos * 2);
@@ -55,7 +57,7 @@ function renderBracketLayout(container, matches, renderFn, cardMinWidth) {
                 s1 + s2 +
             '</div>' +
             '<div class="bracket-conn" style="width:24px;min-width:24px;align-self:stretch;position:relative"></div>' +
-            '<div class="bracket-card" data-round="' + round + '" style="min-width:' + minW + 'px">' + card + '</div>' +
+            '<div class="bracket-card" data-round="' + round + '"' + midAttr + ' style="min-width:' + minW + 'px">' + card + '</div>' +
         '</div>';
     }
 
@@ -104,31 +106,30 @@ function renderBracketLayout(container, matches, renderFn, cardMinWidth) {
     }
 }
 
+function addSVGLine(svg, x1, y1, x2, y2, dashed) {
+    var svgNS = 'http://www.w3.org/2000/svg';
+    var l = document.createElementNS(svgNS, 'line');
+    l.setAttribute('x1', x1); l.setAttribute('y1', y1);
+    l.setAttribute('x2', x2); l.setAttribute('y2', y2);
+    l.setAttribute('stroke', '#475569'); l.setAttribute('stroke-width', '1');
+    if (dashed) l.setAttribute('stroke-dasharray', '4,3');
+    svg.appendChild(l);
+}
+
 function drawBracketConnectors(container) {
     var connectors = container.querySelectorAll('.bracket-conn');
     var svgNS = 'http://www.w3.org/2000/svg';
 
     for (var c = 0; c < connectors.length; c++) {
         var conn = connectors[c];
-        var pair = conn.parentElement; // .bracket-pair
-        var sources = conn.previousElementSibling; // .bracket-sources
-        var target = conn.nextElementSibling; // .bracket-card
+        var prev = conn.previousElementSibling;
+        var target = conn.nextElementSibling;
 
-        if (!sources || !target) continue;
-
-        // The two source children (either bracket-card or bracket-pair)
-        var children = sources.children;
-        if (children.length < 2) continue;
+        if (!prev || !target) continue;
 
         var connRect = conn.getBoundingClientRect();
-        var s1Rect = children[0].getBoundingClientRect();
-        var s2Rect = children[1].getBoundingClientRect();
         var tgtRect = target.getBoundingClientRect();
-
-        var y1 = s1Rect.top + s1Rect.height / 2 - connRect.top;
-        var y2 = s2Rect.top + s2Rect.height / 2 - connRect.top;
         var yTgt = tgtRect.top + tgtRect.height / 2 - connRect.top;
-        var midX = connRect.width / 2;
         var w = connRect.width;
 
         var svg = document.createElementNS(svgNS, 'svg');
@@ -136,36 +137,138 @@ function drawBracketConnectors(container) {
         svg.setAttribute('width', w);
         svg.setAttribute('height', connRect.height);
 
-        // Source 1 horizontal
-        var l = document.createElementNS(svgNS, 'line');
-        l.setAttribute('x1', 0); l.setAttribute('y1', y1);
-        l.setAttribute('x2', midX); l.setAttribute('y2', y1);
-        l.setAttribute('stroke', '#475569'); l.setAttribute('stroke-width', '1');
-        svg.appendChild(l);
+        var isSources = prev.classList.contains('bracket-sources');
+        var children = isSources ? prev.children : null;
 
-        // Source 2 horizontal
-        l = document.createElementNS(svgNS, 'line');
-        l.setAttribute('x1', 0); l.setAttribute('y1', y2);
-        l.setAttribute('x2', midX); l.setAttribute('y2', y2);
-        l.setAttribute('stroke', '#475569'); l.setAttribute('stroke-width', '1');
-        svg.appendChild(l);
+        if (children && children.length >= 2) {
+            // Merge connector: two sources join into one target
+            var s1Rect = children[0].getBoundingClientRect();
+            var s2Rect = children[1].getBoundingClientRect();
+            var y1 = s1Rect.top + s1Rect.height / 2 - connRect.top;
+            var y2 = s2Rect.top + s2Rect.height / 2 - connRect.top;
+            var midX = w / 2;
 
-        // Vertical joining sources
-        l = document.createElementNS(svgNS, 'line');
-        l.setAttribute('x1', midX); l.setAttribute('y1', y1);
-        l.setAttribute('x2', midX); l.setAttribute('y2', y2);
-        l.setAttribute('stroke', '#475569'); l.setAttribute('stroke-width', '1');
-        svg.appendChild(l);
-
-        // Horizontal to target
-        l = document.createElementNS(svgNS, 'line');
-        l.setAttribute('x1', midX); l.setAttribute('y1', yTgt);
-        l.setAttribute('x2', w); l.setAttribute('y2', yTgt);
-        l.setAttribute('stroke', '#475569'); l.setAttribute('stroke-width', '1');
-        svg.appendChild(l);
+            addSVGLine(svg, 0, y1, midX, y1);
+            addSVGLine(svg, 0, y2, midX, y2);
+            addSVGLine(svg, midX, y1, midX, y2);
+            addSVGLine(svg, midX, yTgt, w, yTgt);
+        } else {
+            // Chain connector: single source to target (horizontal line)
+            var srcRect = prev.getBoundingClientRect();
+            var ySrc = srcRect.top + srcRect.height / 2 - connRect.top;
+            addSVGLine(svg, 0, ySrc, w, yTgt);
+        }
 
         conn.innerHTML = '';
         conn.appendChild(svg);
+    }
+}
+
+// ── Double Elimination: Losers Bracket Rendering ──
+// LB has alternating structure: merge rounds (2:1) and dropdown rounds (1:1).
+// This recursive builder handles both by checking if the current round has the
+// same match count as the previous round (dropdown/chain) or fewer (merge).
+
+function renderLosersBracket(container, matches, renderFn, cardMinWidth) {
+    if (!container || !matches.length) return;
+    var minW = cardMinWidth || 190;
+
+    // Group by absolute round, sort within each round by position
+    var byRound = {};
+    var maxRound = 0;
+    for (var i = 0; i < matches.length; i++) {
+        var r = Math.abs(matches[i].round);
+        if (!byRound[r]) byRound[r] = [];
+        byRound[r].push(matches[i]);
+        if (r > maxRound) maxRound = r;
+    }
+    for (var r in byRound) {
+        byRound[r].sort(function(a, b) { return a.pos - b.pos; });
+    }
+
+    function lbLabel(r) {
+        if (r === maxRound) return 'LB Final';
+        return 'LB Round ' + r;
+    }
+
+    // Build tree recursively using array indices within each round.
+    // Even rounds = dropdown/chain (1:1), odd rounds >= 3 = merge (2:1), LR1 = base.
+    function buildTree(round, idx) {
+        var roundMatches = byRound[round];
+        var match = roundMatches && roundMatches[idx] ? roundMatches[idx] : null;
+        var card = match ? renderFn(match) : '<div class="text-xs text-slate-500 italic p-2">TBD</div>';
+        var midAttr = match ? ' data-match-id="' + match.id + '"' : '';
+
+        if (round <= 1) {
+            return '<div class="bracket-card" data-round="lb' + round + '"' + midAttr + ' style="min-width:' + minW + 'px">' + card + '</div>';
+        }
+
+        var prevCount = byRound[round - 1] ? byRound[round - 1].length : 0;
+        var currCount = roundMatches ? roundMatches.length : 0;
+
+        if (currCount === prevCount) {
+            // Dropdown round: 1:1 chain from previous round at same index
+            var source = buildTree(round - 1, idx);
+            return '<div class="bracket-pair" style="display:flex;align-items:center">' +
+                source +
+                '<div class="bracket-conn" style="width:24px;min-width:24px;align-self:stretch;position:relative"></div>' +
+                '<div class="bracket-card" data-round="lb' + round + '"' + midAttr + ' style="min-width:' + minW + 'px">' + card + '</div>' +
+            '</div>';
+        } else {
+            // Merge round: 2:1 from previous round
+            var s1 = buildTree(round - 1, idx * 2);
+            var s2 = buildTree(round - 1, idx * 2 + 1);
+            return '<div class="bracket-pair" style="display:flex;align-items:center">' +
+                '<div class="bracket-sources" style="display:flex;flex-direction:column;gap:8px">' +
+                    s1 + s2 +
+                '</div>' +
+                '<div class="bracket-conn" style="width:24px;min-width:24px;align-self:stretch;position:relative"></div>' +
+                '<div class="bracket-card" data-round="lb' + round + '"' + midAttr + ' style="min-width:' + minW + 'px">' + card + '</div>' +
+            '</div>';
+        }
+    }
+
+    var numFinalMatches = byRound[maxRound] ? byRound[maxRound].length : 0;
+    var treeHtml = '';
+    for (var i = 0; i < numFinalMatches; i++) {
+        treeHtml += buildTree(maxRound, i);
+    }
+
+    container.innerHTML =
+        '<div class="bracket-labels" style="position:relative;height:20px;min-width:max-content"></div>' +
+        '<div class="bracket-tree" style="min-width:max-content;margin-top:40px">' + treeHtml + '</div>';
+
+    // Equalize card widths per round
+    var cards = container.querySelectorAll('.bracket-card');
+    var maxWidths = {};
+    for (var ci = 0; ci < cards.length; ci++) {
+        var rd = cards[ci].getAttribute('data-round');
+        var w = cards[ci].offsetWidth;
+        if (!maxWidths[rd] || w > maxWidths[rd]) maxWidths[rd] = w;
+    }
+    for (var ci = 0; ci < cards.length; ci++) {
+        var rd = cards[ci].getAttribute('data-round');
+        cards[ci].style.width = maxWidths[rd] + 'px';
+    }
+
+    drawBracketConnectors(container);
+
+    // Position round labels above columns
+    var labelsRow = container.querySelector('.bracket-labels');
+    var placed = {};
+    for (var ci = 0; ci < cards.length; ci++) {
+        var rd = cards[ci].getAttribute('data-round');
+        if (placed[rd]) continue;
+        placed[rd] = true;
+        var cardRect = cards[ci].getBoundingClientRect();
+        var containerRect = container.getBoundingClientRect();
+        var lbl = document.createElement('div');
+        lbl.className = 'text-xs text-slate-500';
+        lbl.style.cssText = 'position:absolute;top:0;width:' + cardRect.width + 'px;text-align:center;left:' +
+            (cardRect.left - containerRect.left) + 'px';
+        var roundNum = parseInt(rd.replace('lb', ''));
+        lbl.textContent = lbLabel(roundNum);
+        labelsRow.appendChild(lbl);
     }
 }
 
@@ -174,71 +277,118 @@ function drawBracketConnectors(container) {
 function renderDoubleElimBracket(container, matches, renderFn, cardMinWidth) {
     if (!container || !matches.length) return;
 
-    var winners = [];
-    var losers = [];
-    var grandFinal = [];
+    var winners = [], losers = [], grandFinal = [];
+    var allById = {};
 
     for (var i = 0; i < matches.length; i++) {
         var section = matches[i].section || 'winners';
-        if (section === 'grand_final') {
-            grandFinal.push(matches[i]);
-        } else if (section === 'losers') {
-            losers.push(matches[i]);
-        } else {
-            winners.push(matches[i]);
-        }
+        allById[matches[i].id] = matches[i];
+        if (section === 'grand_final') grandFinal.push(matches[i]);
+        else if (section === 'losers') losers.push(matches[i]);
+        else winners.push(matches[i]);
     }
 
-    var html = '';
+    // Unified layout: WB + LB stacked on left, GF on right
+    var html = '<div class="de-bracket" style="display:flex;gap:40px;align-items:stretch;position:relative;min-width:max-content">';
+    html += '<div class="de-left">';
 
-    // Winners Bracket section
     if (winners.length > 0) {
-        html += '<div class="mb-8">';
-        html += '<h3 class="text-lg font-semibold mb-2 text-emerald-400">Winners Bracket</h3>';
-        html += '<div class="overflow-x-auto"><div class="bracket-section bracket-section-winners flex gap-8 items-start min-w-max py-4"></div></div>';
+        html += '<div class="de-wb" style="margin-bottom:24px">';
+        html += '<h3 class="text-sm font-semibold mb-2 text-emerald-400">Winners Bracket</h3>';
+        html += '<div class="bracket-section bracket-section-winners"></div>';
         html += '</div>';
     }
 
-    // Losers Bracket section
     if (losers.length > 0) {
-        html += '<div class="mb-8">';
-        html += '<h3 class="text-lg font-semibold mb-2 text-red-400">Losers Bracket</h3>';
-        html += '<div class="overflow-x-auto"><div class="bracket-section bracket-section-losers flex gap-8 items-start min-w-max py-4"></div></div>';
+        html += '<div class="de-lb">';
+        html += '<h3 class="text-sm font-semibold mb-2 text-red-400">Losers Bracket</h3>';
+        html += '<div class="bracket-section bracket-section-losers"></div>';
         html += '</div>';
     }
 
-    // Grand Final section
+    html += '</div>'; // de-left
+
     if (grandFinal.length > 0) {
-        html += '<div class="mb-8">';
-        html += '<h3 class="text-lg font-semibold mb-2 text-amber-400">Grand Final</h3>';
-        html += '<div class="bracket-section bracket-section-grand-final flex justify-center py-4"></div>';
+        html += '<div class="de-finals" style="display:flex;flex-direction:column;justify-content:center;min-width:0">';
+        html += '<h3 class="text-sm font-semibold mb-2 text-amber-400 text-center">Grand Final</h3>';
+        html += '<div class="bracket-section bracket-section-grand-final"></div>';
         html += '</div>';
     }
 
+    html += '</div>'; // de-bracket
     container.innerHTML = html;
 
-    // Render each section using the existing bracket layout logic
+    // Render Winners Bracket
     if (winners.length > 0) {
-        var winnersContainer = container.querySelector('.bracket-section-winners');
-        renderBracketLayout(winnersContainer, winners, renderFn, cardMinWidth);
+        var wbContainer = container.querySelector('.bracket-section-winners');
+        renderBracketLayout(wbContainer, winners, renderFn, cardMinWidth, 'WB ');
     }
 
+    // Render Losers Bracket
     if (losers.length > 0) {
-        var losersContainer = container.querySelector('.bracket-section-losers');
-        // Use slightly smaller cards for losers bracket
-        var losersMinWidth = cardMinWidth ? Math.round(cardMinWidth * 0.85) : 190;
-        renderBracketLayout(losersContainer, losers, renderFn, losersMinWidth);
+        var lbContainer = container.querySelector('.bracket-section-losers');
+        var lbMinW = cardMinWidth ? Math.round(cardMinWidth * 0.85) : 190;
+        renderLosersBracket(lbContainer, losers, renderFn, lbMinW);
     }
 
+    // Render Grand Final
     if (grandFinal.length > 0) {
         var gfContainer = container.querySelector('.bracket-section-grand-final');
-        // Render grand final match(es) as simple centered cards
-        var gfMinWidth = cardMinWidth || 220;
+        var gfMinW = cardMinWidth || 220;
         var gfHtml = '';
         for (var g = 0; g < grandFinal.length; g++) {
-            gfHtml += '<div class="bracket-card" style="min-width:' + gfMinWidth + 'px">' + renderFn(grandFinal[g]) + '</div>';
+            gfHtml += '<div class="bracket-card" data-match-id="' + grandFinal[g].id + '" style="min-width:' + gfMinW + 'px">' + renderFn(grandFinal[g]) + '</div>';
         }
         gfContainer.innerHTML = gfHtml;
+    }
+
+    // Draw dashed connectors from WB losers to LB entries
+    drawCrossBracketConnectors(container, allById);
+}
+
+// Draw dashed SVG lines from WB match cards to LB match cards for loser drop-downs.
+function drawCrossBracketConnectors(container, allById) {
+    var deBracket = container.querySelector('.de-bracket');
+    if (!deBracket) return;
+
+    var svgNS = 'http://www.w3.org/2000/svg';
+    var bracketRect = deBracket.getBoundingClientRect();
+
+    var svg = document.createElementNS(svgNS, 'svg');
+    svg.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:visible';
+
+    var hasLines = false;
+    for (var id in allById) {
+        var match = allById[id];
+        if (!match.loserNextMatch || (match.section || 'winners') !== 'winners') continue;
+
+        var srcCard = deBracket.querySelector('[data-match-id="' + match.id + '"]');
+        var dstCard = deBracket.querySelector('[data-match-id="' + match.loserNextMatch + '"]');
+        if (!srcCard || !dstCard) continue;
+
+        var srcRect = srcCard.getBoundingClientRect();
+        var dstRect = dstCard.getBoundingClientRect();
+
+        var x1 = srcRect.left + srcRect.width / 2 - bracketRect.left;
+        var y1 = srcRect.bottom - bracketRect.top;
+        var x2 = dstRect.left + dstRect.width / 2 - bracketRect.left;
+        var y2 = dstRect.top - bracketRect.top;
+
+        // Bezier curve dropping from WB card bottom to LB card top
+        var midY = (y1 + y2) / 2;
+        var path = document.createElementNS(svgNS, 'path');
+        path.setAttribute('d', 'M' + x1 + ',' + y1 + ' C' + x1 + ',' + midY + ' ' + x2 + ',' + midY + ' ' + x2 + ',' + y2);
+        path.setAttribute('stroke', '#64748b');
+        path.setAttribute('stroke-width', '1');
+        path.setAttribute('stroke-dasharray', '4,3');
+        path.setAttribute('fill', 'none');
+        path.setAttribute('opacity', '0.5');
+        svg.appendChild(path);
+        hasLines = true;
+    }
+
+    if (hasLines) {
+        deBracket.appendChild(svg);
     }
 }
 

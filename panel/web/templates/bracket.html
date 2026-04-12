@@ -63,6 +63,7 @@ var _bracketData = [
  team1:{id:{{derefInt64 .Team1ID}}, name:"{{.Team1Name}}"},
  team2:{id:{{derefInt64 .Team2ID}}, name:"{{.Team2Name}}"},
  winner:{{derefInt64 .WinnerID}}, isBye:{{.IsBye}}, section:"{{.BracketSection}}", groupId:{{.GroupID}},
+ nextMatch:{{derefInt64 .NextMatchID}}, loserNextMatch:{{derefInt64 .LoserNextMatchID}},
  games:[{{range .Games}}{id:{{.ID}}, num:{{.GameNumber}}, map:"{{.MapName}}", t1:{{.Team1Score}}, t2:{{.Team2Score}}, status:"{{.Status}}", server:"{{.ServerName}}", t1ct:{{.Team1StartsCT}}, h1ct:{{.H1CT}}, h1t:{{.H1T}}, h2ct:{{.H2CT}}, h2t:{{.H2T}}, demo:{{if .DemoPath}}true{{else}}false{{end}}},{{end}}]},
 {{end}}
 ];
