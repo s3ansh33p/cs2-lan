@@ -163,8 +163,8 @@ type PlayerStats struct {
 	KnifeKills    int
 	ZeusKills     int
 	HeadshotKills int
-	Level         int // arms race level — not tracked via broadcast
-	LevelKills    int // arms race per-level kills — not tracked via broadcast
+	Level         int // arms race level (state-tracked from kill events)
+	LevelKills    int // arms race kills at current level (resets on level up)
 	HasArmor      bool
 	HasHelmet     bool
 	HasDefuser    bool
@@ -314,6 +314,42 @@ type ServerState struct {
 	// Accessed via atomic ops; zero means "fall back to wall-time" for callers
 	// outside the parser loop (e.g. ResetStats from web context).
 	deltaTimeMs int64
+
+	// parserCancelCh is closed by signalParserCancel to kick the tracker's
+	// watchdog goroutine into tearing down the current parser (e.g. on
+	// AnnouncementWinPanelMatch — we don't want to wait for the HTTP read
+	// to time out on an abandoned token). The restart loop rotates this via
+	// newParserCancel on every attach, so a stale close from a prior match
+	// never carries over. cancelMu guards the swap and serialises close.
+	cancelMu       sync.Mutex
+	parserCancelCh chan struct{}
+}
+
+// newParserCancel installs a fresh cancel channel for the next parser attach
+// and returns it. Must be called before the watchdog subscribes so any
+// pending signal from the previous match is dropped with the old channel.
+func (s *ServerState) newParserCancel() <-chan struct{} {
+	s.cancelMu.Lock()
+	defer s.cancelMu.Unlock()
+	s.parserCancelCh = make(chan struct{})
+	return s.parserCancelCh
+}
+
+// signalParserCancel closes the current cancel channel (idempotent, safe to
+// call from any goroutine). If no parser is attached yet the call is a no-op.
+func (s *ServerState) signalParserCancel() {
+	s.cancelMu.Lock()
+	defer s.cancelMu.Unlock()
+	ch := s.parserCancelCh
+	if ch == nil {
+		return
+	}
+	select {
+	case <-ch:
+		// Already closed — nothing to do.
+	default:
+		close(ch)
+	}
 }
 
 // flush cadence — FrameDone-idle debounce + ceiling. See armFlushTimer.
@@ -883,6 +919,46 @@ func (s *ServerState) ResetStats() {
 	s.resetWithMessage("Match Restarted — Ready Up")
 }
 
+// resetForNewMatch is the map-change / new-broadcast variant of reset: it
+// drops every player entry instead of just zeroing stats, so stale bots and
+// humans who didn't carry over (a common case when CS2 changes map and the
+// bot slate is re-rolled) don't linger on the scoreboard. The new parser's
+// snapshotParticipants + onPlayerConnect/onBotConnect will repopulate the
+// roster as entities show up in the fresh CSTV stream. Use this over
+// resetWithMessage whenever the parser has been torn down and re-attached.
+func (s *ServerState) resetForNewMatch(reason string) {
+	now := time.Now()
+	var leaveNames []string
+	s.mu.Lock()
+	for name := range s.stats {
+		leaveNames = append(leaveNames, name)
+	}
+	s.stats = make(map[string]*PlayerStats)
+	s.round = 0
+	s.ctScore = 0
+	s.tScore = 0
+	s.rounds = nil
+	s.halfRound = 0
+	s.maxRounds = 0
+	s.isPaused = false
+	s.roundsPlayed = 0
+	s.markMetaDirty()
+	s.appendKill(Kill{Time: now, IsSystem: true, Message: reason})
+	s.mu.Unlock()
+
+	// Emit a tombstone per player so the client drops them from its model.
+	// Names are already sanitised on ingest; escape again for parity with
+	// the onPlayerDisconnected "leave" delta shape.
+	for _, name := range leaveNames {
+		s.appendDelta("leave", map[string]any{"n": html.EscapeString(name)})
+	}
+	s.pushScoreDelta()
+	s.appendDelta("sys", map[string]any{
+		"msg":  html.EscapeString(reason),
+		"time": now.Format("15:04:05"),
+	})
+}
+
 func (s *ServerState) resetWithMessage(reason string) {
 	now := time.Now()
 	var resetNames []string
@@ -1152,6 +1228,7 @@ func (m *Manager) setupAndTrack(ctx context.Context, name string, gamePort int, 
 
 	retryDelay := 2 * time.Second
 	maxDelay := 30 * time.Second
+	firstAttach := true
 
 	for {
 		// Wait for the relay to see the first ready fragment, or context cancellation.
@@ -1177,35 +1254,63 @@ func (m *Manager) setupAndTrack(ctx context.Context, name string, gamePort int, 
 		w := &eventWiring{state: state, parser: parser}
 		w.register()
 
-		// ParseToEnd blocks. Cancel from another goroutine when ctx fires.
-		done := make(chan struct{})
+		// Re-attaching to a fresh CSTV match (map change, mp_restartgame,
+		// server hop). Drop the entire carried-over roster and score — the
+		// old bot slate rarely lines up with the new map, and humans who
+		// didn't make it across would otherwise linger as offline ghosts.
+		// The new parser's snapshotParticipants + connect events rebuild
+		// the scoreboard from scratch. Arm the flush timer so the "leave"
+		// tombstones reach subscribers even before the first FrameDone.
+		if !firstAttach {
+			state.resetForNewMatch("New Match")
+			state.armFlushTimer()
+		}
+		firstAttach = false
+
+		// ParseToEnd blocks. Cancel from a watchdog goroutine on any of:
+		//   - ctx cancelled (tracker shutting down)
+		//   - relay saw a token flip (new CSTV match, parser is pinned to old)
+		//   - game-over handler flipped parserCancelled (AnnouncementWinPanel)
+		// The tokenFlip flag distinguishes a clean hand-off (keep relay state
+		// so the already-buffered new-match fragments survive) from a real
+		// teardown (evict so the next attach starts from a known-empty slate).
+		parserDone := make(chan struct{})
+		watchdogDone := make(chan struct{})
+		var tokenFlip bool
+		// Install a fresh cancel channel BEFORE spawning the watchdog, so any
+		// signal from the prior match is dropped with the old channel.
+		parserCancelSig := state.newParserCancel()
 		go func() {
-			<-ctx.Done()
-			parser.Cancel()
-			// Evict fragments so in-flight /delta GETs return 404 and the
-			// reader exits via its internal timeout.
-			if m.relay != nil {
-				m.relay.Close(name)
+			defer close(watchdogDone)
+			select {
+			case <-ctx.Done():
+				parser.Cancel()
+				if m.relay != nil {
+					m.relay.Close(name)
+				}
+			case <-m.relay.TokenChanged(name):
+				tokenFlip = true
+				parser.Cancel()
+			case <-parserCancelSig:
+				parser.Cancel()
+			case <-parserDone:
 			}
-			close(done)
 		}()
 
 		err = parser.ParseToEnd()
-		// Ensure the cancel goroutine has exited (or will shortly).
-		select {
-		case <-done:
-		default:
-		}
+		close(parserDone)
+		<-watchdogDone
 		if ctx.Err() != nil {
 			return
 		}
 		if err != nil {
-			slog.Info("gametracker: broadcast parser ended", "server", name, "err", err)
+			slog.Info("gametracker: broadcast parser ended", "server", name, "err", err, "token_flip", tokenFlip)
 		}
 
-		// The broadcast stream ended (map change, server idle, EOF). Reset
-		// the relay's buffered fragments and wait for a fresh signup.
-		if m.relay != nil {
+		// On a token flip the new match's fragments are already landing in
+		// the relay — keep them so the next parser can /sync straight onto
+		// the new token. Otherwise evict and wait for fresh signup.
+		if !tokenFlip && m.relay != nil {
 			m.relay.Close(name)
 		}
 		select {
@@ -1512,6 +1617,23 @@ func (w *eventWiring) onKill(e events.Kill) {
 		} else if isKnife {
 			p.KnifeKills++
 		}
+		// Arms race level: knife kill = +1 level outright; any other kill
+		// counts toward the 2-kill threshold for the current weapon tier.
+		levelChanged := false
+		if s.gameMode == "armsrace" {
+			oldLevel := p.Level
+			if isKnife {
+				p.Level++
+				p.LevelKills = 0
+			} else {
+				p.LevelKills++
+				if p.LevelKills >= 2 {
+					p.Level++
+					p.LevelKills = 0
+				}
+			}
+			levelChanged = p.Level != oldLevel
+		}
 		killerFields = map[string]any{"k": p.Kills}
 		if e.IsHeadshot {
 			// HS% is derived client-side from k + headshot count; since the
@@ -1526,6 +1648,9 @@ func (w *eventWiring) onKill(e events.Kill) {
 		if isKnife {
 			killerFields["knifek"] = p.KnifeKills
 		}
+		if levelChanged {
+			killerFields["level"] = p.Level
+		}
 		if killerTeam != "" {
 			killerFields["team"] = shortTeam(killerTeam)
 		}
@@ -1537,10 +1662,20 @@ func (w *eventWiring) onKill(e events.Kill) {
 	if victimTeam != "" {
 		p.Team = victimTeam
 	}
+	// Arms race: knife death demotes the victim one level (floor 0).
+	if s.gameMode == "armsrace" && isKnife && p.Level > 0 {
+		p.Level--
+		p.LevelKills = 0
+	}
 	victimFields = map[string]any{"d": p.Deaths, "alive": false, "hp": 0}
 	// KDR derived for victim too (deaths changed).
 	if p.Deaths > 0 && p.Kills > 0 {
 		victimFields["kdr"] = float64(p.Kills) / float64(p.Deaths)
+	}
+	if s.gameMode == "armsrace" && isKnife {
+		// Only emit when the demotion rule actually ran (Level mutated or
+		// was already 0); send the current value so the client re-syncs.
+		victimFields["level"] = p.Level
 	}
 	if victimTeam != "" {
 		victimFields["team"] = shortTeam(victimTeam)
@@ -1846,16 +1981,20 @@ func (w *eventWiring) onAnnouncementWinPanel(_ events.AnnouncementWinPanelMatch)
 	w.stamp()
 	s := w.state
 	s.addSystemMessage("Game Over")
-	if s.gameOverFn == nil {
-		return
-	}
 	score := s.GetScore()
 	scoreboard := s.GetScoreboard()
 	slog.Info("gametracker: game over", "server", s.serverName,
 		"ct", score.CT, "t", score.T, "rounds", len(score.Rounds), "players", len(scoreboard))
-	cb := s.gameOverFn
-	name := s.serverName
-	go cb(GameOverInfo{ServerName: name, Score: score, Players: scoreboard})
+	if s.gameOverFn != nil {
+		cb := s.gameOverFn
+		name := s.serverName
+		go cb(GameOverInfo{ServerName: name, Score: score, Players: scoreboard})
+	}
+	// Kick the restart loop so it re-attaches to whatever CSTV match CS2
+	// starts next (map change, mp_restartgame, nextlevel). Without this the
+	// parser blocks on an abandoned token until its HTTP read times out —
+	// a multi-second window where no deltas reach the UI.
+	s.signalParserCancel()
 }
 
 func (w *eventWiring) onPlayerConnect(e events.PlayerConnect) {

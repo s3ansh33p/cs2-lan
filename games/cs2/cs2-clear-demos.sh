@@ -23,17 +23,22 @@ if ! docker volume inspect "$VOLUME" >/dev/null 2>&1; then
 fi
 
 echo "Scanning volume '$VOLUME' for .dem files..."
-MATCHES=$(docker run --rm -v "${VOLUME}:/data" alpine \
-    sh -c 'find /data -type f -name "*.dem" 2>/dev/null | sort')
+# du -ch emits one "<size>  <path>" line per file and a trailing "<size>  total".
+OUTPUT=$(docker run --rm -v "${VOLUME}:/data" alpine \
+    sh -c 'find /data -type f -name "*.dem" 2>/dev/null | sort | xargs -r du -ch 2>/dev/null')
 
-if [[ -z "$MATCHES" ]]; then
+if [[ -z "$OUTPUT" ]]; then
     echo "No demo files found."
     exit 0
 fi
 
-COUNT=$(printf '%s\n' "$MATCHES" | wc -l)
+FILE_LINES=$(printf '%s\n' "$OUTPUT" | sed '$d')
+TOTAL_LINE=$(printf '%s\n' "$OUTPUT" | tail -1)
+COUNT=$(printf '%s\n' "$FILE_LINES" | wc -l)
+
 echo "Found $COUNT demo file(s):"
-printf '%s\n' "$MATCHES" | sed 's/^/  /'
+printf '%s\n' "$FILE_LINES" | sed 's/^/  /'
+echo "  $TOTAL_LINE"
 
 if [[ $ASSUME_YES -ne 1 ]]; then
     read -r -p "Delete all $COUNT file(s)? [y/N] " reply

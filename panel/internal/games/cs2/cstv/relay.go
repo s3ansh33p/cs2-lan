@@ -75,6 +75,12 @@ type server struct {
 	currentToken string            // latest-seen token, used for /sync redirects
 	ready        chan struct{}     // closed once any match has a ready fragment
 	readyOnce    sync.Once
+	// tokenChanged is closed whenever currentToken flips from one non-empty
+	// token to another (i.e. CS2 started a fresh CSTV match — map change or
+	// mp_restartgame). Consumers grab the current channel, select on it, and
+	// call TokenChanged again after handling the flip to pick up the next
+	// rotation. NOT closed on the empty→first-token transition.
+	tokenChanged chan struct{}
 }
 
 // Relay is a thread-safe in-memory CSTV+ broadcast relay.
@@ -110,6 +116,20 @@ func (r *Relay) Ready(serverName string) <-chan struct{} {
 	return r.getOrCreateServer(serverName).ready
 }
 
+// TokenChanged returns a channel that is closed the next time the server's
+// current CSTV match token flips to a different non-empty token. A fresh
+// channel is installed on each flip, so callers must call TokenChanged again
+// after handling one before selecting on the next. Used by the tracker to
+// tear down a parser stuck on an abandoned token (map change, mp_restartgame)
+// without waiting for the HTTP read to time out on dead fragments.
+func (r *Relay) TokenChanged(serverName string) <-chan struct{} {
+	s := r.getOrCreateServer(serverName)
+	s.mu.RLock()
+	ch := s.tokenChanged
+	s.mu.RUnlock()
+	return ch
+}
+
 // Close discards all fragments under the given server name so memory is
 // freed when the CS2 server stops. Subsequent POSTs start a fresh server.
 func (r *Relay) Close(serverName string) {
@@ -131,8 +151,9 @@ func (r *Relay) getOrCreateServer(name string) *server {
 		return s
 	}
 	s = &server{
-		matches: make(map[string]*match),
-		ready:   make(chan struct{}),
+		matches:      make(map[string]*match),
+		ready:        make(chan struct{}),
+		tokenChanged: make(chan struct{}),
 	}
 	r.servers[name] = s
 	return s
@@ -313,9 +334,20 @@ func (r *Relay) handlePost(w http.ResponseWriter, req *http.Request, serverName,
 
 	// Update server-level pointers. currentToken is promoted to this token
 	// on any POST so a new match (e.g. after map change) overtakes the old.
+	// On a real flip (old non-empty token → new different token) rotate the
+	// tokenChanged channel so subscribers can observe the transition.
 	srv.mu.Lock()
+	flipped := srv.currentToken != "" && srv.currentToken != token
 	srv.currentToken = token
+	var oldTokenChanged chan struct{}
+	if flipped {
+		oldTokenChanged = srv.tokenChanged
+		srv.tokenChanged = make(chan struct{})
+	}
 	srv.mu.Unlock()
+	if flipped {
+		close(oldTokenChanged)
+	}
 	if matchReady {
 		srv.readyOnce.Do(func() { close(srv.ready) })
 	}

@@ -155,6 +155,64 @@ func TestMapChange(t *testing.T) {
 	}
 }
 
+func TestTokenChangedFiresOnFlip(t *testing.T) {
+	r := NewRelay()
+	ts := httptest.NewServer(http.StripPrefix("/cstv", r.Handler()))
+	defer ts.Close()
+
+	base := ts.URL + "/cstv/srv1"
+	postMatch := func(token string, signup int, mapName string) {
+		postRaw(t, base, "/"+token+"/"+itoa(signup)+"/start?tick=1&endtick=2&tps=64&keyframe_interval=3&map="+mapName+"&protocol=5&signup_fragment="+itoa(signup), []byte("x"))
+		postRaw(t, base, "/"+token+"/"+itoa(signup)+"/full?tick=1&endtick=2", []byte("y"))
+		postRaw(t, base, "/"+token+"/"+itoa(signup)+"/delta?tick=1&endtick=2", []byte("z"))
+	}
+
+	ch := r.TokenChanged("srv1")
+
+	// First match establishes the token — must NOT close the channel. The
+	// empty→first transition is not a flip; consumers only care about
+	// subsequent rotations.
+	postMatch("tok1", 10, "de_dust2")
+	select {
+	case <-ch:
+		t.Fatal("TokenChanged fired on empty→first-token transition")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Second match flips the token — must close the channel captured before
+	// the flip. The relay installs a fresh channel for the next flip.
+	postMatch("tok2", 5, "de_mirage")
+	select {
+	case <-ch:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("TokenChanged did not fire on tok1→tok2 flip")
+	}
+
+	// Subsequent calls return a new, still-open channel.
+	ch2 := r.TokenChanged("srv1")
+	select {
+	case <-ch2:
+		t.Fatal("rotated TokenChanged channel already closed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Re-posting to the same token is not a flip.
+	postMatch("tok2", 5, "de_mirage")
+	select {
+	case <-ch2:
+		t.Fatal("TokenChanged fired on same-token re-post")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// A third distinct token triggers the new channel.
+	postMatch("tok3", 1, "de_inferno")
+	select {
+	case <-ch2:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("TokenChanged did not fire on tok2→tok3 flip")
+	}
+}
+
 // --- helpers ---
 
 func postRaw(t *testing.T, base, pathAndQuery string, body []byte) {
