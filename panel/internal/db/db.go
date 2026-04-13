@@ -27,10 +27,27 @@ func Open(path string) (*DB, error) {
 }
 
 func (db *DB) migrate() error {
+	// Pre-schema renames: migrate CS2-specific tables to cs2_ prefix.
+	// These run before schema CREATEs so the CREATE TABLE IF NOT EXISTS below
+	// becomes a no-op (not a second empty table). Errors are ignored — most
+	// commonly the old table doesn't exist (fresh DB or already migrated).
+	for _, q := range []string{
+		`ALTER TABLE game_rounds RENAME TO cs2_game_rounds`,
+		`ALTER TABLE game_player_stats RENAME TO cs2_game_player_stats`,
+		`ALTER TABLE server_tracker_state RENAME TO cs2_server_tracker_state`,
+		`ALTER TABLE ready_state RENAME TO cs2_ready_state`,
+		`ALTER TABLE player_ready RENAME TO cs2_player_ready`,
+	} {
+		db.Exec(q)
+	}
+
 	if _, err := db.Exec(schema); err != nil {
 		return err
 	}
-	// Add columns that may not exist on older DBs (ALTER TABLE IF NOT EXISTS not supported)
+	// Add columns that may not exist on older DBs (ALTER TABLE IF NOT EXISTS not supported).
+	// For DBs created pre-split, the games table still has the old CS2 columns; the
+	// ADD COLUMN statements below are idempotent (errors ignored) and needed only for
+	// DBs at intermediate schema versions.
 	for _, q := range []string{
 		`ALTER TABLE tournament ADD COLUMN game_mode TEXT NOT NULL DEFAULT 'competitive'`,
 		`ALTER TABLE games ADD COLUMN team1_starts_ct INTEGER NOT NULL DEFAULT 1`,
@@ -58,10 +75,25 @@ func (db *DB) migrate() error {
 		`ALTER TABLE games ADD COLUMN demo_path TEXT NOT NULL DEFAULT ''`,
 
 		// Item 6: Player name matching
-		`ALTER TABLE game_player_stats ADD COLUMN original_name TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE game_player_stats ADD COLUMN matched INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE cs2_game_player_stats ADD COLUMN original_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE cs2_game_player_stats ADD COLUMN matched INTEGER NOT NULL DEFAULT 1`,
 	} {
 		db.Exec(q) // ignore errors (column already exists)
+	}
+
+	// Schema split: move CS2-specific columns out of `games` into `cs2_games`.
+	// Idempotent — only runs if games still has the team1_starts_ct column.
+	var hasOldCols int
+	db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('games') WHERE name='team1_starts_ct'`).Scan(&hasOldCols)
+	if hasOldCols > 0 {
+		// Copy existing rows. INSERT OR IGNORE in case (game_id) already exists.
+		db.Exec(`INSERT OR IGNORE INTO cs2_games
+			(game_id, team1_starts_ct, h1_ct, h1_t, h2_ct, h2_t, half_round, demo_path)
+			SELECT id, team1_starts_ct, h1_ct, h1_t, h2_ct, h2_t, half_round, demo_path FROM games`)
+		// Drop the old columns. DROP COLUMN is supported in SQLite 3.35+.
+		for _, col := range []string{"team1_starts_ct", "h1_ct", "h1_t", "h2_ct", "h2_t", "half_round", "demo_path"} {
+			db.Exec(`ALTER TABLE games DROP COLUMN ` + col)
+		}
 	}
 
 	// Seed settings table with defaults if empty
@@ -126,17 +158,24 @@ CREATE TABLE IF NOT EXISTS games (
 	winner_id INTEGER REFERENCES teams(id),
 	server_name TEXT NOT NULL DEFAULT '',
 	status TEXT NOT NULL DEFAULT 'pending',
+	started_at DATETIME,
+	completed_at DATETIME
+);
+
+-- CS2-specific per-game detail. One row per CS2 game; joined via game_id.
+CREATE TABLE IF NOT EXISTS cs2_games (
+	game_id INTEGER PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
 	team1_starts_ct INTEGER NOT NULL DEFAULT 1,
 	h1_ct INTEGER NOT NULL DEFAULT 0,
 	h1_t INTEGER NOT NULL DEFAULT 0,
 	h2_ct INTEGER NOT NULL DEFAULT 0,
 	h2_t INTEGER NOT NULL DEFAULT 0,
 	half_round INTEGER NOT NULL DEFAULT 0,
-	started_at DATETIME,
-	completed_at DATETIME
+	demo_path TEXT NOT NULL DEFAULT ''
 );
 
-CREATE TABLE IF NOT EXISTS game_rounds (
+-- CS2-specific: per-round winner + reason (CT/T + elimination/bomb/defuse/time).
+CREATE TABLE IF NOT EXISTS cs2_game_rounds (
 	id INTEGER PRIMARY KEY,
 	game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
 	round INTEGER NOT NULL,
@@ -144,7 +183,8 @@ CREATE TABLE IF NOT EXISTS game_rounds (
 	reason TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS game_player_stats (
+-- CS2-specific: per-player stat columns (HS%, MVPs, EF, UD are CS2 concepts).
+CREATE TABLE IF NOT EXISTS cs2_game_player_stats (
 	id INTEGER PRIMARY KEY,
 	game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
 	team_id INTEGER NOT NULL REFERENCES teams(id),
@@ -179,8 +219,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_teams_tournament ON teams(tournament_id);
 CREATE INDEX IF NOT EXISTS idx_matches_tournament ON matches(tournament_id);
 CREATE INDEX IF NOT EXISTS idx_games_match ON games(match_id);
-CREATE INDEX IF NOT EXISTS idx_game_rounds_game ON game_rounds(game_id);
-CREATE INDEX IF NOT EXISTS idx_game_player_stats_game ON game_player_stats(game_id);
+CREATE INDEX IF NOT EXISTS idx_cs2_game_rounds_game ON cs2_game_rounds(game_id);
+CREATE INDEX IF NOT EXISTS idx_cs2_game_player_stats_game ON cs2_game_player_stats(game_id);
 
 CREATE TABLE IF NOT EXISTS schedule_items (
 	id INTEGER PRIMARY KEY,
@@ -191,7 +231,8 @@ CREATE TABLE IF NOT EXISTS schedule_items (
 	color TEXT NOT NULL DEFAULT 'blue'
 );
 
-CREATE TABLE IF NOT EXISTS server_tracker_state (
+-- CS2-specific: live server state (half_round, CT/T score are CS2 concepts).
+CREATE TABLE IF NOT EXISTS cs2_server_tracker_state (
 	server_name TEXT PRIMARY KEY,
 	game_mode TEXT NOT NULL DEFAULT '',
 	current_map TEXT NOT NULL DEFAULT '',
@@ -230,7 +271,8 @@ CREATE TABLE IF NOT EXISTS group_standings (
 );
 CREATE INDEX IF NOT EXISTS idx_group_standings_tournament ON group_standings(tournament_id);
 
-CREATE TABLE IF NOT EXISTS ready_state (
+-- CS2-specific: .ready chat-command flow with CT/T team field on cs2_player_ready.
+CREATE TABLE IF NOT EXISTS cs2_ready_state (
 	id INTEGER PRIMARY KEY,
 	game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
 	server_name TEXT NOT NULL,
@@ -239,15 +281,15 @@ CREATE TABLE IF NOT EXISTS ready_state (
 	UNIQUE(game_id)
 );
 
-CREATE TABLE IF NOT EXISTS player_ready (
+CREATE TABLE IF NOT EXISTS cs2_player_ready (
 	id INTEGER PRIMARY KEY,
-	ready_state_id INTEGER NOT NULL REFERENCES ready_state(id) ON DELETE CASCADE,
+	ready_state_id INTEGER NOT NULL REFERENCES cs2_ready_state(id) ON DELETE CASCADE,
 	player_name TEXT NOT NULL,
 	team TEXT NOT NULL,
 	is_ready INTEGER NOT NULL DEFAULT 0,
 	UNIQUE(ready_state_id, player_name)
 );
-CREATE INDEX IF NOT EXISTS idx_player_ready_state ON player_ready(ready_state_id);
+CREATE INDEX IF NOT EXISTS idx_cs2_player_ready_state ON cs2_player_ready(ready_state_id);
 `
 
 func (db *DB) LoadAliases() (map[string]string, error) {
@@ -301,7 +343,7 @@ func (db *DB) SaveTrackerState(name string, s TrackerState) error {
 	if s.IsPaused {
 		paused = 1
 	}
-	_, err := db.Exec(`INSERT INTO server_tracker_state
+	_, err := db.Exec(`INSERT INTO cs2_server_tracker_state
 		(server_name, game_mode, current_map, half_round, max_rounds, ct_score, t_score, round, in_warmup, is_paused, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(server_name) DO UPDATE SET
@@ -318,7 +360,7 @@ func (db *DB) LoadTrackerState(name string) (*TrackerState, error) {
 	var s TrackerState
 	var warmup, paused int
 	err := db.QueryRow(`SELECT game_mode, current_map, half_round, max_rounds, ct_score, t_score, round, in_warmup, is_paused
-		FROM server_tracker_state WHERE server_name=?`, name).
+		FROM cs2_server_tracker_state WHERE server_name=?`, name).
 		Scan(&s.GameMode, &s.CurrentMap, &s.HalfRound, &s.MaxRounds, &s.CTScore, &s.TScore, &s.Round, &warmup, &paused)
 	if err != nil {
 		return nil, err
@@ -329,6 +371,6 @@ func (db *DB) LoadTrackerState(name string) (*TrackerState, error) {
 }
 
 func (db *DB) DeleteTrackerState(name string) error {
-	_, err := db.Exec("DELETE FROM server_tracker_state WHERE server_name=?", name)
+	_, err := db.Exec("DELETE FROM cs2_server_tracker_state WHERE server_name=?", name)
 	return err
 }

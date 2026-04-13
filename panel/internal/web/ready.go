@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"unilan/internal/db"
+	"unilan/internal/games"
 )
 
 // readyCancels tracks background goroutines per server for periodic RCON messages.
@@ -46,7 +47,7 @@ func (h *Handler) RestartMatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get server info for RCON
-	info, err := h.docker.InspectServer(r.Context(), "cs2-"+name)
+	info, err := h.docker.InspectServer(r.Context(), games.Default().ContainerPrefix()+name)
 	if err != nil {
 		http.Error(w, "Server not found", http.StatusNotFound)
 		return
@@ -56,15 +57,16 @@ func (h *Handler) RestartMatch(w http.ResponseWriter, r *http.Request) {
 	pw := info.RCONPassword
 
 	// Send restart + warmup commands
-	if _, err := h.rcon.Execute(addr, pw, "mp_restartgame 1"); err != nil {
-		slog.Warn("ready: mp_restartgame failed", "server", name, "err", err)
+	cmds := games.Default().RCON()
+	if _, err := h.rcon.Execute(addr, pw, cmds.RestartMatch); err != nil {
+		slog.Warn("ready: restart match failed", "server", name, "err", err)
 	}
 	time.Sleep(2 * time.Second)
-	if _, err := h.rcon.Execute(addr, pw, "mp_warmup_start"); err != nil {
-		slog.Warn("ready: mp_warmup_start failed", "server", name, "err", err)
+	if _, err := h.rcon.Execute(addr, pw, cmds.StartWarmup); err != nil {
+		slog.Warn("ready: start warmup failed", "server", name, "err", err)
 	}
-	if _, err := h.rcon.Execute(addr, pw, "mp_warmup_pausetimer 1"); err != nil {
-		slog.Warn("ready: mp_warmup_pausetimer failed", "server", name, "err", err)
+	if _, err := h.rcon.Execute(addr, pw, cmds.PauseWarmup); err != nil {
+		slog.Warn("ready: pause warmup failed", "server", name, "err", err)
 	}
 
 	// Reset tracker stats for this server
@@ -109,7 +111,7 @@ func (h *Handler) ForceStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get server info for RCON
-	info, err := h.docker.InspectServer(r.Context(), "cs2-"+name)
+	info, err := h.docker.InspectServer(r.Context(), games.Default().ContainerPrefix()+name)
 	if err != nil {
 		http.Error(w, "Server not found", http.StatusNotFound)
 		return
@@ -283,7 +285,7 @@ func (h *Handler) handlePlayerReady(serverName, playerName, team string) {
 	}
 
 	// Send RCON status message
-	info, err := h.docker.InspectServer(context.Background(), "cs2-"+serverName)
+	info, err := h.docker.InspectServer(context.Background(), games.Default().ContainerPrefix()+serverName)
 	if err != nil {
 		return
 	}
@@ -319,7 +321,7 @@ func (h *Handler) startCountdown(serverName, addr, pw string, readyStateID int64
 	h.rcon.Execute(addr, pw, `say "1..."`)
 	time.Sleep(1 * time.Second)
 
-	h.rcon.Execute(addr, pw, "mp_warmup_end")
+	h.rcon.Execute(addr, pw, games.Default().RCON().EndWarmup)
 
 	h.db.UpdateReadyStatus(readyStateID, "started")
 	slog.Info("ready: match started", "server", serverName, "forced", forced)

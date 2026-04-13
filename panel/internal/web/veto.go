@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"unilan/internal/db"
+	"unilan/internal/games"
 )
 
 type vetoStepJSON struct {
@@ -75,8 +76,9 @@ func (h *Handler) AdminSubmitVetoStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	format := db.ParseVetoFormat(tournament.VetoFormat)
-	pool := db.MapPool(tournament.GameMode)
+	game := games.Get(tournament.GameType)
+	format := db.ParseVetoFormat(tournament.VetoFormat, game.DefaultVetoFormat())
+	pool := game.MapPools()[tournament.GameMode]
 	vetoes, err := h.db.GetMatchVetoes(matchID)
 	if err != nil {
 		http.Error(w, "Failed to get vetoes", http.StatusInternalServerError)
@@ -208,8 +210,9 @@ func (h *Handler) buildVetoState(matchID int64) (*vetoStateJSON, error) {
 		return nil, err
 	}
 
-	format := db.ParseVetoFormat(tournament.VetoFormat)
-	pool := db.MapPool(tournament.GameMode)
+	game := games.Get(tournament.GameType)
+	format := db.ParseVetoFormat(tournament.VetoFormat, game.DefaultVetoFormat())
+	pool := game.MapPools()[tournament.GameMode]
 	vetoes, err := h.db.GetMatchVetoes(matchID)
 	if err != nil {
 		return nil, err

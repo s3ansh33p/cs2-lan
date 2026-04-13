@@ -12,19 +12,20 @@ import (
 	"strings"
 
 	"unilan/internal/db"
-	"unilan/internal/gametracker"
+	"unilan/internal/games"
+	"unilan/internal/games/cs2/tracker"
 )
 
 // setupGameOverHook registers callbacks on the tracker for auto-recording
 // match results when a game ends on a server linked to a tournament game.
 func (h *Handler) setupGameOverHook() {
-	h.tracker.OnGameOver(func(info gametracker.GameOverInfo) {
+	h.tracker.OnGameOver(func(info tracker.GameOverInfo) {
 		h.handleGameOver(info)
 	})
-	h.tracker.OnRoundEnd(func(info gametracker.RoundEndInfo) {
+	h.tracker.OnRoundEnd(func(info tracker.RoundEndInfo) {
 		h.handleRoundEnd(info)
 	})
-	h.tracker.OnMetadataChange(func(serverName string, m gametracker.TrackerMetadata) {
+	h.tracker.OnMetadataChange(func(serverName string, m tracker.TrackerMetadata) {
 		h.db.SaveTrackerState(serverName, db.TrackerState{
 			GameMode:   m.GameMode,
 			CurrentMap: m.CurrentMap,
@@ -66,7 +67,7 @@ func mapScores(ct, t int, team1StartsCT bool) (team1, team2 int) {
 	return t, ct
 }
 
-func (h *Handler) handleGameOver(info gametracker.GameOverInfo) {
+func (h *Handler) handleGameOver(info tracker.GameOverInfo) {
 	game, err := h.db.GetGameByServer(info.ServerName)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -253,11 +254,12 @@ func (h *Handler) handleGameOver(info gametracker.GameOverInfo) {
 	}
 }
 
-// copyDemo copies the newest .dem file from a CS2 server container to the local demos/ directory.
+// copyDemo copies the newest .dem file from a server container to the local demos/ directory.
 func (h *Handler) copyDemo(gameID int64, serverName, mapName string) {
 	ctx := context.Background()
-	containerName := "cs2-" + serverName
-	replayDir := "/home/steam/cs2-dedicated/game/csgo/replays/"
+	game := games.Default()
+	containerName := game.ContainerPrefix() + serverName
+	replayDir := game.DemoPath()
 
 	files, err := h.docker.ListContainerDir(ctx, containerName, replayDir)
 	if err != nil {
@@ -312,7 +314,7 @@ func (h *Handler) copyDemo(gameID int64, serverName, mapName string) {
 }
 
 // handleRoundEnd updates live game scores after each round.
-func (h *Handler) handleRoundEnd(info gametracker.RoundEndInfo) {
+func (h *Handler) handleRoundEnd(info tracker.RoundEndInfo) {
 	game, err := h.db.GetGameByServer(info.ServerName)
 	if err != nil {
 		return

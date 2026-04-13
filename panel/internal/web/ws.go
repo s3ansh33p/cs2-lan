@@ -12,7 +12,8 @@ import (
 
 	"unilan/internal/db"
 	"unilan/internal/docker"
-	"unilan/internal/gametracker"
+	"unilan/internal/games"
+	"unilan/internal/games/cs2/tracker"
 
 	"github.com/gorilla/websocket"
 )
@@ -129,7 +130,7 @@ func (h *Handler) GameStateWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	state := h.tracker.GetState(name)
 	if state == nil {
-		info, err := h.docker.InspectServer(r.Context(), "cs2-"+name)
+		info, err := h.docker.InspectServer(r.Context(), games.Default().ContainerPrefix()+name)
 		if err != nil {
 			http.Error(w, "Server not found", http.StatusNotFound)
 			return
@@ -295,7 +296,7 @@ func shortTeam(t string) string {
 	}
 }
 
-func killToJSON(k gametracker.Kill) killJSON {
+func killToJSON(k tracker.Kill) killJSON {
 	return killJSON{
 		Killer: html.EscapeString(k.Killer), KillerTeam: shortTeam(k.KillerTeam),
 		Victim: html.EscapeString(k.Victim), VictimTeam: shortTeam(k.VictimTeam),
@@ -426,7 +427,7 @@ func (h *Handler) buildReadyStateJSON(serverName string, rs *db.ReadyState) *rea
 }
 
 // buildPlayerList reads player data entirely from the tracker.
-func buildPlayerList(serverName string, tracker *gametracker.Manager) []gamePlayerJSON {
+func buildPlayerList(serverName string, tracker *tracker.Manager) []gamePlayerJSON {
 	state := tracker.GetState(serverName)
 	if state == nil {
 		return nil
@@ -477,7 +478,7 @@ func (h *Handler) sendKillfeedFull(conn *websocket.Conn, name string) error {
 }
 
 // sendKillfeedNew sends only new kill events (incremental).
-func (h *Handler) sendKillfeedNew(conn *websocket.Conn, newKills []gametracker.Kill) error {
+func (h *Handler) sendKillfeedNew(conn *websocket.Conn, newKills []tracker.Kill) error {
 	kills := make([]killJSON, len(newKills))
 	for i, k := range newKills {
 		kills[i] = killToJSON(k)

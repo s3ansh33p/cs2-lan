@@ -25,8 +25,10 @@ Requires Go 1.25+ and Node.js (for Tailwind CSS compilation).
 ### Start the panel
 
 ```bash
-./unilan --password <secret> --compose-file ../docker-compose.yml
+./unilan --password <secret>
 ```
+
+Run from `panel/`. The compose file is loaded from `../games/cs2/docker-compose.yml`.
 
 Open `http://<your-lan-ip>:8080` from any device on the network.
 
@@ -34,7 +36,6 @@ Open `http://<your-lan-ip>:8080` from any device on the network.
 |------|---------|-------------|
 | `--password` | (required) | Panel access password |
 | `--port` | `8080` | HTTP listen port |
-| `--compose-file` | `./docker-compose.yml` | Path to compose file |
 | `--rcon-default` | `changeme` | Default RCON password for new servers |
 | `--db` | `tournament.db` | SQLite database path |
 | `--tls` | `false` | Enable HTTPS with auto-generated self-signed cert (recommended for LAN) |
@@ -55,8 +56,8 @@ networkingMode=mirrored
 Restart WSL (`wsl --shutdown` in PowerShell), then open the firewall:
 
 ```powershell
-.\cs2-firewall.ps1 enable -WebPort 8080   # game ports 27015-27030 + web panel
-.\cs2-firewall.ps1 disable                # remove all rules when done
+.\games\cs2\cs2-firewall.ps1 enable -WebPort 8080   # game ports 27015-27030 + web panel
+.\games\cs2\cs2-firewall.ps1 disable                # remove all rules when done
 ```
 
 ---
@@ -259,9 +260,10 @@ docker compose --profile update run --rm cs2-updater
 
 ## CLI usage
 
-The panel is the primary interface, but shell scripts are available for quick server management without the web UI:
+The panel is the primary interface, but shell scripts are available for quick server management without the web UI. Run from `games/cs2/`:
 
 ```bash
+cd games/cs2
 ./cs2-launch.sh <name> <port> [options]   # launch a server
 ./cs2-status.sh                           # list running servers
 ./cs2-stop.sh <name>                      # stop a server

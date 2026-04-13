@@ -7,7 +7,7 @@ build: css
 	CGO_ENABLED=0 go build -o unilan ./cmd/panel
 
 run: build
-	./unilan --password a --compose-file ../docker-compose.yml --tls
+	./unilan --password a --tls
 
 clean:
 	rm -f unilan

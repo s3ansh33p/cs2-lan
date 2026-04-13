@@ -273,7 +273,7 @@ function renderDashboard(servers) {
             '<div class="flex items-center justify-between">' +
                 '<div class="flex items-center gap-3 text-xs text-slate-300">' +
                     '<span>' + modeLabel + '</span>' +
-                    '<span class="flex items-center gap-1"><img src="/static/icons/map/' + mapName + '.svg" class="h-4 w-4 opacity-60 rounded" onerror="this.style.display=\'none\'">' + mapName + '</span>' +
+                    '<span class="flex items-center gap-1"><img src="/static/games/cs2/icons/map/' + mapName + '.svg" class="h-4 w-4 opacity-60 rounded" onerror="this.style.display=\'none\'">' + mapName + '</span>' +
                     '<span>' + s.playerCount + '/' + s.maxPlayers + ' players</span>' +
                 '</div>' +
                 scoreHtml +
@@ -429,7 +429,7 @@ function renderScore(score) {
     var mapEl = document.getElementById('score-map');
     if (mapEl && score.map && score.map !== _lastScoreMap) {
         _lastScoreMap = score.map;
-        mapEl.innerHTML = '<img src="/static/icons/map/' + score.map + '.svg" class="h-4 w-4 opacity-60 rounded" onerror="this.style.display=\'none\'">' + score.map;
+        mapEl.innerHTML = '<img src="/static/games/cs2/icons/map/' + score.map + '.svg" class="h-4 w-4 opacity-60 rounded" onerror="this.style.display=\'none\'">' + score.map;
     }
     _inWarmup = !!score.warmup;
 
@@ -486,8 +486,8 @@ function renderScore(score) {
         var icon = '';
         switch (r.rs) {
             case 'elimination': icon = '/static/icons/ui/kill.svg'; break;
-            case 'bomb': icon = '/static/icons/equipment/planted_c4.svg'; break;
-            case 'defuse': icon = '/static/icons/equipment/defuser.svg'; break;
+            case 'bomb': icon = '/static/games/cs2/icons/equipment/planted_c4.svg'; break;
+            case 'defuse': icon = '/static/games/cs2/icons/equipment/defuser.svg'; break;
             case 'time': icon = '/static/icons/ui/timer.svg'; break;
         }
         var color = r.w === 'CT' ? 'ct' : 't';
@@ -597,10 +597,10 @@ function renderScore(score) {
 function playerEquipIcons(p) {
     if (!_showDeadEquip && !p.alive && p.online) return '';
     var html = '';
-    if (p.bomb) html += '<img src="/static/icons/equipment/c4.svg" class="h-5 opacity-80" title="C4">';
-    if (p.helmet) html += '<img src="/static/icons/equipment/helmet.svg" class="h-5 opacity-80" title="Helmet">';
-    if (p.armor) html += '<img src="/static/icons/equipment/kevlar.svg" class="h-5 opacity-80" title="Kevlar">';
-    if (p.defuser) html += '<img src="/static/icons/equipment/defuser.svg" class="h-5 opacity-80" title="Defuse Kit">';
+    if (p.bomb) html += '<img src="/static/games/cs2/icons/equipment/c4.svg" class="h-5 opacity-80" title="C4">';
+    if (p.helmet) html += '<img src="/static/games/cs2/icons/equipment/helmet.svg" class="h-5 opacity-80" title="Helmet">';
+    if (p.armor) html += '<img src="/static/games/cs2/icons/equipment/kevlar.svg" class="h-5 opacity-80" title="Kevlar">';
+    if (p.defuser) html += '<img src="/static/games/cs2/icons/equipment/defuser.svg" class="h-5 opacity-80" title="Defuse Kit">';
     if (p.weapons) {
         for (var w = 0; w < p.weapons.length; w++) {
             html += weaponIcon(p.weapons[w]);
@@ -608,7 +608,7 @@ function playerEquipIcons(p) {
     }
     if (p.grenades) {
         for (var g = 0; g < p.grenades.length; g++) {
-            html += '<img src="/static/icons/equipment/' + p.grenades[g] + '.svg" class="h-4 opacity-60" title="' + p.grenades[g] + '" onerror="this.style.display=\'none\'">';
+            html += '<img src="/static/games/cs2/icons/equipment/' + p.grenades[g] + '.svg" class="h-4 opacity-60" title="' + p.grenades[g] + '" onerror="this.style.display=\'none\'">';
         }
     }
     return html;
@@ -922,7 +922,7 @@ var _weaponAliases = {'c4': 'planted_c4', 'weapon_c4': 'planted_c4'};
 function weaponIcon(weapon) {
     if (!weapon) return '';
     var file = _weaponAliases[weapon] || weapon;
-    return '<img src="/static/icons/equipment/' + file + '.svg" alt="' + weapon + '" class="h-4 inline-block opacity-80" onerror="this.style.display=\'none\'">';
+    return '<img src="/static/games/cs2/icons/equipment/' + file + '.svg" alt="' + weapon + '" class="h-4 inline-block opacity-80" onerror="this.style.display=\'none\'">';
 }
 
 function teamColor(team) {
@@ -961,16 +961,16 @@ function renderKillEntry(k) {
         var tc = teamColor(k.vt);
         return '<div class="flex items-center gap-2">' +
             '<span class="' + tc + ' text-xs">' + k.victim + '</span>' +
-            '<img src="/static/icons/deathnotice/icon_suicide.svg" class="h-4 inline-block opacity-80" alt="suicide">' +
+            '<img src="/static/games/cs2/icons/deathnotice/icon_suicide.svg" class="h-4 inline-block opacity-80" alt="suicide">' +
             '<span class="flex items-center gap-1">' + weaponIcon(k.weapon) + '</span>' +
             '<span class="text-slate-600 text-xs ml-auto">' + k.time + '</span>' +
             '</div>';
     }
-    function dnIcon(src, alt) { return '<img src="/static/icons/deathnotice/' + src + '" class="h-3.5 inline-block opacity-80" alt="' + alt + '">'; }
+    function dnIcon(src, alt) { return '<img src="/static/games/cs2/icons/deathnotice/' + src + '" class="h-3.5 inline-block opacity-80" alt="' + alt + '">'; }
 
     // [blind] killer + [flash assist] assist [in air] weapon [noscope] [through smoke] [wallbang] [headshot] victim
     var blindIcon = k.bk ? dnIcon('blind_kill.svg', 'Blind Kill') + ' ' : '';
-    var flashAssistIcon = (k.assist && k.fa) ? '<img src="/static/icons/equipment/flashbang_assist.svg" class="h-3.5 inline-block opacity-80" alt="Flash Assist"> ' : '';
+    var flashAssistIcon = (k.assist && k.fa) ? '<img src="/static/games/cs2/icons/equipment/flashbang_assist.svg" class="h-3.5 inline-block opacity-80" alt="Flash Assist"> ' : '';
     var killerSide = blindIcon + '<span class="' + teamColor(k.kt) + ' text-xs">' + k.killer + '</span>';
     if (k.assist) {
         killerSide += '<span class="text-slate-500 text-xs"> + </span>' + flashAssistIcon + '<span class="' + teamColor(k.at) + ' text-xs">' + k.assist + '</span>';
@@ -1117,18 +1117,10 @@ function initRconMapDropdown() {
     }
 }
 
-// Map pools by game mode
-var _mapPools = {
-    competitive: ['de_ancient', 'de_anubis', 'de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_overpass', 'de_vertigo'],
-    casual: ['de_ancient', 'de_anubis', 'de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_overpass', 'de_vertigo', 'cs_italy', 'cs_office'],
-    deathmatch: ['de_ancient', 'de_anubis', 'de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_overpass', 'de_vertigo'],
-    armsrace: ['ar_baggage', 'ar_pool_day', 'ar_shoots'],
-    demolition: ['ar_baggage', 'ar_pool_day', 'ar_shoots'],
-    wingman: ['de_inferno', 'de_nuke', 'de_overpass', 'de_vertigo', 'de_shortdust', 'de_lake']
-};
-var _allMaps = ['de_ancient', 'de_anubis', 'de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_overpass', 'de_vertigo',
-    'cs_alpine', 'cs_italy', 'cs_office', 'ar_baggage', 'ar_pool_day', 'ar_shoots',
-    'de_ancient_night', 'ar_shoots_night', 'de_shortdust', 'de_lake', 'de_stronghold', 'de_warden'];
+// Map pools and all-maps are injected by layout.html from Go (db.MapPools/AllMaps).
+// Alias them to local vars for brevity in this file.
+var _mapPools = window._mapPools || {};
+var _allMaps = window._allMaps || [];
 
 // RCON autocomplete
 var _rconCommands = [

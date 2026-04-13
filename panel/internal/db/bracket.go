@@ -473,7 +473,7 @@ func (db *DB) GenerateDoubleElimBracket(tournamentID int64, teamIDs []int64) err
 }
 
 // DeleteBracket removes all matches and their associated games, rounds, and stats.
-// Relies on ON DELETE CASCADE from matches → games → game_rounds/game_player_stats.
+// Relies on ON DELETE CASCADE from matches → games → cs2_game_rounds/cs2_game_player_stats.
 func (db *DB) DeleteBracket(tournamentID int64) error {
 	// Clear self-referential FKs before deleting
 	if _, err := db.Exec(`UPDATE matches SET next_match_id=NULL, loser_next_match_id=NULL WHERE tournament_id=?`, tournamentID); err != nil {
@@ -596,7 +596,7 @@ func (db *DB) GetBracket(tournamentID int64) ([]Match, error) {
 			placeholders[i] = "?"
 			matchIdx[m.ID] = i
 		}
-		gRows, err := db.Query(`SELECT `+gameColumns+` FROM games WHERE match_id IN (`+strings.Join(placeholders, ",")+`) ORDER BY game_number`, matchIDs...)
+		gRows, err := db.Query(`SELECT `+gameColumns+` `+gameFrom+` WHERE g.match_id IN (`+strings.Join(placeholders, ",")+`) ORDER BY g.game_number`, matchIDs...)
 		if err != nil {
 			return nil, err
 		}

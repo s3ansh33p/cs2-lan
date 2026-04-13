@@ -22,8 +22,9 @@ import (
 
 	"unilan/internal/db"
 	"unilan/internal/docker"
-	"unilan/internal/gametracker"
-	"unilan/internal/rcon"
+	"unilan/internal/games"
+	"unilan/internal/games/cs2/tracker"
+	"unilan/internal/games/cs2/rcon"
 	webfs "unilan/web"
 )
 
@@ -106,7 +107,7 @@ func (b *broadcaster) notify() {
 type Handler struct {
 	docker      *docker.Client
 	rcon        *rcon.Manager
-	tracker     *gametracker.Manager
+	tracker     *tracker.Manager
 	db          *db.DB
 	aliases     *AliasStore
 	composeFile string
@@ -149,7 +150,7 @@ type Handler struct {
 	hub *WSHub
 }
 
-func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, database *db.DB, composeFile, defaultRCON string) (*Handler, error) {
+func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *tracker.Manager, database *db.DB, composeFile, defaultRCON string) (*Handler, error) {
 	tmplFS, err := fs.Sub(webfs.Assets, "templates")
 	if err != nil {
 		return nil, fmt.Errorf("template fs: %w", err)
@@ -181,6 +182,18 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *gametracker.Manager, da
 				return 0
 			}
 			return *p
+		},
+		"mapPoolsJSON": func() template.JS {
+			data, _ := json.Marshal(games.Default().MapPools())
+			return template.JS(data)
+		},
+		"allMapsJSON": func() template.JS {
+			data, _ := json.Marshal(games.Default().AllMaps())
+			return template.JS(data)
+		},
+		"gameModesJSON": func() template.JS {
+			data, _ := json.Marshal(games.Default().GameModes())
+			return template.JS(data)
 		},
 	}
 
@@ -358,11 +371,11 @@ func (h *Handler) dashboardPoller() {
 }
 
 // trackServer wraps tracker.TrackServer with DB-backed metadata restoration.
-func (h *Handler) trackServer(name string, port int, rconPw, mode, mapName string) *gametracker.ServerState {
+func (h *Handler) trackServer(name string, port int, rconPw, mode, mapName string) *tracker.ServerState {
 	state, isNew := h.tracker.TrackServer(name, port, rconPw, mode, mapName)
 	if isNew {
 		if saved, err := h.db.LoadTrackerState(name); err == nil && saved != nil {
-			state.RestoreMetadata(gametracker.TrackerMetadata{
+			state.RestoreMetadata(tracker.TrackerMetadata{
 				GameMode:   saved.GameMode,
 				CurrentMap: saved.CurrentMap,
 				HalfRound:  saved.HalfRound,
@@ -562,7 +575,7 @@ func (h *Handler) LaunchServer(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ServerDetail(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	info, err := h.docker.InspectServer(r.Context(), "cs2-"+name)
+	info, err := h.docker.InspectServer(r.Context(), games.Default().ContainerPrefix()+name)
 	if err != nil {
 		http.Error(w, "Server not found", http.StatusNotFound)
 		return
@@ -650,10 +663,10 @@ func (h *Handler) PlayersPartial(w http.ResponseWriter, r *http.Request) {
 			}
 			cp.Team = shortTeam(ps.Team)
 			for _, w := range ps.WeaponList() {
-				cp.Weapons = append(cp.Weapons, gametracker.DisplayName(w))
+				cp.Weapons = append(cp.Weapons, tracker.DisplayName(w))
 			}
 			for _, g := range ps.GrenadeList() {
-				if short, ok := gametracker.GrenadeShort[g]; ok {
+				if short, ok := tracker.GrenadeShort[g]; ok {
 					cp.Grenades = append(cp.Grenades, short)
 				}
 			}
@@ -673,7 +686,7 @@ func (h *Handler) RCONCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	info, err := h.docker.InspectServer(r.Context(), "cs2-"+name)
+	info, err := h.docker.InspectServer(r.Context(), games.Default().ContainerPrefix()+name)
 	if err != nil {
 		h.render(w, "rcon_output.html", map[string]any{
 			"Command":  command,
@@ -720,7 +733,7 @@ func (h *Handler) RCONCommand(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ScoreboardPartial(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	state := h.tracker.GetState(name)
-	var scoreboard []gametracker.PlayerStats
+	var scoreboard []tracker.PlayerStats
 	if state != nil {
 		scoreboard = state.GetScoreboard()
 	}
@@ -732,7 +745,7 @@ func (h *Handler) ScoreboardPartial(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) KillfeedPartial(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	state := h.tracker.GetState(name)
-	var killfeed []gametracker.Kill
+	var killfeed []tracker.Kill
 	if state != nil {
 		killfeed = state.GetKillfeed(20)
 	}
@@ -745,7 +758,7 @@ func (h *Handler) RestartServer(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	slog.Info("server: restarting", "name", name, "ip", r.RemoteAddr)
 
-	info, err := h.docker.InspectServer(r.Context(), "cs2-"+name)
+	info, err := h.docker.InspectServer(r.Context(), games.Default().ContainerPrefix()+name)
 	if err != nil {
 		slog.Error("server: restart inspect failed", "name", name, "err", err)
 		http.Error(w, "Server not found", http.StatusNotFound)

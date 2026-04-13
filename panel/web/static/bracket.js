@@ -1,17 +1,15 @@
-// Map display names
+// Map display name overrides — only for maps the default fallback gets wrong.
+// Default: strip de_/cs_/ar_ prefix, title-case each underscore-separated word.
 var _mapNames = {
-    'de_dust2': 'Dust II', 'de_inferno': 'Inferno', 'de_mirage': 'Mirage',
-    'de_nuke': 'Nuke', 'de_overpass': 'Overpass', 'de_vertigo': 'Vertigo',
-    'de_ancient': 'Ancient', 'de_anubis': 'Anubis', 'de_train': 'Train',
-    'de_shortdust': 'Shortdust', 'de_lake': 'Lake',
-    'cs_office': 'Office', 'cs_italy': 'Italy', 'cs_alpine': 'Alpine',
-    'ar_baggage': 'Baggage', 'ar_shoots': 'Shoots', 'ar_pool_day': 'Pool Day'
+    'de_dust2': 'Dust II'
 };
 function mapDisplayName(m) {
     if (!m) return '';
     if (_mapNames[m]) return _mapNames[m];
     var name = m.replace(/^(de|cs|ar)_/, '');
-    return name.charAt(0).toUpperCase() + name.slice(1).replace(/_/g, ' ');
+    return name.split('_').map(function(w) {
+        return w.charAt(0).toUpperCase() + w.slice(1);
+    }).join(' ');
 }
 
 // ── Public Bracket Rendering ──

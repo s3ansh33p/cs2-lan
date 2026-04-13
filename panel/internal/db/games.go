@@ -12,25 +12,31 @@ const (
 	GameCompleted = "completed"
 )
 
-type Game struct {
-	ID            int64
-	MatchID       int64
-	GameNumber    int
-	MapName       string
-	Team1Score    int
-	Team2Score    int
-	WinnerID      *int64
-	ServerName    string
-	Status        string // pending, live, completed
+// CS2GameDetail holds CS2-specific per-game fields, stored in the cs2_games table.
+// Embedded in Game so callers can access `game.Team1StartsCT` directly.
+type CS2GameDetail struct {
 	Team1StartsCT bool
 	H1CT          int // first half CT round wins
 	H1T           int // first half T round wins
 	H2CT          int // second half CT round wins
 	H2T           int // second half T round wins
 	HalfRound     int // round number where half-time occurred
-	StartedAt     *time.Time
-	CompletedAt   *time.Time
 	DemoPath      string
+}
+
+type Game struct {
+	ID          int64
+	MatchID     int64
+	GameNumber  int
+	MapName     string
+	Team1Score  int
+	Team2Score  int
+	WinnerID    *int64
+	ServerName  string
+	Status      string // pending, live, completed
+	StartedAt   *time.Time
+	CompletedAt *time.Time
+	CS2GameDetail       // embedded; populated via LEFT JOIN on cs2_games
 }
 
 type GameRound struct {
@@ -59,22 +65,29 @@ type PlayerStat struct {
 	Matched      bool
 }
 
-const gameColumns = `id, match_id, game_number, map_name, team1_score, team2_score,
-	winner_id, server_name, status, team1_starts_ct, h1_ct, h1_t, h2_ct, h2_t, half_round, started_at, completed_at, demo_path`
+// gameColumns selects all generic game fields plus CS2 detail via LEFT JOIN.
+// COALESCE handles rows without a cs2_games entry (future non-CS2 games).
+const gameColumns = `g.id, g.match_id, g.game_number, g.map_name, g.team1_score, g.team2_score,
+	g.winner_id, g.server_name, g.status, g.started_at, g.completed_at,
+	COALESCE(c.team1_starts_ct, 1), COALESCE(c.h1_ct, 0), COALESCE(c.h1_t, 0),
+	COALESCE(c.h2_ct, 0), COALESCE(c.h2_t, 0), COALESCE(c.half_round, 0),
+	COALESCE(c.demo_path, '')`
+
+const gameFrom = `FROM games g LEFT JOIN cs2_games c ON c.game_id = g.id`
 
 func scanGame(s interface{ Scan(...any) error }) (Game, error) {
 	var g Game
 	var startsCT int
 	err := s.Scan(&g.ID, &g.MatchID, &g.GameNumber, &g.MapName, &g.Team1Score,
-		&g.Team2Score, &g.WinnerID, &g.ServerName, &g.Status,
-		&startsCT, &g.H1CT, &g.H1T, &g.H2CT, &g.H2T, &g.HalfRound, &g.StartedAt, &g.CompletedAt, &g.DemoPath)
+		&g.Team2Score, &g.WinnerID, &g.ServerName, &g.Status, &g.StartedAt, &g.CompletedAt,
+		&startsCT, &g.H1CT, &g.H1T, &g.H2CT, &g.H2T, &g.HalfRound, &g.DemoPath)
 	g.Team1StartsCT = startsCT != 0
 	return g, err
 }
 
 func (db *DB) GetMatchGames(matchID int64) ([]Game, error) {
-	rows, err := db.Query(`SELECT `+gameColumns+`
-		FROM games WHERE match_id=? ORDER BY game_number`, matchID)
+	rows, err := db.Query(`SELECT `+gameColumns+` `+gameFrom+`
+		WHERE g.match_id=? ORDER BY g.game_number`, matchID)
 	if err != nil {
 		return nil, err
 	}
@@ -102,16 +115,29 @@ func (db *DB) UpdateLiveScore(id int64, team1Score, team2Score int) error {
 }
 
 func (db *DB) CreateGame(matchID int64, gameNumber int, mapName string, team1StartsCT bool) (int64, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(`INSERT INTO games (match_id, game_number, map_name) VALUES (?, ?, ?)`,
+		matchID, gameNumber, mapName)
+	if err != nil {
+		return 0, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
 	ct := 0
 	if team1StartsCT {
 		ct = 1
 	}
-	res, err := db.Exec(`INSERT INTO games (match_id, game_number, map_name, team1_starts_ct) VALUES (?, ?, ?, ?)`,
-		matchID, gameNumber, mapName, ct)
-	if err != nil {
+	if _, err := tx.Exec(`INSERT INTO cs2_games (game_id, team1_starts_ct) VALUES (?, ?)`, id, ct); err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	return id, tx.Commit()
 }
 
 func (db *DB) UpdateGameScore(id int64, team1Score, team2Score int, winnerID *int64) error {
@@ -121,8 +147,10 @@ func (db *DB) UpdateGameScore(id int64, team1Score, team2Score int, winnerID *in
 }
 
 func (db *DB) UpdateGameHalfScores(id int64, h1ct, h1t, h2ct, h2t int) error {
-	_, err := db.Exec(`UPDATE games SET h1_ct=?, h1_t=?, h2_ct=?, h2_t=? WHERE id=?`,
-		h1ct, h1t, h2ct, h2t, id)
+	_, err := db.Exec(`INSERT INTO cs2_games (game_id, h1_ct, h1_t, h2_ct, h2_t) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(game_id) DO UPDATE SET h1_ct=excluded.h1_ct, h1_t=excluded.h1_t,
+		h2_ct=excluded.h2_ct, h2_t=excluded.h2_t`,
+		id, h1ct, h1t, h2ct, h2t)
 	return err
 }
 
@@ -133,8 +161,8 @@ func (db *DB) LinkGameToServer(id int64, serverName string) error {
 }
 
 func (db *DB) GetGameByServer(serverName string) (*Game, error) {
-	g, err := scanGame(db.QueryRow(`SELECT `+gameColumns+`
-		FROM games WHERE server_name=? AND status='live'`, serverName))
+	g, err := scanGame(db.QueryRow(`SELECT `+gameColumns+` `+gameFrom+`
+		WHERE g.server_name=? AND g.status='live'`, serverName))
 	if err != nil {
 		return nil, err
 	}
@@ -143,8 +171,8 @@ func (db *DB) GetGameByServer(serverName string) (*Game, error) {
 
 // GetGameByServerAny finds any game linked to this server (any status), most recent first.
 func (db *DB) GetGameByServerAny(serverName string) (*Game, error) {
-	g, err := scanGame(db.QueryRow(`SELECT `+gameColumns+`
-		FROM games WHERE server_name=? ORDER BY id DESC LIMIT 1`, serverName))
+	g, err := scanGame(db.QueryRow(`SELECT `+gameColumns+` `+gameFrom+`
+		WHERE g.server_name=? ORDER BY g.id DESC LIMIT 1`, serverName))
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +186,7 @@ func (db *DB) SavePlayerStats(gameID int64, stats []PlayerStat) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`INSERT INTO game_player_stats
+	stmt, err := tx.Prepare(`INSERT INTO cs2_game_player_stats
 		(game_id, team_id, player_name, kills, deaths, assists, hs_percent, kdr, adr, mvps, ef, ud, original_name, matched)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(game_id, player_name) DO UPDATE SET
@@ -187,7 +215,7 @@ func (db *DB) SavePlayerStats(gameID int64, stats []PlayerStat) error {
 func (db *DB) GetGameStats(gameID int64) ([]PlayerStat, error) {
 	rows, err := db.Query(`SELECT id, game_id, team_id, player_name, kills, deaths, assists,
 		hs_percent, kdr, adr, mvps, ef, ud, original_name, matched
-		FROM game_player_stats WHERE game_id=? AND matched=1 ORDER BY kills DESC`, gameID)
+		FROM cs2_game_player_stats WHERE game_id=? AND matched=1 ORDER BY kills DESC`, gameID)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +243,7 @@ func (db *DB) GetGameStats(gameID int64) ([]PlayerStat, error) {
 func (db *DB) GetGameStatsAdmin(gameID int64) ([]PlayerStat, error) {
 	rows, err := db.Query(`SELECT id, game_id, team_id, player_name, kills, deaths, assists,
 		hs_percent, kdr, adr, mvps, ef, ud, original_name, matched
-		FROM game_player_stats WHERE game_id=? ORDER BY matched DESC, kills DESC`, gameID)
+		FROM cs2_game_player_stats WHERE game_id=? ORDER BY matched DESC, kills DESC`, gameID)
 	if err != nil {
 		return nil, err
 	}
@@ -250,13 +278,13 @@ func (db *DB) RemapPlayerStat(gameID int64, originalName string, targetName stri
 	defer tx.Rollback()
 
 	// Remove any existing row for the target name in this game (conflict prevention)
-	if _, err := tx.Exec(`DELETE FROM game_player_stats WHERE game_id=? AND player_name=? AND player_name!=?`,
+	if _, err := tx.Exec(`DELETE FROM cs2_game_player_stats WHERE game_id=? AND player_name=? AND player_name!=?`,
 		gameID, targetName, originalName); err != nil {
 		return fmt.Errorf("delete existing: %w", err)
 	}
 
 	// Update the unmatched row
-	res, err := tx.Exec(`UPDATE game_player_stats SET player_name=?, team_id=?, matched=1
+	res, err := tx.Exec(`UPDATE cs2_game_player_stats SET player_name=?, team_id=?, matched=1
 		WHERE game_id=? AND original_name=? AND matched=0`,
 		targetName, teamID, gameID, originalName)
 	if err != nil {
@@ -277,7 +305,7 @@ func (db *DB) SaveGameRounds(gameID int64, rounds []GameRound) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`INSERT INTO game_rounds (game_id, round, winner, reason) VALUES (?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT INTO cs2_game_rounds (game_id, round, winner, reason) VALUES (?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -292,7 +320,7 @@ func (db *DB) SaveGameRounds(gameID int64, rounds []GameRound) error {
 }
 
 func (db *DB) GetGameRounds(gameID int64) ([]GameRound, error) {
-	rows, err := db.Query(`SELECT id, game_id, round, winner, reason FROM game_rounds WHERE game_id=? ORDER BY round`, gameID)
+	rows, err := db.Query(`SELECT id, game_id, round, winner, reason FROM cs2_game_rounds WHERE game_id=? ORDER BY round`, gameID)
 	if err != nil {
 		return nil, err
 	}
@@ -312,16 +340,18 @@ func (db *DB) GetGameRounds(gameID int64) ([]GameRound, error) {
 }
 
 func (db *DB) UpdateGameHalfRound(id int64, halfRound int) error {
-	_, err := db.Exec(`UPDATE games SET half_round=? WHERE id=?`, halfRound, id)
+	_, err := db.Exec(`INSERT INTO cs2_games (game_id, half_round) VALUES (?, ?)
+		ON CONFLICT(game_id) DO UPDATE SET half_round=excluded.half_round`,
+		id, halfRound)
 	return err
 }
 
 // DeleteGame removes a game and its associated rounds/stats.
 func (db *DB) DeleteGame(gameID int64) error {
-	if _, err := db.Exec(`DELETE FROM game_rounds WHERE game_id=?`, gameID); err != nil {
+	if _, err := db.Exec(`DELETE FROM cs2_game_rounds WHERE game_id=?`, gameID); err != nil {
 		return fmt.Errorf("delete rounds: %w", err)
 	}
-	if _, err := db.Exec(`DELETE FROM game_player_stats WHERE game_id=?`, gameID); err != nil {
+	if _, err := db.Exec(`DELETE FROM cs2_game_player_stats WHERE game_id=?`, gameID); err != nil {
 		return fmt.Errorf("delete stats: %w", err)
 	}
 	if _, err := db.Exec(`DELETE FROM games WHERE id=?`, gameID); err != nil {
@@ -332,13 +362,15 @@ func (db *DB) DeleteGame(gameID int64) error {
 
 // UpdateGameDemo sets the demo file path for a game.
 func (db *DB) UpdateGameDemo(gameID int64, demoPath string) error {
-	_, err := db.Exec(`UPDATE games SET demo_path=? WHERE id=?`, demoPath, gameID)
+	_, err := db.Exec(`INSERT INTO cs2_games (game_id, demo_path) VALUES (?, ?)
+		ON CONFLICT(game_id) DO UPDATE SET demo_path=excluded.demo_path`,
+		gameID, demoPath)
 	return err
 }
 
 // GetGameByID returns a single game by ID.
 func (db *DB) GetGameByID(gameID int64) (*Game, error) {
-	g, err := scanGame(db.QueryRow(`SELECT `+gameColumns+` FROM games WHERE id=?`, gameID))
+	g, err := scanGame(db.QueryRow(`SELECT `+gameColumns+` `+gameFrom+` WHERE g.id=?`, gameID))
 	if err != nil {
 		return nil, err
 	}
@@ -349,24 +381,25 @@ func (db *DB) GetGameByID(gameID int64) (*Game, error) {
 // undoes match winner if set, and removes pending Bo3 follow-up games.
 func (db *DB) ResetGame(gameID int64) error {
 	// Get game info
-	game, err := scanGame(db.QueryRow(`SELECT `+gameColumns+` FROM games WHERE id=?`, gameID))
+	game, err := scanGame(db.QueryRow(`SELECT `+gameColumns+` `+gameFrom+` WHERE g.id=?`, gameID))
 	if err != nil {
 		return err
 	}
 
 	// Reset the game record
 	_, err = db.Exec(`UPDATE games SET team1_score=0, team2_score=0, winner_id=NULL,
-		status='pending', server_name='', h1_ct=0, h1_t=0, h2_ct=0, h2_t=0,
-		half_round=0, started_at=NULL, completed_at=NULL WHERE id=?`, gameID)
+		status='pending', server_name='', started_at=NULL, completed_at=NULL WHERE id=?`, gameID)
 	if err != nil {
 		return err
 	}
+	// Reset CS2-specific half scores and half-round marker
+	db.Exec(`UPDATE cs2_games SET h1_ct=0, h1_t=0, h2_ct=0, h2_t=0, half_round=0 WHERE game_id=?`, gameID)
 
 	// Delete associated rounds and stats
-	if _, err := db.Exec(`DELETE FROM game_rounds WHERE game_id=?`, gameID); err != nil {
+	if _, err := db.Exec(`DELETE FROM cs2_game_rounds WHERE game_id=?`, gameID); err != nil {
 		return fmt.Errorf("delete rounds: %w", err)
 	}
-	if _, err := db.Exec(`DELETE FROM game_player_stats WHERE game_id=?`, gameID); err != nil {
+	if _, err := db.Exec(`DELETE FROM cs2_game_player_stats WHERE game_id=?`, gameID); err != nil {
 		return fmt.Errorf("delete stats: %w", err)
 	}
 

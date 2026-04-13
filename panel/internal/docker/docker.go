@@ -20,6 +20,8 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
+
+	"unilan/internal/games"
 )
 
 type ServerInfo struct {
@@ -53,7 +55,7 @@ func New() (*Client, error) {
 func (c *Client) ListServers(ctx context.Context) ([]ServerInfo, error) {
 	containers, err := c.docker.ContainerList(ctx, container.ListOptions{
 		All:     true,
-		Filters: filters.NewArgs(filters.Arg("name", "cs2-")),
+		Filters: filters.NewArgs(filters.Arg("name", games.Default().ContainerPrefix())),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list containers: %w", err)
@@ -90,7 +92,7 @@ func (c *Client) InspectServer(ctx context.Context, nameOrID string) (ServerInfo
 
 	env := parseEnvVars(ctr.Config.Env)
 	name := strings.TrimPrefix(ctr.Name, "/")
-	name = strings.TrimPrefix(name, "cs2-")
+	name = strings.TrimPrefix(name, games.Default().ContainerPrefix())
 
 	port, _ := strconv.Atoi(env["CS2_PORT"])
 	maxPlayers, _ := strconv.Atoi(env["CS2_MAXPLAYERS"])
@@ -120,7 +122,7 @@ func (c *Client) InspectServer(ctx context.Context, nameOrID string) (ServerInfo
 }
 
 func (c *Client) StopServer(ctx context.Context, name string) error {
-	containerName := "cs2-" + name
+	containerName := games.Default().ContainerPrefix() + name
 	timeout := 10
 	err := c.docker.ContainerStop(ctx, containerName, container.StopOptions{Timeout: &timeout})
 	if err != nil {
@@ -136,7 +138,7 @@ func (c *Client) StopServer(ctx context.Context, name string) error {
 // StreamLogs returns a log stream. It checks the container's TTY setting
 // to determine if the stream needs demultiplexing.
 func (c *Client) StreamLogs(ctx context.Context, name string) (io.ReadCloser, bool, error) {
-	containerName := "cs2-" + name
+	containerName := games.Default().ContainerPrefix() + name
 
 	// Check if container uses TTY
 	ctr, err := c.docker.ContainerInspect(ctx, containerName)

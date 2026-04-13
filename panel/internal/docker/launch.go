@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"unilan/internal/games"
 )
 
 type LaunchRequest struct {
@@ -33,7 +35,8 @@ func (c *Client) Launch(ctx context.Context, req LaunchRequest, composeFile stri
 	}
 
 	// Check for existing container
-	_, err := c.docker.ContainerInspect(ctx, "cs2-"+req.Name)
+	prefix := games.Default().ContainerPrefix()
+	_, err := c.docker.ContainerInspect(ctx, prefix+req.Name)
 	if err == nil {
 		return req, fmt.Errorf("server %q already exists", req.Name)
 	}
@@ -64,7 +67,7 @@ func (c *Client) Launch(ctx context.Context, req LaunchRequest, composeFile stri
 	args := []string{
 		"compose", "-f", composeFile,
 		"run", "-d",
-		"--name", "cs2-" + req.Name,
+		"--name", prefix + req.Name,
 		"-e", "CS2_SERVERNAME=" + req.Name,
 		"-e", "CS2_PORT=" + strconv.Itoa(req.Port),
 		"-e", "CS2_GAMEALIAS=" + req.Mode,

@@ -20,9 +20,9 @@ type PlayerReady struct {
 
 func (db *DB) CreateReadyState(gameID int64, serverName string) (*ReadyState, error) {
 	// Delete any existing ready state for this game first
-	db.Exec(`DELETE FROM ready_state WHERE game_id=?`, gameID)
+	db.Exec(`DELETE FROM cs2_ready_state WHERE game_id=?`, gameID)
 
-	res, err := db.Exec(`INSERT INTO ready_state (game_id, server_name, status) VALUES (?, ?, 'waiting')`,
+	res, err := db.Exec(`INSERT INTO cs2_ready_state (game_id, server_name, status) VALUES (?, ?, 'waiting')`,
 		gameID, serverName)
 	if err != nil {
 		return nil, err
@@ -40,7 +40,7 @@ func (db *DB) CreateReadyState(gameID int64, serverName string) (*ReadyState, er
 func (db *DB) GetReadyState(gameID int64) (*ReadyState, error) {
 	var rs ReadyState
 	err := db.QueryRow(`SELECT id, game_id, server_name, status, created_at
-		FROM ready_state WHERE game_id=?`, gameID).
+		FROM cs2_ready_state WHERE game_id=?`, gameID).
 		Scan(&rs.ID, &rs.GameID, &rs.ServerName, &rs.Status, &rs.CreatedAt)
 	if err != nil {
 		return nil, err
@@ -51,7 +51,7 @@ func (db *DB) GetReadyState(gameID int64) (*ReadyState, error) {
 func (db *DB) GetReadyStateByServer(serverName string) (*ReadyState, error) {
 	var rs ReadyState
 	err := db.QueryRow(`SELECT id, game_id, server_name, status, created_at
-		FROM ready_state WHERE server_name=? AND status IN ('waiting','countdown','ready')
+		FROM cs2_ready_state WHERE server_name=? AND status IN ('waiting','countdown','ready')
 		ORDER BY id DESC LIMIT 1`, serverName).
 		Scan(&rs.ID, &rs.GameID, &rs.ServerName, &rs.Status, &rs.CreatedAt)
 	if err != nil {
@@ -61,12 +61,12 @@ func (db *DB) GetReadyStateByServer(serverName string) (*ReadyState, error) {
 }
 
 func (db *DB) UpdateReadyStatus(readyStateID int64, status string) error {
-	_, err := db.Exec(`UPDATE ready_state SET status=? WHERE id=?`, status, readyStateID)
+	_, err := db.Exec(`UPDATE cs2_ready_state SET status=? WHERE id=?`, status, readyStateID)
 	return err
 }
 
 func (db *DB) SetPlayerReady(readyStateID int64, playerName, team string) error {
-	_, err := db.Exec(`INSERT INTO player_ready (ready_state_id, player_name, team, is_ready)
+	_, err := db.Exec(`INSERT INTO cs2_player_ready (ready_state_id, player_name, team, is_ready)
 		VALUES (?, ?, ?, 1)
 		ON CONFLICT(ready_state_id, player_name) DO UPDATE SET is_ready=1, team=excluded.team`,
 		readyStateID, playerName, team)
@@ -75,7 +75,7 @@ func (db *DB) SetPlayerReady(readyStateID int64, playerName, team string) error 
 
 func (db *DB) GetReadyPlayers(readyStateID int64) ([]PlayerReady, error) {
 	rows, err := db.Query(`SELECT id, ready_state_id, player_name, team, is_ready
-		FROM player_ready WHERE ready_state_id=?`, readyStateID)
+		FROM cs2_player_ready WHERE ready_state_id=?`, readyStateID)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +95,7 @@ func (db *DB) GetReadyPlayers(readyStateID int64) ([]PlayerReady, error) {
 }
 
 func (db *DB) DeleteReadyState(gameID int64) error {
-	// Cascade deletes player_ready rows via foreign key
-	_, err := db.Exec(`DELETE FROM ready_state WHERE game_id=?`, gameID)
+	// Cascade deletes cs2_player_ready rows via foreign key
+	_, err := db.Exec(`DELETE FROM cs2_ready_state WHERE game_id=?`, gameID)
 	return err
 }

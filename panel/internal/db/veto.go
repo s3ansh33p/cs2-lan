@@ -47,22 +47,14 @@ func (db *DB) ClearVetoes(matchID int64) error {
 	return err
 }
 
-// MapPool returns the map pool for a given game mode.
-func MapPool(gameMode string) []string {
-	switch gameMode {
-	case "wingman":
-		return []string{"de_inferno", "de_nuke", "de_overpass", "de_vertigo", "de_shortdust", "de_lake"}
-	default: // competitive
-		return []string{"de_ancient", "de_anubis", "de_dust2", "de_inferno", "de_mirage", "de_nuke", "de_vertigo"}
-	}
-}
-
-// ParseVetoFormat parses a comma-separated veto format string into a slice of actions.
-// Returns a default Bo3 format if the input is empty.
-func ParseVetoFormat(format string) []string {
+// ParseVetoFormat parses a comma-separated veto format string into a slice of
+// actions. If the input is empty or yields no valid actions, returns
+// defaultFormat. Game-specific defaults live in the games package
+// (e.g. games.Get("cs2").DefaultVetoFormat()).
+func ParseVetoFormat(format string, defaultFormat []string) []string {
 	format = strings.TrimSpace(format)
 	if format == "" {
-		return []string{"ban", "ban", "pick", "pick", "ban", "ban", "last"}
+		return defaultFormat
 	}
 	parts := strings.Split(format, ",")
 	var result []string
@@ -73,7 +65,7 @@ func ParseVetoFormat(format string) []string {
 		}
 	}
 	if len(result) == 0 {
-		return []string{"ban", "ban", "pick", "pick", "ban", "ban", "last"}
+		return defaultFormat
 	}
 	return result
 }

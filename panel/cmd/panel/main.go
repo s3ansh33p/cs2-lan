@@ -24,16 +24,18 @@ import (
 	"unilan/internal/auth"
 	"unilan/internal/db"
 	"unilan/internal/docker"
-	"unilan/internal/gametracker"
+	"unilan/internal/games/cs2/tracker"
 	"unilan/internal/logger"
-	"unilan/internal/rcon"
+	"unilan/internal/games/cs2/rcon"
 	"unilan/internal/web"
+
+	// Register supported games. Adding a new game = add a blank import here.
+	_ "unilan/internal/games/cs2"
 )
 
 func main() {
 	port := flag.Int("port", 8080, "HTTP listen port")
 	password := flag.String("password", "", "Panel access password (required)")
-	composeFile := flag.String("compose-file", "./docker-compose.yml", "Path to docker-compose.yml")
 	defaultRCON := flag.String("rcon-default", "changeme", "Default RCON password for new servers")
 	dbPath := flag.String("db", "tournament.db", "Path to SQLite database file")
 	tlsEnabled := flag.Bool("tls", false, "Enable HTTPS with auto-generated self-signed certificate")
@@ -59,7 +61,10 @@ func main() {
 	// Ensure demos directory exists for demo file storage
 	os.MkdirAll("demos", 0755)
 
-	absCompose, err := filepath.Abs(*composeFile)
+	// Compose file lives in the per-game folder. Path is relative to the
+	// binary's working directory (typically `panel/`).
+	composeFile := "../games/cs2/docker-compose.yml"
+	absCompose, err := filepath.Abs(composeFile)
 	if err != nil {
 		slog.Error("resolve compose file", "err", err)
 		os.Exit(1)
@@ -78,7 +83,7 @@ func main() {
 	rm := rcon.NewManager()
 	defer rm.CloseAll()
 
-	tm := gametracker.NewManager(
+	tm := tracker.NewManager(
 		func(ctx context.Context, name string) (<-chan string, func(), error) {
 			return dc.StreamLogLines(ctx, name)
 		},

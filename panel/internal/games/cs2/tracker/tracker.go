@@ -1,15 +1,17 @@
-package gametracker
+package tracker
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
-	"unilan/internal/rcon"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"unilan/internal/games"
+	"unilan/internal/games/cs2/rcon"
 )
 
 // Kill represents a kill event or a system message in the killfeed.
@@ -1062,7 +1064,7 @@ func (m *Manager) StopNotIn(running map[string]bool) {
 
 func (m *Manager) setupAndTrack(ctx context.Context, name string, gamePort int, rconPassword string, state *ServerState) {
 	addr := fmt.Sprintf("localhost:%d", gamePort)
-	for _, cmd := range []string{"sv_logecho 1", "log on", "mp_logdetail 3"} {
+	for _, cmd := range games.Default().RCON().SetupLogging {
 		resp, err := m.rconFn(addr, rconPassword, cmd)
 		if err != nil {
 			slog.Warn("gametracker: rcon setup", "server", name, "cmd", cmd, "err", err)
@@ -1370,7 +1372,8 @@ func parseLine(line string, state *ServerState) {
 	}
 
 	// Pause/unpause detection from rcon command logs
-	if strings.Contains(line, `command "mp_pause_match"`) {
+	rconCmds := games.Default().RCON()
+	if strings.Contains(line, `command "`+rconCmds.PauseMatch+`"`) {
 		state.mu.Lock()
 		state.isPaused = true
 		state.markMetaDirty()
@@ -1378,7 +1381,7 @@ func parseLine(line string, state *ServerState) {
 		state.addSystemMessage("Match Paused")
 		return
 	}
-	if strings.Contains(line, `command "mp_unpause_match"`) {
+	if strings.Contains(line, `command "`+rconCmds.UnpauseMatch+`"`) {
 		state.mu.Lock()
 		state.isPaused = false
 		state.markMetaDirty()
