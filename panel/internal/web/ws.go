@@ -122,9 +122,17 @@ func (h *Handler) LogsWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// GameStateWebSocket pushes game state as JSON.
-// Players table: debounced (200ms) to batch rapid changes like buy phase.
-// Killfeed: pushed immediately as individual events for instant display.
+// GameStateWebSocket pushes game state to the client using a two-message
+// protocol:
+//
+//   - snapshot: sent once on connect. Carries the full current state (players,
+//     score, killfeed, ready).
+//   - events: sent on each tracker flush (CSTV fragment boundary). Carries a
+//     batch of time-tagged Delta events that the client replays at real-time
+//     pace so a P90 spray or molotov tick renders 200 ms apart.
+//
+// See tracker.Delta and internal/games/cs2/tracker for the event-stream model
+// rationale and the /home/sean/.claude/plans design doc.
 func (h *Handler) GameStateWebSocket(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
@@ -151,21 +159,17 @@ func (h *Handler) GameStateWebSocket(w http.ResponseWriter, r *http.Request) {
 	pingTicker := time.NewTicker(pingInterval)
 	defer pingTicker.Stop()
 
-	var debounceTimer *time.Timer
-	playersCh := make(chan struct{}, 1)
-
-	lastKillIdx := state.KillCount()
-
-	// Send initial full state
-	h.sendPlayers(conn, name)
-	h.sendKillfeedFull(conn, name)
+	// Send the full initial snapshot. Drain any deltas produced between
+	// GetState() and Subscribe() so we don't replay changes that are already
+	// reflected in the snapshot.
+	_ = state.DrainDeltas()
+	if err := h.sendSnapshot(conn, name); err != nil {
+		return
+	}
 
 	for {
 		select {
 		case <-done:
-			if debounceTimer != nil {
-				debounceTimer.Stop()
-			}
 			return
 		case <-pingTicker.C:
 			conn.SetWriteDeadline(time.Now().Add(writeWait))
@@ -173,7 +177,7 @@ func (h *Handler) GameStateWebSocket(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-changes:
-			// Server lifecycle status changes
+			// Server lifecycle status changes.
 			if status := state.Status(); status != "" {
 				msg := struct {
 					Type   string `json:"type"`
@@ -184,37 +188,18 @@ func (h *Handler) GameStateWebSocket(w http.ResponseWriter, r *http.Request) {
 				return // close WS — client reconnects for "restarting"
 			}
 
-			// Detect killfeed reset (map change, match reset, etc.)
-			currentCount := state.KillCount()
-			if currentCount < lastKillIdx {
-				// Killfeed was reset — send full replace
-				lastKillIdx = currentCount
-				if err := h.sendKillfeedFull(conn, name); err != nil {
-					return
-				}
+			deltas := state.DrainDeltas()
+			if len(deltas) == 0 {
+				continue
 			}
-
-			// Push new killfeed entries immediately
-			newKills := state.GetKillsSince(lastKillIdx)
-			if len(newKills) > 0 {
-				lastKillIdx = state.KillCount()
-				if err := h.sendKillfeedNew(conn, newKills); err != nil {
-					return
-				}
+			// Append a fresh ready-state delta on every flush so the UI stays
+			// in sync with DB-side changes (ready-up toggle). Cheap (~100 b).
+			if ready := h.buildReadyDelta(name); ready != nil {
+				deltas = append(deltas, tracker.Delta{
+					T: time.Now().UnixMilli(), Kind: "ready", D: ready,
+				})
 			}
-
-			// Debounce players update
-			if debounceTimer != nil {
-				debounceTimer.Stop()
-			}
-			debounceTimer = time.AfterFunc(200*time.Millisecond, func() {
-				select {
-				case playersCh <- struct{}{}:
-				default:
-				}
-			})
-		case <-playersCh:
-			if err := h.sendPlayers(conn, name); err != nil {
+			if err := h.sendEvents(conn, deltas); err != nil {
 				return
 			}
 		}
@@ -347,11 +332,13 @@ type readyPlayerJSON struct {
 	IsReady bool   `json:"isReady"`
 }
 
-// sendPlayers sends a "players" message from tracker state (no RCON calls).
-func (h *Handler) sendPlayers(conn *websocket.Conn, name string) error {
+// sendSnapshot sends the initial "snapshot" message: full player list,
+// score, killfeed, and ready state. Client resets its local model on receipt.
+func (h *Handler) sendSnapshot(conn *websocket.Conn, name string) error {
 	players := buildPlayerList(name, h.tracker)
 
 	var score *scoreJSON
+	var killfeed []killJSON
 	if state := h.tracker.GetState(name); state != nil {
 		s := state.GetScore()
 		var rounds []roundJSON
@@ -363,23 +350,63 @@ func (h *Handler) sendPlayers(conn *websocket.Conn, name string) error {
 			round = 1
 		}
 		score = &scoreJSON{Round: round, CT: s.CT, T: s.T, GameMode: s.GameMode, Map: html.EscapeString(s.CurrentMap), Rounds: rounds, HalfRound: s.HalfRound, MaxRounds: s.MaxRounds, Warmup: s.InWarmup, Paused: s.IsPaused}
+
+		for _, k := range state.GetKillfeed(20) {
+			killfeed = append(killfeed, killToJSON(k))
+		}
 	}
 
-	// Include ready state if active
+	// ready state (if active)
 	var ready *readyStateJSON
 	if rs, err := h.db.GetReadyStateByServer(name); err == nil {
 		ready = h.buildReadyStateJSON(name, rs)
 	}
 
 	msg := struct {
-		Type    string           `json:"type"`
-		Players []gamePlayerJSON `json:"players"`
-		Score   *scoreJSON       `json:"score,omitempty"`
-		Ready   *readyStateJSON  `json:"ready,omitempty"`
-	}{Type: "players", Players: players, Score: score, Ready: ready}
+		Type     string           `json:"type"`
+		Players  []gamePlayerJSON `json:"players"`
+		Score    *scoreJSON       `json:"score,omitempty"`
+		Killfeed []killJSON       `json:"killfeed"`
+		Ready    *readyStateJSON  `json:"ready,omitempty"`
+	}{Type: "snapshot", Players: players, Score: score, Killfeed: killfeed, Ready: ready}
 
 	conn.SetWriteDeadline(time.Now().Add(writeWait))
 	return conn.WriteJSON(msg)
+}
+
+// sendEvents sends a batch of Delta events to the client. The client replays
+// them at real-time pace based on each delta's t field.
+func (h *Handler) sendEvents(conn *websocket.Conn, deltas []tracker.Delta) error {
+	msg := struct {
+		Type   string          `json:"type"`
+		Events []tracker.Delta `json:"events"`
+	}{Type: "events", Events: deltas}
+	conn.SetWriteDeadline(time.Now().Add(writeWait))
+	return conn.WriteJSON(msg)
+}
+
+// buildReadyDelta returns the current ready-state as a delta payload, or nil
+// if there's no active ready state for the server. Called on every flush.
+func (h *Handler) buildReadyDelta(name string) map[string]any {
+	rs, err := h.db.GetReadyStateByServer(name)
+	if err != nil {
+		return nil
+	}
+	ready := h.buildReadyStateJSON(name, rs)
+	if ready == nil {
+		return nil
+	}
+	// Round-trip through JSON so the map payload matches the readyStateJSON
+	// wire format (short keys, omitempty behavior).
+	data, err := json.Marshal(ready)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 // buildReadyStateJSON builds the ready state JSON from a ReadyState record.
@@ -460,39 +487,6 @@ func buildPlayerList(serverName string, tracker *tracker.Manager) []gamePlayerJS
 	}
 
 	return players
-}
-
-// sendKillfeedFull sends the full killfeed (initial load).
-func (h *Handler) sendKillfeedFull(conn *websocket.Conn, name string) error {
-	state := h.tracker.GetState(name)
-	var kills []killJSON
-	if state != nil {
-		for _, k := range state.GetKillfeed(20) {
-			kills = append(kills, killToJSON(k))
-		}
-	}
-	msg := struct {
-		Type     string     `json:"type"`
-		Killfeed []killJSON `json:"killfeed"`
-	}{Type: "killfeed", Killfeed: kills}
-
-	conn.SetWriteDeadline(time.Now().Add(writeWait))
-	return conn.WriteJSON(msg)
-}
-
-// sendKillfeedNew sends only new kill events (incremental).
-func (h *Handler) sendKillfeedNew(conn *websocket.Conn, newKills []tracker.Kill) error {
-	kills := make([]killJSON, len(newKills))
-	for i, k := range newKills {
-		kills[i] = killToJSON(k)
-	}
-	msg := struct {
-		Type  string     `json:"type"`
-		Kills []killJSON `json:"kills"`
-	}{Type: "kill", Kills: kills}
-
-	conn.SetWriteDeadline(time.Now().Add(writeWait))
-	return conn.WriteJSON(msg)
 }
 
 // DashboardWebSocket subscribes to the shared dashboard broadcaster.

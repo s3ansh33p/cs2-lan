@@ -14,10 +14,12 @@ package tracker
 import (
 	"context"
 	"fmt"
+	"html"
 	"log/slog"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"unilan/internal/games"
@@ -28,6 +30,92 @@ import (
 	"github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs/events"
 	"github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs/msg"
 )
+
+// Delta is one time-tagged state change published to subscribers over the
+// game WebSocket. The payload is nested under "d" so its keys can't collide
+// with the wrapper — important because the player-update payload uses "k"
+// for kill count and the score payload uses "t" for the T-side score, both
+// of which would otherwise clobber the wrapper's kind/timestamp.
+//
+// Wire format: {"t":<game_time_ms>,"k":<kind>,"d":{...payload}}
+//   - kind "p": player update, d merges into _game.players[n]
+//   - kind "hurt": damage event; d includes hp/ar post-damage
+//   - kind "fire": weapon fire (shooter + weapon)
+//   - kind "flash": flash event (victim, attacker, duration)
+//   - kind "inferno_start" / "inferno_end": molotov fire on the ground
+//   - kind "kill": killfeed entry (killJSON-shape payload)
+//   - kind "sys": system killfeed message (msg, time)
+//   - kind "score": scoreboard snapshot (scoreJSON-shape payload)
+//   - kind "ready": ready-state snapshot (readyStateJSON-shape payload)
+//   - kind "leave": player removed from scoreboard (bot disconnect)
+type Delta struct {
+	T    int64          `json:"t"`
+	Kind string         `json:"k"`
+	D    map[string]any `json:"d,omitempty"`
+}
+
+// KillPayload converts a Kill to the map shape the client expects in a "kill"
+// delta. The field names match the ws-layer killJSON wire format so the same
+// renderer path drives both the snapshot killfeed and the delta stream.
+func KillPayload(k Kill) map[string]any {
+	p := map[string]any{
+		"killer": html.EscapeString(k.Killer),
+		"victim": html.EscapeString(k.Victim),
+		"weapon": k.Weapon,
+		"time":   k.Time.Format("15:04:05"),
+	}
+	if t := shortTeam(k.KillerTeam); t != "" {
+		p["kt"] = t
+	}
+	if t := shortTeam(k.VictimTeam); t != "" {
+		p["vt"] = t
+	}
+	if k.Headshot {
+		p["hs"] = true
+	}
+	if k.Wallbang {
+		p["wb"] = true
+	}
+	if k.Noscope {
+		p["ns"] = true
+	}
+	if k.BlindKill {
+		p["bk"] = true
+	}
+	if k.InAir {
+		p["ia"] = true
+	}
+	if k.ThroughSmoke {
+		p["ts"] = true
+	}
+	if k.Assister != "" {
+		p["assist"] = html.EscapeString(k.Assister)
+		if t := shortTeam(k.AssisterTeam); t != "" {
+			p["at"] = t
+		}
+		if k.FlashAssist {
+			p["fa"] = true
+		}
+	}
+	if k.IsSystem {
+		p["sys"] = true
+		p["msg"] = html.EscapeString(k.Message)
+	}
+	return p
+}
+
+// shortTeam maps internal team strings to the short codes the client uses.
+func shortTeam(t string) string {
+	switch t {
+	case "TERRORIST":
+		return "T"
+	case "SPECTATOR":
+		return "S"
+	case "CT":
+		return "CT"
+	}
+	return ""
+}
 
 // Kill represents a kill event or a system message in the killfeed.
 type Kill struct {
@@ -203,7 +291,36 @@ type ServerState struct {
 	// Change notification
 	subMu sync.Mutex
 	subs  []chan struct{}
+
+	// Delta buffer — event-stream payload that accumulates between flushes.
+	// Drained by the WS layer on each notify. See Delta/appendDelta/DrainDeltas.
+	deltaMu  sync.Mutex
+	deltaBuf []Delta
+
+	// Flush timers — FrameDone-idle detection aligned to CSTV fragment end.
+	// armFlushTimer() resets flushTimer on every FrameDone; after 200 ms of
+	// no frames (fragment boundary), flushNow fires and notifies subscribers.
+	// ceilingTimer guarantees a flush even if FrameDones stop arriving (parser
+	// stall, server paused) so the client doesn't starve.
+	flushTimer   *time.Timer
+	ceilingTimer *time.Timer
+
+	// deltaTimeMs is the parser's in-game wall clock in ms, updated by the
+	// eventWiring at the top of each handler (and every FrameDone). appendDelta
+	// stamps deltas with this value so the client can replay a batch at
+	// real-time pace — parsing a 3 s CSTV fragment takes ~60 ms wall-time, so
+	// using time.Now() would collapse the whole fragment into a 60 ms replay.
+	// Game-time preserves the 3 s spread so P90 ticks stay 200 ms apart.
+	// Accessed via atomic ops; zero means "fall back to wall-time" for callers
+	// outside the parser loop (e.g. ResetStats from web context).
+	deltaTimeMs int64
 }
+
+// flush cadence — FrameDone-idle debounce + ceiling. See armFlushTimer.
+const (
+	flushDebounce = 200 * time.Millisecond
+	flushCeiling  = 4 * time.Second
+)
 
 // ScoreInfo returns the current round scores.
 type ScoreInfo struct {
@@ -335,8 +452,148 @@ func (s *ServerState) notify() {
 	}
 }
 
+// setDeltaTime updates the game-time clock used to stamp subsequent deltas.
+// Called by eventWiring at the top of every parser handler.
+func (s *ServerState) setDeltaTime(ms int64) {
+	atomic.StoreInt64(&s.deltaTimeMs, ms)
+}
+
+// appendDelta buffers a delta for the next flush. Uses the parser's in-game
+// clock (via setDeltaTime) so batched events preserve their real 3 s spread
+// rather than collapsing into the 50 ms of wall-time it takes the parser to
+// digest a fragment. Falls back to wall-time when called from outside the
+// parser loop (e.g. ResetStats from a web request).
+func (s *ServerState) appendDelta(kind string, payload map[string]any) {
+	t := atomic.LoadInt64(&s.deltaTimeMs)
+	if t <= 0 {
+		t = time.Now().UnixMilli()
+	}
+	d := Delta{T: t, Kind: kind, D: payload}
+	s.deltaMu.Lock()
+	s.deltaBuf = append(s.deltaBuf, d)
+	s.deltaMu.Unlock()
+}
+
+// pushPlayer emits a "p" (player update) delta with the given fields. The
+// name is set on the payload automatically.
+func (s *ServerState) pushPlayer(name string, fields map[string]any) {
+	if name == "" {
+		return
+	}
+	fields["n"] = html.EscapeString(name)
+	s.appendDelta("p", fields)
+}
+
+// pushScoreDelta emits a "score" delta with the current scoreboard snapshot
+// (round, ct/t scores, rounds[], halfRound, etc.). Called by event handlers
+// that mutate match-level state (round start/end, warmup/pause flips,
+// halftime, map change). Client replaces _game.score wholesale on apply.
+func (s *ServerState) pushScoreDelta() {
+	info := s.GetScore()
+	rounds := make([]map[string]any, 0, len(info.Rounds))
+	for _, r := range info.Rounds {
+		rounds = append(rounds, map[string]any{
+			"r":  r.Round,
+			"w":  r.Winner,
+			"rs": r.Reason,
+		})
+	}
+	round := info.Round
+	if round == 0 {
+		round = 1
+	}
+	payload := map[string]any{
+		"round":  round,
+		"ct":     info.CT,
+		"t":      info.T,
+		"rounds": rounds,
+	}
+	if info.GameMode != "" {
+		payload["mode"] = info.GameMode
+	}
+	if info.CurrentMap != "" {
+		payload["map"] = html.EscapeString(info.CurrentMap)
+	}
+	if info.HalfRound != 0 {
+		payload["half"] = info.HalfRound
+	}
+	if info.MaxRounds != 0 {
+		payload["maxRounds"] = info.MaxRounds
+	}
+	if info.InWarmup {
+		payload["warmup"] = true
+	}
+	if info.IsPaused {
+		payload["paused"] = true
+	}
+	s.appendDelta("score", payload)
+}
+
+// DrainDeltas removes and returns the buffered deltas. Called by the WS layer
+// after a notify signal.
+func (s *ServerState) DrainDeltas() []Delta {
+	s.deltaMu.Lock()
+	defer s.deltaMu.Unlock()
+	if len(s.deltaBuf) == 0 {
+		return nil
+	}
+	out := s.deltaBuf
+	s.deltaBuf = nil
+	return out
+}
+
+// armFlushTimer resets the fragment-boundary debounce. Called at the end of
+// every onFrameDone — a pause in FrameDones triggers flushNow, which notifies
+// subscribers if any deltas are buffered. The ceiling timer ensures we flush
+// at most every flushCeiling even if FrameDones never stop (which in practice
+// can't happen, but guards against pathological streams).
+func (s *ServerState) armFlushTimer() {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	if s.flushTimer == nil {
+		s.flushTimer = time.AfterFunc(flushDebounce, s.flushNow)
+	} else {
+		s.flushTimer.Reset(flushDebounce)
+	}
+	if s.ceilingTimer == nil {
+		s.ceilingTimer = time.AfterFunc(flushCeiling, s.flushNow)
+	}
+}
+
+// flushNow triggers a notify if the delta buffer has anything in it. Also
+// resets the ceiling timer so the next window starts from now.
+func (s *ServerState) flushNow() {
+	s.subMu.Lock()
+	if s.ceilingTimer != nil {
+		s.ceilingTimer.Stop()
+		s.ceilingTimer = nil
+	}
+	s.subMu.Unlock()
+	s.deltaMu.Lock()
+	has := len(s.deltaBuf) > 0
+	s.deltaMu.Unlock()
+	if has {
+		s.notify()
+	}
+}
+
+// stopFlushTimers halts both flush timers (called on MarkStopped).
+func (s *ServerState) stopFlushTimers() {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	if s.flushTimer != nil {
+		s.flushTimer.Stop()
+		s.flushTimer = nil
+	}
+	if s.ceilingTimer != nil {
+		s.ceilingTimer.Stop()
+		s.ceilingTimer = nil
+	}
+}
+
 // MarkStopped marks this server as stopped and notifies all subscribers.
 func (s *ServerState) MarkStopped() {
+	s.stopFlushTimers()
 	s.mu.Lock()
 	s.status = "stopped"
 	s.mu.Unlock()
@@ -458,12 +715,20 @@ func (s *ServerState) ensurePlayer(name string) *PlayerStats {
 
 // snapshotParticipants mirrors authoritative entity-graph fields from the
 // demoinfocs parser (money, inventory, armor, helmet, defuser, bomb, alive,
-// team) into PlayerStats. Returns true if any field moved so the caller can
-// decide whether to notify subscribers. The parser provides live-updated
-// entity properties for all of these, which is strictly more reliable than
-// the Source 1 ItemPickup/Drop/Equip events that don't fire on CS2 CSTV+.
-func (s *ServerState) snapshotParticipants(players []*common.Player) bool {
-	changed := false
+// team, hp) into PlayerStats, emitting a "p" delta per player with just the
+// fields that moved. The parser provides live-updated entity properties for
+// all of these, which is strictly more reliable than the Source 1
+// ItemPickup/Drop/Equip events that don't fire on CS2 CSTV+.
+//
+// Called every FrameDone (no throttle); most frames produce no deltas since
+// entity fields rarely move tick-to-tick.
+func (s *ServerState) snapshotParticipants(players []*common.Player) {
+	type playerUpdate struct {
+		name   string
+		fields map[string]any
+	}
+	var updates []playerUpdate
+
 	s.mu.Lock()
 	for _, pl := range players {
 		if pl == nil {
@@ -474,58 +739,61 @@ func (s *ServerState) snapshotParticipants(players []*common.Player) bool {
 			continue
 		}
 		p := s.ensurePlayer(name)
+		fields := map[string]any{}
 
-		// Team
 		if t := teamString(pl.Team); t != "" && p.Team != t {
 			p.Team = t
-			changed = true
+			fields["team"] = shortTeam(t)
 		}
-		// IsBot / Online
 		if p.IsBot != pl.IsBot {
 			p.IsBot = pl.IsBot
-			changed = true
+			fields["bot"] = pl.IsBot
 		}
 		if pl.IsConnected && !p.Online {
 			p.Online = true
-			changed = true
+			fields["online"] = true
 		}
-		// Alive
 		alive := pl.IsAlive()
 		if p.Alive != alive {
 			p.Alive = alive
-			changed = true
+			fields["alive"] = alive
 		}
-		// Money
 		money := pl.Money()
 		if p.Money != money {
 			p.Money = money
-			changed = true
+			fields["money"] = money
 		}
-		// Health / Armor / Helmet / Defuser — authoritative entity values.
+		ping := pl.Ping()
+		if p.Ping != ping {
+			p.Ping = ping
+			fields["ping"] = ping
+		}
 		health := pl.Health()
 		if p.Health != health {
 			p.Health = health
-			changed = true
+			fields["hp"] = health
 		}
 		armor := pl.Armor()
 		if p.Armor != armor {
 			p.Armor = armor
-			changed = true
+			fields["ar"] = armor
 		}
 		hasArmor := armor > 0
 		if p.HasArmor != hasArmor {
 			p.HasArmor = hasArmor
-			changed = true
+			// Client infers HasArmor from ar > 0, but keep the explicit bool
+			// in the delta for parity with the snapshot JSON shape.
+			fields["armor"] = hasArmor
 		}
 		helmet := pl.HasHelmet()
 		if p.HasHelmet != helmet {
 			p.HasHelmet = helmet
-			changed = true
+			fields["helmet"] = helmet
 		}
 		defuser := pl.HasDefuseKit()
 		if p.HasDefuser != defuser {
 			p.HasDefuser = defuser
-			changed = true
+			fields["defuser"] = defuser
 		}
 
 		// Weapons + bomb flag — rebuild from live inventory each snapshot.
@@ -550,15 +818,37 @@ func (s *ServerState) snapshotParticipants(players []*common.Player) bool {
 		}
 		if p.HasBomb != hasBomb {
 			p.HasBomb = hasBomb
-			changed = true
+			fields["bomb"] = hasBomb
 		}
 		if !weaponsEqual(p.Weapons, newWeapons) {
 			p.Weapons = newWeapons
-			changed = true
+			// Emit sorted weapons + grenades so the client can replace lists
+			// cleanly. Copy ps method logic.
+			weapons := []string{}
+			grenades := []string{}
+			for w := range newWeapons {
+				if IsGrenade(w) {
+					grenades = append(grenades, w)
+				} else if !IsEquipment(w) && w != "c4" && w != "weapon_c4" {
+					weapons = append(weapons, w)
+				}
+			}
+			sort.Strings(weapons)
+			sort.Strings(grenades)
+			fields["weapons"] = weapons
+			fields["grenades"] = grenades
+		}
+
+		if len(fields) > 0 {
+			updates = append(updates, playerUpdate{name: name, fields: fields})
 		}
 	}
 	s.mu.Unlock()
-	return changed
+
+	// Emit deltas outside the state lock.
+	for _, u := range updates {
+		s.pushPlayer(u.name, u.fields)
+	}
 }
 
 // weaponsEqual returns whether two weapon-name sets have identical keys.
@@ -575,10 +865,17 @@ func weaponsEqual(a, b map[string]bool) bool {
 }
 
 func (s *ServerState) addSystemMessage(msg string) {
+	now := time.Now()
 	s.mu.Lock()
-	s.appendKill(Kill{Time: time.Now(), IsSystem: true, Message: msg})
+	s.appendKill(Kill{Time: now, IsSystem: true, Message: msg})
 	s.mu.Unlock()
-	s.notify()
+	s.appendDelta("sys", map[string]any{
+		"msg":  html.EscapeString(msg),
+		"time": now.Format("15:04:05"),
+	})
+	// System messages (match started, bomb planted, half time, etc.) are user-
+	// visible and should land at the next fragment boundary — the FrameDone
+	// idle timer handles that. No direct notify() here; flush trigger covers it.
 }
 
 // ResetStats zeroes all player stats and scores, keeping players connected.
@@ -587,8 +884,10 @@ func (s *ServerState) ResetStats() {
 }
 
 func (s *ServerState) resetWithMessage(reason string) {
+	now := time.Now()
+	var resetNames []string
 	s.mu.Lock()
-	for _, p := range s.stats {
+	for name, p := range s.stats {
 		p.Kills = 0
 		p.Deaths = 0
 		p.Assists = 0
@@ -613,6 +912,7 @@ func (s *ServerState) resetWithMessage(reason string) {
 		p.Alive = true
 		p.Health = 0
 		p.Armor = 0
+		resetNames = append(resetNames, name)
 	}
 	s.round = 0
 	s.ctScore = 0
@@ -623,9 +923,27 @@ func (s *ServerState) resetWithMessage(reason string) {
 	s.isPaused = false
 	s.roundsPlayed = 0
 	s.markMetaDirty()
-	s.appendKill(Kill{Time: time.Now(), IsSystem: true, Message: reason})
+	s.appendKill(Kill{Time: now, IsSystem: true, Message: reason})
 	s.mu.Unlock()
-	s.notify()
+
+	// Zero-out per-player deltas so the client scoreboard clears.
+	for _, name := range resetNames {
+		s.pushPlayer(name, map[string]any{
+			"k": 0, "d": 0, "a": 0, "mvp": 0, "ef": 0, "ud": 0,
+			"hsp": 0, "kdr": 0, "adr": 0,
+			"knifek": 0, "zeusk": 0, "level": 0,
+			"money": 0, "hp": 0, "ar": 0,
+			"armor": false, "helmet": false, "defuser": false, "bomb": false,
+			"alive":    true,
+			"weapons":  []string{},
+			"grenades": []string{},
+		})
+	}
+	s.pushScoreDelta()
+	s.appendDelta("sys", map[string]any{
+		"msg":  html.EscapeString(reason),
+		"time": now.Format("15:04:05"),
+	})
 }
 
 // RCONFunc sends an RCON command to a server.
@@ -951,26 +1269,28 @@ type eventWiring struct {
 	// (CS2 scoreboard EF counts "enemies flashed for at least 0.7s", matching
 	// mp_flashbang_flashduration logic used by MatchMaking.)
 	efThreshold time.Duration
+}
 
-	// snapshotInterval throttles the per-frame GameState poll. We walk every
-	// participant and copy authoritative fields (money, inventory, armor,
-	// helmet, defuser, alive, team) at most once per this much game time.
-	snapshotInterval time.Duration
-	lastSnapshot     time.Duration
+// stamp updates the state's delta-time clock to the parser's current game-time.
+// Called at the top of every event handler so any delta emitted by this
+// handler (or downstream helpers) is tagged with game-time, not wall-time —
+// see ServerState.deltaTimeMs for the rationale.
+func (w *eventWiring) stamp() {
+	w.state.setDeltaTime(w.parser.CurrentTime().Milliseconds())
 }
 
 func (w *eventWiring) register() {
 	if w.efThreshold == 0 {
 		w.efThreshold = 700 * time.Millisecond
 	}
-	if w.snapshotInterval == 0 {
-		w.snapshotInterval = 1 * time.Second
-	}
 	p := w.parser
 
 	p.RegisterEventHandler(w.onKill)
 	p.RegisterEventHandler(w.onPlayerHurt)
 	p.RegisterEventHandler(w.onPlayerFlashed)
+	p.RegisterEventHandler(w.onWeaponFire)
+	p.RegisterEventHandler(w.onInfernoStart)
+	p.RegisterEventHandler(w.onInfernoExpired)
 	p.RegisterEventHandler(w.onRoundStart)
 	p.RegisterEventHandler(w.onRoundEnd)
 	p.RegisterEventHandler(w.onRoundMVP)
@@ -1128,6 +1448,7 @@ func weaponName(e *common.Equipment) string {
 }
 
 func (w *eventWiring) onKill(e events.Kill) {
+	w.stamp()
 	s := w.state
 	killer := playerName(e.Killer)
 	victim := playerName(e.Victim)
@@ -1172,7 +1493,11 @@ func (w *eventWiring) onKill(e events.Kill) {
 	}
 	s.appendKill(k)
 
-	// Killer counters
+	// Snapshot counter values under lock so the deltas emitted below are
+	// consistent with what the client's aggregate scoreboard will show.
+	var killerFields, victimFields, assisterFields map[string]any
+	var assisterName string
+
 	if killer != "" && killer != victim {
 		p := s.ensurePlayer(killer)
 		p.Kills++
@@ -1187,82 +1512,215 @@ func (w *eventWiring) onKill(e events.Kill) {
 		} else if isKnife {
 			p.KnifeKills++
 		}
+		killerFields = map[string]any{"k": p.Kills}
+		if e.IsHeadshot {
+			// HS% is derived client-side from k + headshot count; since the
+			// client JSON exposes hsp as a percentage, derive here.
+			if p.Kills > 0 {
+				killerFields["hsp"] = float64(p.HeadshotKills) / float64(p.Kills) * 100
+			}
+		}
+		if isZeus {
+			killerFields["zeusk"] = p.ZeusKills
+		}
+		if isKnife {
+			killerFields["knifek"] = p.KnifeKills
+		}
+		if killerTeam != "" {
+			killerFields["team"] = shortTeam(killerTeam)
+		}
 	}
 
-	// Victim counters
 	p := s.ensurePlayer(victim)
 	p.Deaths++
 	p.Alive = false
 	if victimTeam != "" {
 		p.Team = victimTeam
 	}
+	victimFields = map[string]any{"d": p.Deaths, "alive": false, "hp": 0}
+	// KDR derived for victim too (deaths changed).
+	if p.Deaths > 0 && p.Kills > 0 {
+		victimFields["kdr"] = float64(p.Kills) / float64(p.Deaths)
+	}
+	if victimTeam != "" {
+		victimFields["team"] = shortTeam(victimTeam)
+	}
 
-	// Assist counter (flash assists do not award a scoreboard assist in CS2)
 	if e.Assister != nil && !e.AssistedFlash {
 		ap := s.ensurePlayer(playerName(e.Assister))
 		ap.Assists++
 		if t := teamString(e.Assister.Team); t != "" {
 			ap.Team = t
 		}
+		assisterName = playerName(e.Assister)
+		assisterFields = map[string]any{"a": ap.Assists}
+		if t := teamString(e.Assister.Team); t != "" {
+			assisterFields["team"] = shortTeam(t)
+		}
 	}
 	s.mu.Unlock()
-	s.notify()
+
+	// kill delta — the killfeed entry — carries tick-accurate timing so the
+	// client's replay shows the kill at the moment it happened within the
+	// fragment window.
+	s.appendDelta("kill", KillPayload(k))
+	if killerFields != nil {
+		s.pushPlayer(killer, killerFields)
+	}
+	s.pushPlayer(victim, victimFields)
+	if assisterFields != nil {
+		s.pushPlayer(assisterName, assisterFields)
+	}
 }
 
 func (w *eventWiring) onPlayerHurt(e events.PlayerHurt) {
-	if e.Attacker == nil || e.Player == nil {
+	w.stamp()
+	if e.Player == nil {
 		return
 	}
-	name := playerName(e.Attacker)
-	if name == "" || name == playerName(e.Player) {
+	victim := playerName(e.Player)
+	if victim == "" {
 		return
 	}
-	// Friendly fire still counts as damage dealt in CS2; filtering is left to
-	// the scoreboard presentation layer.
+	attackerName := ""
+	if e.Attacker != nil {
+		attackerName = playerName(e.Attacker)
+	}
 	dmg := e.HealthDamageTaken
 	isGrenade := e.Weapon != nil && e.Weapon.Class() == common.EqClassGrenade
+	weapon := weaponName(e.Weapon)
+
+	// Post-damage hp/armor from the entity graph (e.Player reflects the hit).
+	newHP := e.Player.Health()
+	newAR := e.Player.Armor()
+
 	s := w.state
 	s.mu.Lock()
-	p := s.ensurePlayer(name)
-	p.Damage += float64(dmg)
-	if isGrenade {
-		p.UD += float64(dmg)
+	// Victim hp/ar always updated so the scoreboard reflects the hit.
+	vp := s.ensurePlayer(victim)
+	vp.Health = newHP
+	vp.Armor = newAR
+	vp.HasArmor = newAR > 0
+	if !e.Player.IsAlive() {
+		vp.Alive = false
+	}
+
+	// Attacker damage/util counters (friendly fire still counts).
+	var attackerFields map[string]any
+	if attackerName != "" && attackerName != victim {
+		ap := s.ensurePlayer(attackerName)
+		ap.Damage += float64(dmg)
+		if isGrenade {
+			ap.UD += float64(dmg)
+		}
+		attackerFields = map[string]any{}
+		if isGrenade {
+			attackerFields["ud"] = ap.UD
+		}
 	}
 	s.mu.Unlock()
-	s.notify()
+
+	// hurt delta — tick-accurate damage event, carries new hp/ar so the client
+	// replay ticks the health bar down with the bullet's timing.
+	payload := map[string]any{
+		"v":   html.EscapeString(victim),
+		"hp":  newHP,
+		"ar":  newAR,
+		"dmg": dmg,
+	}
+	if attackerName != "" {
+		payload["a"] = html.EscapeString(attackerName)
+	}
+	if weapon != "" {
+		payload["w"] = weapon
+	}
+	s.appendDelta("hurt", payload)
+
+	if len(attackerFields) > 0 {
+		s.pushPlayer(attackerName, attackerFields)
+	}
 }
 
 func (w *eventWiring) onPlayerFlashed(e events.PlayerFlashed) {
+	w.stamp()
 	if e.Attacker == nil || e.Player == nil {
 		return
 	}
 	if e.Attacker == e.Player {
 		return
 	}
-	// Only count enemy flashes over the EF threshold.
-	if e.Attacker.Team == e.Player.Team {
-		return
-	}
+	victim := playerName(e.Player)
+	attacker := playerName(e.Attacker)
 	dur := e.FlashDuration()
-	if dur < w.efThreshold {
+
+	// flash delta — emitted for every enemy flash, including short ones.
+	// Client stubs it (no UI in v1) but the model records it.
+	if e.Attacker.Team != e.Player.Team {
+		w.state.appendDelta("flash", map[string]any{
+			"v": html.EscapeString(victim),
+			"a": html.EscapeString(attacker),
+			"d": dur.Seconds(),
+		})
+	}
+
+	// EF stat counter — only over threshold flashes count.
+	if e.Attacker.Team == e.Player.Team || dur < w.efThreshold {
 		return
 	}
 	s := w.state
 	s.mu.Lock()
-	p := s.ensurePlayer(playerName(e.Attacker))
+	p := s.ensurePlayer(attacker)
 	p.EF++
+	ef := p.EF
 	s.mu.Unlock()
-	s.notify()
+	s.pushPlayer(attacker, map[string]any{"ef": ef})
+}
+
+// onWeaponFire emits a `fire` delta per shot. Noisy (~30/sec during active
+// fights) but the client stubs it; enables shot-by-shot cast features later.
+func (w *eventWiring) onWeaponFire(e events.WeaponFire) {
+	w.stamp()
+	if e.Shooter == nil {
+		return
+	}
+	name := playerName(e.Shooter)
+	if name == "" {
+		return
+	}
+	w.state.appendDelta("fire", map[string]any{
+		"n": html.EscapeString(name),
+		"w": weaponName(e.Weapon),
+	})
+}
+
+// onInfernoStart fires when a molotov/incendiary's fire patch is created on
+// the ground. Client stubs in v1.
+func (w *eventWiring) onInfernoStart(e events.InfernoStart) {
+	w.stamp()
+	payload := map[string]any{}
+	if e.Inferno != nil && e.Inferno.Thrower() != nil {
+		payload["a"] = html.EscapeString(e.Inferno.Thrower().Name)
+	}
+	w.state.appendDelta("inferno_start", payload)
+}
+
+// onInfernoExpired fires when a fire patch burns out. Client stubs in v1.
+func (w *eventWiring) onInfernoExpired(_ events.InfernoExpired) {
+	w.stamp()
+	w.state.appendDelta("inferno_end", map[string]any{})
 }
 
 func (w *eventWiring) onRoundStart(e events.RoundStart) {
+	w.stamp()
 	s := w.state
+	var resetNames []string
 	s.mu.Lock()
-	for _, p := range s.stats {
+	for name, p := range s.stats {
 		p.Alive = true
 		p.HasBomb = false
-		// Clear per-round weapons; they'll be repopulated via ItemPickup/Equip.
+		// Clear per-round weapons; they'll be repopulated from entity snapshot.
 		p.Weapons = make(map[string]bool)
+		resetNames = append(resetNames, name)
 	}
 	// Pull canonical score/map/rounds from GameState for accuracy.
 	gs := w.parser.GameState()
@@ -1278,11 +1736,22 @@ func (w *eventWiring) onRoundStart(e events.RoundStart) {
 		s.markMetaDirty()
 	}
 	s.mu.Unlock()
-	s.notify()
+
+	// Per-player reset deltas — alive=true, empty weapons/grenades, bomb=false.
+	for _, name := range resetNames {
+		s.pushPlayer(name, map[string]any{
+			"alive":    true,
+			"bomb":     false,
+			"weapons":  []string{},
+			"grenades": []string{},
+		})
+	}
+	s.pushScoreDelta()
 	_ = e
 }
 
 func (w *eventWiring) onRoundEnd(e events.RoundEnd) {
+	w.stamp()
 	s := w.state
 	reason := roundEndReasonString(e.Reason)
 	winner := ""
@@ -1316,12 +1785,14 @@ func (w *eventWiring) onRoundEnd(e events.RoundEnd) {
 	name := s.serverName
 	s.mu.Unlock()
 
+	// score delta — carries updated ct/t/round/rounds[] so the client can
+	// render the round-history bar as soon as the round settles.
+	s.pushScoreDelta()
+
 	// Round-win killfeed line, e.g. "CT wins — 5:3". Skip warmup rounds and
-	// non-team wins (draws). addSystemMessage calls notify() internally.
+	// non-team wins (draws). addSystemMessage also emits a `sys` delta.
 	if winner != "" && matchStarted {
 		s.addSystemMessage(fmt.Sprintf("%s wins — %d:%d", winner, ct, t))
-	} else {
-		s.notify()
 	}
 
 	if cb != nil {
@@ -1346,18 +1817,22 @@ func roundEndReasonString(r events.RoundEndReason) string {
 }
 
 func (w *eventWiring) onRoundMVP(e events.RoundMVPAnnouncement) {
+	w.stamp()
 	if e.Player == nil {
 		return
 	}
+	name := playerName(e.Player)
 	s := w.state
 	s.mu.Lock()
-	p := s.ensurePlayer(playerName(e.Player))
+	p := s.ensurePlayer(name)
 	p.MVPs++
+	mvps := p.MVPs
 	s.mu.Unlock()
-	s.notify()
+	s.pushPlayer(name, map[string]any{"mvp": mvps})
 }
 
 func (w *eventWiring) onMatchStartedChanged(e events.MatchStartedChanged) {
+	w.stamp()
 	// The Source 2 entity-driven signal. events.MatchStart is the Source 1
 	// game-event counterpart; on CSTV+ both can dispatch for the same match
 	// start and produce a duplicate "Match Started" line — we intentionally
@@ -1368,6 +1843,7 @@ func (w *eventWiring) onMatchStartedChanged(e events.MatchStartedChanged) {
 }
 
 func (w *eventWiring) onAnnouncementWinPanel(_ events.AnnouncementWinPanelMatch) {
+	w.stamp()
 	s := w.state
 	s.addSystemMessage("Game Over")
 	if s.gameOverFn == nil {
@@ -1383,12 +1859,14 @@ func (w *eventWiring) onAnnouncementWinPanel(_ events.AnnouncementWinPanelMatch)
 }
 
 func (w *eventWiring) onPlayerConnect(e events.PlayerConnect) {
+	w.stamp()
 	if e.Player == nil {
 		return
 	}
 	w.recordConnect(e.Player, false)
 }
 func (w *eventWiring) onBotConnect(e events.BotConnect) {
+	w.stamp()
 	if e.Player == nil {
 		return
 	}
@@ -1404,46 +1882,68 @@ func (w *eventWiring) recordConnect(pl *common.Player, isBot bool) {
 	p := s.ensurePlayer(name)
 	p.Online = true
 	p.IsBot = isBot || pl.IsBot
+	bot := p.IsBot
+	team := p.Team
 	if t := teamString(pl.Team); t != "" {
 		p.Team = t
+		team = t
 	}
 	s.mu.Unlock()
-	s.notify()
+	fields := map[string]any{"online": true, "bot": bot}
+	if team != "" {
+		fields["team"] = shortTeam(team)
+	}
+	s.pushPlayer(name, fields)
 }
 
 func (w *eventWiring) onPlayerDisconnected(e events.PlayerDisconnected) {
+	w.stamp()
 	if e.Player == nil {
 		return
 	}
 	name := playerName(e.Player)
 	s := w.state
+	var removed bool
 	s.mu.Lock()
 	if p, ok := s.stats[name]; ok {
 		if p.IsBot {
 			delete(s.stats, name)
+			removed = true
 		} else {
 			p.Online = false
 			p.Weapons = make(map[string]bool)
 		}
 	}
 	s.mu.Unlock()
-	s.notify()
+	if removed {
+		// Tombstone delta — client drops the player from its model.
+		s.appendDelta("leave", map[string]any{"n": html.EscapeString(name)})
+	} else {
+		s.pushPlayer(name, map[string]any{
+			"online":   false,
+			"weapons":  []string{},
+			"grenades": []string{},
+		})
+	}
 }
 
 func (w *eventWiring) onPlayerTeamChange(e events.PlayerTeamChange) {
+	w.stamp()
 	if e.Player == nil {
 		return
 	}
 	name := playerName(e.Player)
+	newTeam := teamString(e.NewTeam)
 	s := w.state
 	s.mu.Lock()
 	p := s.ensurePlayer(name)
-	p.Team = teamString(e.NewTeam)
+	p.Team = newTeam
 	s.mu.Unlock()
-	s.notify()
+	s.pushPlayer(name, map[string]any{"team": shortTeam(newTeam)})
 }
 
 func (w *eventWiring) onChatMessage(e events.ChatMessage) {
+	w.stamp()
 	if e.Sender == nil {
 		return
 	}
@@ -1463,17 +1963,23 @@ func (w *eventWiring) onChatMessage(e events.ChatMessage) {
 }
 
 func (w *eventWiring) onWarmupChanged(e events.IsWarmupPeriodChanged) {
+	w.stamp()
 	s := w.state
+	changed := false
 	s.mu.Lock()
 	if s.inWarmup != e.NewIsWarmupPeriod {
 		s.inWarmup = e.NewIsWarmupPeriod
 		s.markMetaDirty()
+		changed = true
 	}
 	s.mu.Unlock()
-	s.notify()
+	if changed {
+		s.pushScoreDelta()
+	}
 }
 
 func (w *eventWiring) onConVarsUpdated(e events.ConVarsUpdated) {
+	w.stamp()
 	paused := false
 	seenPauseCvar := false
 	for k, v := range e.UpdatedConVars {
@@ -1486,16 +1992,21 @@ func (w *eventWiring) onConVarsUpdated(e events.ConVarsUpdated) {
 		return
 	}
 	s := w.state
+	changed := false
 	s.mu.Lock()
 	if s.isPaused != paused {
 		s.isPaused = paused
 		s.markMetaDirty()
+		changed = true
 	}
 	s.mu.Unlock()
-	s.notify()
+	if changed {
+		s.pushScoreDelta()
+	}
 }
 
 func (w *eventWiring) onBombPlanted(e events.BombPlanted) {
+	w.stamp()
 	msg := "Bomb Planted"
 	if e.Player != nil && e.Player.Name != "" {
 		msg = e.Player.Name + " planted the bomb"
@@ -1504,6 +2015,7 @@ func (w *eventWiring) onBombPlanted(e events.BombPlanted) {
 }
 
 func (w *eventWiring) onBombDefused(e events.BombDefused) {
+	w.stamp()
 	msg := "Bomb Defused"
 	if e.Player != nil && e.Player.Name != "" {
 		msg = e.Player.Name + " defused the bomb"
@@ -1512,22 +2024,28 @@ func (w *eventWiring) onBombDefused(e events.BombDefused) {
 }
 
 func (w *eventWiring) onBombExplode(_ events.BombExplode) {
+	w.stamp()
 	w.state.addSystemMessage("Bomb Exploded")
 }
 
 func (w *eventWiring) onDemoHeader(m *msg.CDemoFileHeader) {
+	w.stamp()
 	mapName := m.GetMapName()
 	if mapName == "" {
 		return
 	}
 	s := w.state
+	changed := false
 	s.mu.Lock()
 	if s.currentMap != mapName {
 		s.currentMap = mapName
 		s.markMetaDirty()
+		changed = true
 	}
 	s.mu.Unlock()
-	s.notify()
+	if changed {
+		s.pushScoreDelta()
+	}
 }
 
 // onTeamSideSwitch marks halftime and captures the halfRound bookkeeping used
@@ -1542,6 +2060,7 @@ func (w *eventWiring) onDemoHeader(m *msg.CDemoFileHeader) {
 //
 // Per-player Team fields are corrected by the next snapshotParticipants pass.
 func (w *eventWiring) onTeamSideSwitch(_ events.TeamSideSwitch) {
+	w.stamp()
 	s := w.state
 	s.mu.Lock()
 	if s.halfRound == 0 {
@@ -1555,22 +2074,29 @@ func (w *eventWiring) onTeamSideSwitch(_ events.TeamSideSwitch) {
 		slog.Info("gametracker: half ended", "server", s.serverName, "round", played, "max_rounds", s.maxRounds)
 	}
 	s.mu.Unlock()
+	// Half-round changed: push score so the UI divider lands correctly.
+	s.pushScoreDelta()
 	s.addSystemMessage("Half Time")
 }
 
-// onFrameDone is the authoritative loadout/money/alive pump. CS2 broadcasts
-// don't reliably fire ItemPickup/Drop/Equip (library: "not available in all
-// demos"), and we want money/armor/helmet/defuser tracking that doesn't
-// depend on Source 1 game events. The parser's entity-graph view is always
-// current, so we just snapshot from it at a bounded rate.
+// onFrameDone is the authoritative loadout/money/hp/armor/alive pump. CS2
+// broadcasts don't reliably fire ItemPickup/Drop/Equip (library: "not
+// available in all demos"), and we want live entity-property tracking that
+// doesn't depend on Source 1 game events. The parser's entity-graph view is
+// always current, so we snapshot it every frame — snapshotParticipants diffs
+// against the previous state and only emits deltas for fields that moved, so
+// idle frames are effectively free.
+//
+// armFlushTimer() at the end is the fragment-boundary flush trigger: it
+// resets a 200 ms debounce that fires once FrameDones pause (i.e. the parser
+// has consumed the fragment and is waiting for the next POST). See
+// ServerState.armFlushTimer for the full rationale.
 func (w *eventWiring) onFrameDone(_ events.FrameDone) {
-	now := w.parser.CurrentTime()
-	// CurrentTime() can go backwards briefly on broadcast reconnect; treat
-	// any non-forward delta as "poll now" so we don't starve.
-	if now >= w.lastSnapshot && now-w.lastSnapshot < w.snapshotInterval {
-		return
-	}
-	w.lastSnapshot = now
+	// Stamp the parser's current game-time on the state so every delta emitted
+	// by this and subsequent handlers carries the right wall clock for client
+	// replay. Without this, a 3 s fragment collapses into ~60 ms of replay.
+	w.state.setDeltaTime(w.parser.CurrentTime().Milliseconds())
+
 	gs := w.parser.GameState()
 	if gs == nil {
 		return
@@ -1579,8 +2105,7 @@ func (w *eventWiring) onFrameDone(_ events.FrameDone) {
 	if parts == nil {
 		return
 	}
-	if w.state.snapshotParticipants(parts.All()) {
-		w.state.notify()
-	}
+	w.state.snapshotParticipants(parts.All())
+	w.state.armFlushTimer()
 }
 

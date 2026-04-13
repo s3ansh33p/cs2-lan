@@ -342,6 +342,22 @@ var _statMode = 0; // 0 = K/D/A/MVP, 1 = HS%/KDR/ADR/EF/UD
 var _statModeLabels = ['Kills Deaths Assists MVPs', 'HS% KDR ADR UD EF'];
 var _showDeadEquip = false;
 
+// ── Client-side game-state model ──
+// Mirrors what the server knows. Populated by the initial "snapshot" message
+// and mutated by each "events" delta. renderAll() reads from this model.
+// See tracker.Delta for the wire shape.
+var _game = { players: {}, score: null, killfeed: [], ready: null };
+
+// In-flight replay entries for the current events batch. Each entry holds a
+// timer id, the event, and a fired flag. On new-batch arrival we apply any
+// not-yet-fired events immediately (fast-forward) so state stays consistent
+// with the server; on snapshot arrival we drop them (snapshot is authoritative).
+var _replayQueue = [];
+
+// rAF coalescing — multiple applyEvent() calls within one frame collapse to
+// a single renderAll() invocation.
+var _renderPending = false;
+
 // Game state WebSocket (players + killfeed) - renders from JSON client-side
 var _serverStopped = false;
 var _serverRestarting = false;
@@ -369,16 +385,18 @@ function connectGameWS(serverName) {
         try {
             var data = JSON.parse(e.data);
             switch (data.type) {
-                case 'players':
-                    if (data.score) renderScore(data.score);
-                    renderPlayers(data.players);
-                    if (data.ready !== undefined) renderReadyPanel(data.ready);
+                case 'snapshot':
+                    // Full state reset — replace model wholesale, render once.
+                    // Drop any in-flight replay (snapshot is authoritative).
+                    dropReplay();
+                    _game.players = indexPlayersByName(data.players || []);
+                    _game.score = data.score || null;
+                    _game.killfeed = data.killfeed || [];
+                    _game.ready = data.ready || null;
+                    renderAll();
                     break;
-                case 'killfeed':
-                    renderKillfeed(data.killfeed);
-                    break;
-                case 'kill':
-                    appendKills(data.kills);
+                case 'events':
+                    scheduleBatch(data.events || []);
                     break;
                 case 'server_status':
                     if (data.status === 'stopped') {
@@ -409,9 +427,193 @@ function connectGameWS(serverName) {
 
     Page.onLeave(function() {
         _serverStopped = true; // prevent reconnect attempts
+        dropReplay();
         if (_logWS) { _logWS.close(); _logWS = null; }
         if (_gameWS) { _gameWS.close(); _gameWS = null; }
     });
+}
+
+// defaultPlayer returns a fresh player object with all numeric/boolean
+// fields zeroed and arrays empty. Used to back-fill missing fields when a
+// new player enters the model via a `p` delta whose payload only carries
+// the changed fields — without this, fields the delta didn't touch (k/d/a,
+// ping, etc.) would render as "undefined" until something else set them.
+function defaultPlayer(name) {
+    return {
+        name: name, team: '', bot: false, online: false, alive: true,
+        k: 0, d: 0, a: 0, mvp: 0, ef: 0, ud: 0,
+        hp: 0, ar: 0, money: 0, ping: 0,
+        weapons: [], grenades: [],
+        armor: false, helmet: false, defuser: false, bomb: false,
+        hsp: 0, kdr: 0, adr: 0,
+        knifek: 0, zeusk: 0, level: 0
+    };
+}
+
+// Index a player array by name for quick lookup/merge in applyEvent. Each
+// entry is merged onto a defaultPlayer base so renderPlayers sees a complete
+// shape even for fields the snapshot omitted (e.g. omitempty zeros).
+function indexPlayersByName(players) {
+    var out = {};
+    for (var i = 0; i < players.length; i++) {
+        var p = players[i];
+        if (!p || !p.name) continue;
+        var base = defaultPlayer(p.name);
+        for (var key in p) base[key] = p[key];
+        out[p.name] = base;
+    }
+    return out;
+}
+
+// dropReplay clears pending replay timers without applying their events.
+// Use on snapshot arrival or page leave — the snapshot is authoritative, so
+// uncommitted events would only re-apply stale changes.
+function dropReplay() {
+    for (var i = 0; i < _replayQueue.length; i++) {
+        if (!_replayQueue[i].fired) clearTimeout(_replayQueue[i].id);
+    }
+    _replayQueue = [];
+}
+
+// fastForwardReplay applies any not-yet-fired events immediately (in order)
+// and clears the queue. Use when a new events batch arrives — those pending
+// events represent real state changes that must land to stay in sync with
+// the server. Replay pacing is lost for them, but state correctness wins.
+function fastForwardReplay() {
+    var applied = false;
+    for (var i = 0; i < _replayQueue.length; i++) {
+        var e = _replayQueue[i];
+        if (!e.fired) {
+            clearTimeout(e.id);
+            applyEvent(e.event);
+            applied = true;
+        }
+    }
+    _replayQueue = [];
+    if (applied) scheduleRender();
+}
+
+// scheduleBatch takes a batch of time-tagged Delta events and schedules each
+// one to apply at (event.t - firstEvent.t) ms from now. This replays the
+// batch at real-time pace so a P90 spray's HP ticks render 200 ms apart even
+// though the whole batch arrived in one WS frame.
+//
+// Backpressure: if a previous batch's timers are still pending when a new
+// batch lands, fast-forward them before scheduling — the new batch carries
+// the latest state, so applying the prior batch's remainder immediately is
+// required to stay in sync with the server.
+function scheduleBatch(events) {
+    if (!events || !events.length) return;
+    if (_replayQueue.length) fastForwardReplay();
+
+    var t0 = events[0].t;
+    for (var i = 0; i < events.length; i++) {
+        var entry = { event: events[i], fired: false, id: 0 };
+        var delay = Math.max(0, events[i].t - t0);
+        (function(e) {
+            e.id = setTimeout(function() {
+                e.fired = true;
+                applyEvent(e.event);
+                scheduleRender();
+            }, delay);
+        })(entry);
+        _replayQueue.push(entry);
+    }
+}
+
+// applyEvent mutates _game based on one delta. Dispatches on ev.k. The event
+// payload lives in ev.d so its keys can't collide with the wrapper (e.g. the
+// player update's "k" for kill count, the score's "t" for T-side score).
+function applyEvent(ev) {
+    var d = ev.d || {};
+    switch (ev.k) {
+        case 'p': {
+            // Player update — merge d into _game.players[n]. Backfill
+            // defaults for newly-seen players so missing fields don't render
+            // as "undefined" in the scoreboard.
+            var name = d.n;
+            if (!name) break;
+            var cur = _game.players[name];
+            if (!cur) {
+                cur = defaultPlayer(name);
+                _game.players[name] = cur;
+            }
+            for (var key in d) {
+                if (key === 'n') continue;
+                cur[key] = d[key];
+            }
+            break;
+        }
+        case 'hurt': {
+            // Tick-accurate damage event — updates victim's hp/ar on the
+            // scoreboard. The attacker's util/damage counters arrive as
+            // separate 'p' deltas (see tracker.onPlayerHurt).
+            var v = d.v;
+            if (!v) break;
+            var vp = _game.players[v];
+            if (!vp) {
+                vp = defaultPlayer(v);
+                _game.players[v] = vp;
+            }
+            if (typeof d.hp === 'number') vp.hp = d.hp;
+            if (typeof d.ar === 'number') {
+                vp.ar = d.ar;
+                vp.armor = d.ar > 0;
+            }
+            if (d.hp === 0) vp.alive = false;
+            // Future: push {v, a, dmg, w, t: ev.t} into a transient "recent
+            // hits" ring for a floating damage indicator overlay.
+            break;
+        }
+        case 'fire':
+        case 'flash':
+        case 'inferno_start':
+        case 'inferno_end':
+            // v1: stubbed — model records nothing visible. Reserved for
+            // future cast-view overlays (muzzle cadence, burning ground).
+            break;
+        case 'kill':
+            // Prepend to killfeed, cap at 20. The kill payload is the
+            // killJSON shape (killer/kt/victim/vt/weapon/...) — same as the
+            // snapshot's killfeed entries, so renderKillEntry handles both.
+            _game.killfeed.unshift(d);
+            if (_game.killfeed.length > 20) _game.killfeed.length = 20;
+            break;
+        case 'sys':
+            // System message — same kill-feed shape, flagged as sys.
+            _game.killfeed.unshift({ sys: true, msg: d.msg, time: d.time });
+            if (_game.killfeed.length > 20) _game.killfeed.length = 20;
+            break;
+        case 'score':
+            _game.score = d;
+            break;
+        case 'ready':
+            _game.ready = d && d.active ? d : null;
+            break;
+        case 'leave':
+            if (d.n) delete _game.players[d.n];
+            break;
+    }
+}
+
+// scheduleRender coalesces many applyEvent() calls within one animation
+// frame into a single renderAll() invocation — essential when ~10 hurt
+// deltas arrive in the opening 300 ms of a fight.
+function scheduleRender() {
+    if (_renderPending) return;
+    _renderPending = true;
+    requestAnimationFrame(function() {
+        _renderPending = false;
+        renderAll();
+    });
+}
+
+// renderAll drives every player-panel UI piece from _game.
+function renderAll() {
+    if (_game.score) renderScore(_game.score);
+    renderPlayers();
+    renderKillfeed(_game.killfeed);
+    if (_game.ready !== undefined) renderReadyPanel(_game.ready);
 }
 
 function renderScore(score) {
@@ -614,8 +816,13 @@ function playerEquipIcons(p) {
     return html;
 }
 
-function renderPlayers(players) {
-    _lastPlayers = players;
+function renderPlayers() {
+    // Flatten _game.players map into an array for rendering. Caller mutates
+    // _game.players by name key; renderPlayers reads a fresh snapshot here.
+    var players = [];
+    for (var nm in _game.players) {
+        if (_game.players.hasOwnProperty(nm)) players.push(_game.players[nm]);
+    }
     var el = document.getElementById('player-list');
     if (!el) return;
 
@@ -1316,20 +1523,18 @@ document.addEventListener('htmx:afterRequest', function(e) {
     }
 });
 
-var _lastPlayers = [];
-
 function cycleStatMode() {
     _statMode = (_statMode + 1) % _statModeLabels.length;
     var btn = document.getElementById('stat-toggle');
     if (btn) btn.textContent = _statModeLabels[_statMode];
-    if (_lastPlayers.length) renderPlayers(_lastPlayers);
+    renderPlayers();
 }
 
 function toggleDeadEquip() {
     _showDeadEquip = !_showDeadEquip;
     var btn = document.getElementById('dead-equip-toggle');
     if (btn) btn.textContent = _showDeadEquip ? 'Dead Equip: ON' : 'Dead Equip: OFF';
-    if (_lastPlayers.length) renderPlayers(_lastPlayers);
+    renderPlayers();
 }
 
 function renameServer(name) {
