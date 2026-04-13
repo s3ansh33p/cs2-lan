@@ -1,18 +1,13 @@
 package web
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 
 	"unilan/internal/db"
-	"unilan/internal/games"
 	"unilan/internal/games/cs2/tracker"
 )
 
@@ -250,67 +245,8 @@ func (h *Handler) handleGameOver(info tracker.GameOverInfo) {
 		if mapName == "" {
 			mapName = game.MapName
 		}
-		go h.copyDemo(gameID, serverName, mapName)
+		go h.cs2.CopyDemo(gameID, serverName, mapName)
 	}
-}
-
-// copyDemo copies the newest .dem file from a server container to the local demos/ directory.
-func (h *Handler) copyDemo(gameID int64, serverName, mapName string) {
-	ctx := context.Background()
-	game := games.Default()
-	containerName := game.ContainerPrefix() + serverName
-	replayDir := game.DemoPath()
-
-	files, err := h.docker.ListContainerDir(ctx, containerName, replayDir)
-	if err != nil {
-		slog.Warn("demo: list replay dir", "server", serverName, "err", err)
-		return
-	}
-
-	// Filter for .dem files and pick the newest by name (they include timestamps)
-	var dems []string
-	for _, f := range files {
-		if strings.HasSuffix(f, ".dem") {
-			dems = append(dems, f)
-		}
-	}
-	if len(dems) == 0 {
-		slog.Info("demo: no .dem files found", "server", serverName)
-		return
-	}
-	sort.Strings(dems)
-	newest := dems[len(dems)-1]
-
-	// Ensure demos/ directory exists
-	if err := os.MkdirAll("demos", 0755); err != nil {
-		slog.Error("demo: create dir", "err", err)
-		return
-	}
-
-	// Copy from container
-	srcPath := replayDir + filepath.Base(newest)
-	localPath, err := h.docker.CopyFileFromContainer(ctx, containerName, srcPath, "demos")
-	if err != nil {
-		slog.Error("demo: copy from container", "server", serverName, "file", newest, "err", err)
-		return
-	}
-
-	// Rename to descriptive filename
-	safeName := strings.ReplaceAll(mapName, "/", "_")
-	dstName := fmt.Sprintf("game_%d_%s.dem", gameID, safeName)
-	dstPath := filepath.Join("demos", dstName)
-	if localPath != dstPath {
-		if err := os.Rename(localPath, dstPath); err != nil {
-			slog.Error("demo: rename", "from", localPath, "to", dstPath, "err", err)
-			dstPath = localPath // fall back to original path
-		}
-	}
-
-	if err := h.db.UpdateGameDemo(gameID, dstPath); err != nil {
-		slog.Error("demo: save path", "game", gameID, "err", err)
-		return
-	}
-	slog.Info("demo: saved", "game", gameID, "path", dstPath)
 }
 
 // handleRoundEnd updates live game scores after each round.

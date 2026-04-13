@@ -403,13 +403,13 @@ func (h *Handler) buildReadyStateJSON(serverName string, rs *db.ReadyState) *rea
 		return rj
 	}
 
-	roster := h.buildRoster(match, game.Team1StartsCT)
+	roster := h.cs2.BuildRoster(match, game.Team1StartsCT)
 	for _, rp := range roster {
 		pj := readyPlayerJSON{
-			Name:    rp.name,
-			IsReady: readyMap[strings.ToLower(rp.name)],
+			Name:    rp.Name,
+			IsReady: readyMap[strings.ToLower(rp.Name)],
 		}
-		if rp.side == "CT" {
+		if rp.Side == "CT" {
 			rj.CT = append(rj.CT, pj)
 			rj.CTTotal++
 			if pj.IsReady {

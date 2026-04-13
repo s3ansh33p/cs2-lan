@@ -1,4 +1,4 @@
-package web
+package cs2web
 
 import (
 	"context"
@@ -22,9 +22,10 @@ var (
 	readyCancels   = make(map[string]context.CancelFunc)
 )
 
-// setupReadyHook registers the .ready chat callback on the tracker.
-func (h *Handler) setupReadyHook() {
-	h.tracker.OnPlayerReady(func(serverName, playerName, team string) {
+// SetupReadyHook registers the .ready chat callback on the tracker. Call once
+// after the handler is constructed and the tracker is wired up.
+func (h *Handler) SetupReadyHook() {
+	h.Tracker.OnPlayerReady(func(serverName, playerName, team string) {
 		h.handlePlayerReady(serverName, playerName, team)
 	})
 }
@@ -36,7 +37,7 @@ func (h *Handler) RestartMatch(w http.ResponseWriter, r *http.Request) {
 	slog.Info("ready: restart-match", "server", name, "ip", r.RemoteAddr)
 
 	// Find the live game linked to this server
-	game, err := h.db.GetGameByServer(name)
+	game, err := h.DB.GetGameByServer(name)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			http.Error(w, "No live game linked to this server", http.StatusBadRequest)
@@ -47,7 +48,7 @@ func (h *Handler) RestartMatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get server info for RCON
-	info, err := h.docker.InspectServer(r.Context(), games.Default().ContainerPrefix()+name)
+	info, err := h.Docker.InspectServer(r.Context(), games.Default().ContainerPrefix()+name)
 	if err != nil {
 		http.Error(w, "Server not found", http.StatusNotFound)
 		return
@@ -58,24 +59,24 @@ func (h *Handler) RestartMatch(w http.ResponseWriter, r *http.Request) {
 
 	// Send restart + warmup commands
 	cmds := games.Default().RCON()
-	if _, err := h.rcon.Execute(addr, pw, cmds.RestartMatch); err != nil {
+	if _, err := h.RCON.Execute(addr, pw, cmds.RestartMatch); err != nil {
 		slog.Warn("ready: restart match failed", "server", name, "err", err)
 	}
 	time.Sleep(2 * time.Second)
-	if _, err := h.rcon.Execute(addr, pw, cmds.StartWarmup); err != nil {
+	if _, err := h.RCON.Execute(addr, pw, cmds.StartWarmup); err != nil {
 		slog.Warn("ready: start warmup failed", "server", name, "err", err)
 	}
-	if _, err := h.rcon.Execute(addr, pw, cmds.PauseWarmup); err != nil {
+	if _, err := h.RCON.Execute(addr, pw, cmds.PauseWarmup); err != nil {
 		slog.Warn("ready: pause warmup failed", "server", name, "err", err)
 	}
 
 	// Reset tracker stats for this server
-	if state := h.tracker.GetState(name); state != nil {
+	if state := h.Tracker.GetState(name); state != nil {
 		state.ResetStats()
 	}
 
 	// Create ready_state record
-	rs, err := h.db.CreateReadyState(game.ID, name)
+	rs, err := h.DB.CreateReadyState(game.ID, name)
 	if err != nil {
 		slog.Error("ready: create ready state", "server", name, "err", err)
 		http.Error(w, "Failed to create ready state", http.StatusInternalServerError)
@@ -83,7 +84,7 @@ func (h *Handler) RestartMatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send initial RCON message
-	h.rcon.Execute(addr, pw, `say "Match restarted! Type .ready in chat when you are ready."`)
+	h.RCON.Execute(addr, pw, `say "Match restarted! Type .ready in chat when you are ready."`)
 
 	// Start background goroutine for periodic reminders
 	h.startReadyReminder(name, addr, pw, rs.ID)
@@ -100,7 +101,7 @@ func (h *Handler) ForceStart(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	slog.Info("ready: force-start", "server", name, "ip", r.RemoteAddr)
 
-	rs, err := h.db.GetReadyStateByServer(name)
+	rs, err := h.DB.GetReadyStateByServer(name)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			http.Error(w, "No active ready state for this server", http.StatusBadRequest)
@@ -111,7 +112,7 @@ func (h *Handler) ForceStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get server info for RCON
-	info, err := h.docker.InspectServer(r.Context(), games.Default().ContainerPrefix()+name)
+	info, err := h.Docker.InspectServer(r.Context(), games.Default().ContainerPrefix()+name)
 	if err != nil {
 		http.Error(w, "Server not found", http.StatusNotFound)
 		return
@@ -120,7 +121,7 @@ func (h *Handler) ForceStart(w http.ResponseWriter, r *http.Request) {
 	addr := fmt.Sprintf("localhost:%d", info.Port)
 	pw := info.RCONPassword
 
-	h.db.UpdateReadyStatus(rs.ID, "force_started")
+	h.DB.UpdateReadyStatus(rs.ID, "force_started")
 	h.stopReadyReminder(name)
 
 	go h.startCountdown(name, addr, pw, rs.ID, true)
@@ -134,7 +135,7 @@ func (h *Handler) ForceStart(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ReadyState(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	rs, err := h.db.GetReadyStateByServer(name)
+	rs, err := h.DB.GetReadyStateByServer(name)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			w.Header().Set("Content-Type", "application/json")
@@ -145,19 +146,19 @@ func (h *Handler) ReadyState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	players, _ := h.db.GetReadyPlayers(rs.ID)
+	players, _ := h.DB.GetReadyPlayers(rs.ID)
 
 	// Get roster info
-	game, err := h.db.GetGameByServer(name)
+	game, err := h.DB.GetGameByServer(name)
 	if err != nil {
 		// Try any linked game
-		game, err = h.db.GetGameByServerAny(name)
+		game, err = h.DB.GetGameByServerAny(name)
 	}
 
-	var roster []rosterPlayer
+	var roster []RosterPlayer
 	if game != nil {
-		if match, err := h.db.GetMatchByID(game.MatchID); err == nil {
-			roster = h.buildRoster(match, game.Team1StartsCT)
+		if match, err := h.DB.GetMatchByID(game.MatchID); err == nil {
+			roster = h.BuildRoster(match, game.Team1StartsCT)
 		}
 	}
 
@@ -179,11 +180,11 @@ func (h *Handler) ReadyState(w http.ResponseWriter, r *http.Request) {
 
 	for _, rp := range roster {
 		pj := playerJSON{
-			Name:    rp.name,
-			Team:    rp.side,
-			IsReady: readyMap[strings.ToLower(rp.name)],
+			Name:    rp.Name,
+			Team:    rp.Side,
+			IsReady: readyMap[strings.ToLower(rp.Name)],
 		}
-		if rp.side == "CT" {
+		if rp.Side == "CT" {
 			ctPlayers = append(ctPlayers, pj)
 			ctTotal++
 			if pj.IsReady {
@@ -200,21 +201,21 @@ func (h *Handler) ReadyState(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"active":   true,
-		"status":   rs.Status,
-		"ct":       ctPlayers,
-		"t":        tPlayers,
-		"ctReady":  ctReady,
-		"ctTotal":  ctTotal,
-		"tReady":   tReady,
-		"tTotal":   tTotal,
-		"gameID":   rs.GameID,
+		"active":  true,
+		"status":  rs.Status,
+		"ct":      ctPlayers,
+		"t":       tPlayers,
+		"ctReady": ctReady,
+		"ctTotal": ctTotal,
+		"tReady":  tReady,
+		"tTotal":  tTotal,
+		"gameID":  rs.GameID,
 	})
 }
 
 // handlePlayerReady processes a ".ready" chat command from the tracker.
 func (h *Handler) handlePlayerReady(serverName, playerName, team string) {
-	rs, err := h.db.GetReadyStateByServer(serverName)
+	rs, err := h.DB.GetReadyStateByServer(serverName)
 	if err != nil {
 		return // no active ready state
 	}
@@ -223,27 +224,27 @@ func (h *Handler) handlePlayerReady(serverName, playerName, team string) {
 	}
 
 	// Get game and match info to check roster
-	game, err := h.db.GetGameByServer(serverName)
+	game, err := h.DB.GetGameByServer(serverName)
 	if err != nil {
-		game, err = h.db.GetGameByServerAny(serverName)
+		game, err = h.DB.GetGameByServerAny(serverName)
 		if err != nil {
 			return
 		}
 	}
 
-	match, err := h.db.GetMatchByID(game.MatchID)
+	match, err := h.DB.GetMatchByID(game.MatchID)
 	if err != nil {
 		return
 	}
 
-	roster := h.buildRoster(match, game.Team1StartsCT)
+	roster := h.BuildRoster(match, game.Team1StartsCT)
 
 	// Check if player is on the roster (case-insensitive)
 	nameLower := strings.ToLower(playerName)
 	var rosterTeam string
 	for _, rp := range roster {
-		if strings.ToLower(rp.name) == nameLower {
-			rosterTeam = rp.side
+		if strings.ToLower(rp.Name) == nameLower {
+			rosterTeam = rp.Side
 			break
 		}
 	}
@@ -255,7 +256,7 @@ func (h *Handler) handlePlayerReady(serverName, playerName, team string) {
 	}
 
 	// Mark player as ready
-	if err := h.db.SetPlayerReady(rs.ID, playerName, rosterTeam); err != nil {
+	if err := h.DB.SetPlayerReady(rs.ID, playerName, rosterTeam); err != nil {
 		slog.Error("ready: set player ready", "server", serverName, "player", playerName, "err", err)
 		return
 	}
@@ -263,7 +264,7 @@ func (h *Handler) handlePlayerReady(serverName, playerName, team string) {
 	slog.Info("ready: player ready", "server", serverName, "player", playerName, "team", rosterTeam)
 
 	// Count ready players
-	players, _ := h.db.GetReadyPlayers(rs.ID)
+	players, _ := h.DB.GetReadyPlayers(rs.ID)
 	readyMap := make(map[string]bool)
 	for _, p := range players {
 		readyMap[strings.ToLower(p.PlayerName)] = p.IsReady
@@ -271,21 +272,21 @@ func (h *Handler) handlePlayerReady(serverName, playerName, team string) {
 
 	ctReady, ctTotal, tReady, tTotal := 0, 0, 0, 0
 	for _, rp := range roster {
-		if rp.side == "CT" {
+		if rp.Side == "CT" {
 			ctTotal++
-			if readyMap[strings.ToLower(rp.name)] {
+			if readyMap[strings.ToLower(rp.Name)] {
 				ctReady++
 			}
 		} else {
 			tTotal++
-			if readyMap[strings.ToLower(rp.name)] {
+			if readyMap[strings.ToLower(rp.Name)] {
 				tReady++
 			}
 		}
 	}
 
 	// Send RCON status message
-	info, err := h.docker.InspectServer(context.Background(), games.Default().ContainerPrefix()+serverName)
+	info, err := h.Docker.InspectServer(context.Background(), games.Default().ContainerPrefix()+serverName)
 	if err != nil {
 		return
 	}
@@ -294,12 +295,12 @@ func (h *Handler) handlePlayerReady(serverName, playerName, team string) {
 
 	msg := fmt.Sprintf(`say "%s is ready! (CT: %d/%d, T: %d/%d)"`,
 		playerName, ctReady, ctTotal, tReady, tTotal)
-	h.rcon.Execute(addr, pw, msg)
+	h.RCON.Execute(addr, pw, msg)
 
 	// Check if all players are ready
 	if ctReady >= ctTotal && tReady >= tTotal && ctTotal > 0 && tTotal > 0 {
 		slog.Info("ready: all players ready", "server", serverName)
-		h.db.UpdateReadyStatus(rs.ID, "ready")
+		h.DB.UpdateReadyStatus(rs.ID, "ready")
 		h.stopReadyReminder(serverName)
 		go h.startCountdown(serverName, addr, pw, rs.ID, false)
 	}
@@ -307,23 +308,23 @@ func (h *Handler) handlePlayerReady(serverName, playerName, team string) {
 
 // startCountdown sends countdown messages and ends warmup.
 func (h *Handler) startCountdown(serverName, addr, pw string, readyStateID int64, forced bool) {
-	h.db.UpdateReadyStatus(readyStateID, "countdown")
+	h.DB.UpdateReadyStatus(readyStateID, "countdown")
 
 	prefix := "All players ready!"
 	if forced {
 		prefix = "Force starting!"
 	}
 
-	h.rcon.Execute(addr, pw, fmt.Sprintf(`say "%s Match starting in 3..."`, prefix))
+	h.RCON.Execute(addr, pw, fmt.Sprintf(`say "%s Match starting in 3..."`, prefix))
 	time.Sleep(1 * time.Second)
-	h.rcon.Execute(addr, pw, `say "2..."`)
+	h.RCON.Execute(addr, pw, `say "2..."`)
 	time.Sleep(1 * time.Second)
-	h.rcon.Execute(addr, pw, `say "1..."`)
+	h.RCON.Execute(addr, pw, `say "1..."`)
 	time.Sleep(1 * time.Second)
 
-	h.rcon.Execute(addr, pw, games.Default().RCON().EndWarmup)
+	h.RCON.Execute(addr, pw, games.Default().RCON().EndWarmup)
 
-	h.db.UpdateReadyStatus(readyStateID, "started")
+	h.DB.UpdateReadyStatus(readyStateID, "started")
 	slog.Info("ready: match started", "server", serverName, "forced", forced)
 }
 
@@ -345,11 +346,11 @@ func (h *Handler) startReadyReminder(serverName, addr, pw string, readyStateID i
 				return
 			case <-ticker.C:
 				// Check if ready state is still waiting
-				rs, err := h.db.GetReadyStateByServer(serverName)
+				rs, err := h.DB.GetReadyStateByServer(serverName)
 				if err != nil || rs.Status != "waiting" {
 					return
 				}
-				h.rcon.Execute(addr, pw, `say "Waiting for players to ready up. Type .ready in chat!"`)
+				h.RCON.Execute(addr, pw, `say "Waiting for players to ready up. Type .ready in chat!"`)
 			}
 		}
 	}()
@@ -365,33 +366,35 @@ func (h *Handler) stopReadyReminder(serverName string) {
 	readyCancelsMu.Unlock()
 }
 
-// rosterPlayer represents a team member mapped to CT/T side.
-type rosterPlayer struct {
-	name string
-	side string // "CT" or "T"
+// RosterPlayer is a team member mapped to CT/T side for the ready/roster UI.
+type RosterPlayer struct {
+	Name string
+	Side string // "CT" or "T"
 }
 
-// buildRoster returns the full roster of both teams with CT/T assignments.
-func (h *Handler) buildRoster(match *db.Match, team1StartsCT bool) []rosterPlayer {
-	var roster []rosterPlayer
+// BuildRoster returns the full roster of both teams with CT/T assignments.
+// Exported because web.buildGameStateJSON also needs roster info for the
+// game-state WebSocket payload.
+func (h *Handler) BuildRoster(match *db.Match, team1StartsCT bool) []RosterPlayer {
+	var roster []RosterPlayer
 	if match.Team1ID != nil {
-		members, _ := h.db.ListMembers(*match.Team1ID)
+		members, _ := h.DB.ListMembers(*match.Team1ID)
 		side := "T"
 		if team1StartsCT {
 			side = "CT"
 		}
 		for _, m := range members {
-			roster = append(roster, rosterPlayer{name: m.SteamName, side: side})
+			roster = append(roster, RosterPlayer{Name: m.SteamName, Side: side})
 		}
 	}
 	if match.Team2ID != nil {
-		members, _ := h.db.ListMembers(*match.Team2ID)
+		members, _ := h.DB.ListMembers(*match.Team2ID)
 		side := "CT"
 		if team1StartsCT {
 			side = "T"
 		}
 		for _, m := range members {
-			roster = append(roster, rosterPlayer{name: m.SteamName, side: side})
+			roster = append(roster, RosterPlayer{Name: m.SteamName, Side: side})
 		}
 	}
 	return roster

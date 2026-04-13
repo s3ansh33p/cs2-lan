@@ -12,8 +12,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -23,8 +21,9 @@ import (
 	"unilan/internal/db"
 	"unilan/internal/docker"
 	"unilan/internal/games"
-	"unilan/internal/games/cs2/tracker"
 	"unilan/internal/games/cs2/rcon"
+	"unilan/internal/games/cs2/tracker"
+	cs2web "unilan/internal/games/cs2/web"
 	webfs "unilan/web"
 )
 
@@ -148,6 +147,9 @@ type Handler struct {
 
 	// Unified WebSocket hub (topic-based multiplexed connections)
 	hub *WSHub
+
+	// CS2-specific handlers (ready state, .ready chat, CT/T roster).
+	cs2 *cs2web.Handler
 }
 
 func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *tracker.Manager, database *db.DB, composeFile, defaultRCON string) (*Handler, error) {
@@ -246,9 +248,10 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *tracker.Manager, databa
 		announceLink:    database.GetSetting("announcement_link"),
 		hub:             NewWSHub(),
 	}
+	h.cs2 = cs2web.NewHandler(database, dc, tm, rm, h.render)
 	go h.dashboardPoller()
 	h.setupGameOverHook()
-	h.setupReadyHook()
+	h.cs2.SetupReadyHook()
 	return h, nil
 }
 
@@ -730,30 +733,6 @@ func (h *Handler) RCONCommand(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) ScoreboardPartial(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	state := h.tracker.GetState(name)
-	var scoreboard []tracker.PlayerStats
-	if state != nil {
-		scoreboard = state.GetScoreboard()
-	}
-	h.render(w, "scoreboard.html", map[string]any{
-		"Scoreboard": scoreboard,
-	})
-}
-
-func (h *Handler) KillfeedPartial(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	state := h.tracker.GetState(name)
-	var killfeed []tracker.Kill
-	if state != nil {
-		killfeed = state.GetKillfeed(20)
-	}
-	h.render(w, "killfeed.html", map[string]any{
-		"Killfeed": killfeed,
-	})
-}
-
 func (h *Handler) RestartServer(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	slog.Info("server: restarting", "name", name, "ip", r.RemoteAddr)
@@ -875,36 +854,5 @@ type CombinedPlayer struct {
 	Weapons  []string // display names of non-grenade weapons
 	Grenades []string // short grenade abbreviations
 	Online   bool
-}
-
-// ServeDemo serves a demo file for download.
-func (h *Handler) ServeDemo(w http.ResponseWriter, r *http.Request) {
-	gameID, err := strconv.ParseInt(r.PathValue("gameID"), 10, 64)
-	if err != nil {
-		http.Error(w, "Invalid game ID", http.StatusBadRequest)
-		return
-	}
-
-	game, err := h.db.GetGameByID(gameID)
-	if err != nil {
-		http.Error(w, "Game not found", http.StatusNotFound)
-		return
-	}
-
-	if game.DemoPath == "" {
-		http.Error(w, "No demo available", http.StatusNotFound)
-		return
-	}
-
-	// Check file exists
-	info, err := os.Stat(game.DemoPath)
-	if err != nil || info.IsDir() {
-		http.Error(w, "Demo file not found", http.StatusNotFound)
-		return
-	}
-
-	filename := filepath.Base(game.DemoPath)
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
-	http.ServeFile(w, r, game.DemoPath)
 }
 

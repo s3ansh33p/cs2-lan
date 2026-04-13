@@ -49,7 +49,7 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	mux.HandleFunc("GET /tournament/{tid}", h.PublicTournamentBracket)
 	mux.HandleFunc("GET /tournament/{tid}/game/{gid}/stats", h.PublicGameStats)
 	mux.HandleFunc("GET /ws", h.ServeWS)
-	mux.HandleFunc("GET /demo/{gameID}", h.ServeDemo)
+	mux.HandleFunc("GET /demo/{gameID}", h.cs2.ServeDemo)
 
 	// Protected admin routes
 	protected := http.NewServeMux()
@@ -70,13 +70,13 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	protected.HandleFunc("POST /admin/server/{name}/rcon", h.RCONCommand)
 	protected.HandleFunc("GET /admin/server/{name}/logs/ws", h.LogsWebSocket)
 	protected.HandleFunc("GET /admin/server/{name}/game/ws", h.GameStateWebSocket)
-	protected.HandleFunc("GET /admin/server/{name}/killfeed", h.KillfeedPartial)
+	protected.HandleFunc("GET /admin/server/{name}/killfeed", h.cs2.KillfeedPartial)
 	protected.HandleFunc("POST /admin/server/{name}/rename", h.RenameServer)
 	protected.HandleFunc("POST /admin/server/{name}/restart", h.RestartServer)
 	protected.HandleFunc("POST /admin/server/{name}/stop", h.StopServer)
-	protected.HandleFunc("POST /admin/server/{name}/restart-match", h.RestartMatch)
-	protected.HandleFunc("POST /admin/server/{name}/force-start", h.ForceStart)
-	protected.HandleFunc("GET /admin/server/{name}/ready-state", h.ReadyState)
+	protected.HandleFunc("POST /admin/server/{name}/restart-match", h.cs2.RestartMatch)
+	protected.HandleFunc("POST /admin/server/{name}/force-start", h.cs2.ForceStart)
+	protected.HandleFunc("GET /admin/server/{name}/ready-state", h.cs2.ReadyState)
 
 	// Admin tournament routes — list/selector
 	protected.HandleFunc("GET /admin/tournament", h.AdminTournament)
