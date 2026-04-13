@@ -1,17 +1,32 @@
+// Package tracker maintains live game state for CS2 servers.
+//
+// The tracker consumes Valve's CSTV+ broadcast protocol via an in-process
+// relay (internal/games/cs2/cstv) and markus-wa/demoinfocs-golang's
+// NewCSTVBroadcastParser. One goroutine per tracked server runs a parser
+// that turns structured net-message events into updates on ServerState.
+//
+// The public surface (Kill, PlayerStats, ServerState, Manager, callbacks,
+// TrackerMetadata) is what the rest of the panel depends on — HTTP partials,
+// the game-state WebSocket, and persistence. Keep it stable; internals are
+// free to change.
 package tracker
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"unilan/internal/games"
-	"unilan/internal/games/cs2/rcon"
+	"unilan/internal/games/cs2/cstv"
+
+	demoinfocs "github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs"
+	"github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs/common"
+	"github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs/events"
+	"github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs/msg"
 )
 
 // Kill represents a kill event or a system message in the killfeed.
@@ -42,31 +57,33 @@ type PlayerStats struct {
 	Kills         int
 	Deaths        int
 	Assists       int
-	Weapons       map[string]bool // current loadout
+	Weapons       map[string]bool // current loadout (normalized weapon names)
 	Online        bool            // connected to server
 	IsBot         bool
 	Ping          int     // from RCON polling
 	Duration      string  // from RCON polling
 	Address       string  // from RCON polling
-	Money         int     // from round_stats JSON
-	AccountID     string  // Steam account ID for JSON mapping
-	Damage        float64 // total damage dealt
-	HSPercent     float64 // headshot percentage
-	KDR           float64 // kill/death ratio
-	ADR           float64 // average damage per round
+	Money         int     // from GameState
+	AccountID     string  // Steam account ID
+	Damage        float64 // total health damage dealt this match
+	HSPercent     float64 // headshot percentage (derived)
+	KDR           float64 // kill/death ratio (derived)
+	ADR           float64 // average damage per round (derived)
 	MVPs          int
-	EF            int     // enemies flashed
-	UD            float64 // utility damage
+	EF            int     // enemies flashed (over threshold)
+	UD            float64 // grenade damage dealt
 	KnifeKills    int
 	ZeusKills     int
 	HeadshotKills int
-	Level         int // arms race level (state-tracked)
-	LevelKills    int // kills at current level (resets on level up)
+	Level         int // arms race level — not tracked via broadcast
+	LevelKills    int // arms race per-level kills — not tracked via broadcast
 	HasArmor      bool
 	HasHelmet     bool
 	HasDefuser    bool
 	HasBomb       bool
 	Alive         bool
+	Health        int // 0-100, from common.Player.Health() (m_iHealth)
+	Armor         int // 0-100, from common.Player.Armor() (m_ArmorValue)
 }
 
 func (p PlayerStats) Score() int {
@@ -129,29 +146,6 @@ var WeaponDisplayName = map[string]string{
 	"taser": "Zeus",
 }
 
-// WeaponPrice maps weapon names to their buy cost in CS2.
-var WeaponPrice = map[string]int{
-	// Pistols
-	"glock": 200, "usp_silencer": 200, "hkp2000": 200, "p250": 300,
-	"fiveseven": 500, "tec9": 500, "cz75a": 500, "deagle": 700,
-	"elite": 300, "revolver": 600,
-	// SMGs
-	"mac10": 1050, "mp9": 1250, "mp7": 1500, "mp5sd": 1500,
-	"ump45": 1200, "p90": 2350, "bizon": 1400,
-	// Rifles
-	"famas": 2050, "galilar": 1800, "ak47": 2700, "m4a1": 3100,
-	"m4a1_silencer": 2900, "aug": 3300, "sg556": 3000,
-	"ssg08": 1700, "awp": 4750, "scar20": 5000, "g3sg1": 5000,
-	// Heavy
-	"nova": 1050, "xm1014": 2000, "mag7": 1300, "sawedoff": 1100,
-	"m249": 5200, "negev": 1700,
-	// Gear
-	"kevlar": 650, "assaultsuit": 1000, "defuser": 400, "taser": 200,
-	// Grenades
-	"hegrenade": 300, "flashbang": 200, "smokegrenade": 300,
-	"molotov": 400, "incgrenade": 600, "decoy": 50,
-}
-
 func DisplayName(w string) string {
 	if n, ok := WeaponDisplayName[w]; ok {
 		return n
@@ -174,35 +168,24 @@ type RoundResult struct {
 
 // ServerState holds the parsed game state for one server.
 type ServerState struct {
-	mu          sync.RWMutex
-	kills       []Kill
-	killSeq     int // monotonically increasing kill counter
-	stats       map[string]*PlayerStats
-	maxKills    int
-	round       int
-	ctScore     int
-	tScore      int
-	rounds      []RoundResult // round history
-	gameMode    string
-	currentMap  string
-	halfRound   int // round number where half-time occurred
-	maxRounds   int // halfRound * 2 — for overtime detection
-	inWarmup    bool
-	isPaused    bool
-	gameType    int // for tracking mode changes via rcon
-	gameModeNum int
+	mu         sync.RWMutex
+	kills      []Kill
+	killSeq    int // monotonically increasing kill counter
+	stats      map[string]*PlayerStats
+	maxKills   int
+	round      int
+	ctScore    int
+	tScore     int
+	rounds     []RoundResult
+	gameMode   string
+	currentMap string
+	halfRound  int // round number where half-time occurred
+	maxRounds  int // halfRound * 2 — for overtime detection
+	inWarmup   bool
+	isPaused   bool
 
-	// Bomb defuse tracking
-	defuser     string // player currently defusing
-	defuserTeam string // their team
-
-	// JSON block accumulator for round_stats
-	jsonBuf []string
-	inJSON  bool
-
-	// Player mappings for JSON round_stats
-	accountMap map[string]string // accountID -> name (for human players)
-	slotMap    map[int]string    // player slot ID -> name (for all players including bots)
+	// roundsPlayed is used for ADR denominator. Counts non-warmup rounds since match start.
+	roundsPlayed int
 
 	// Server lifecycle: "", "restarting", "stopped"
 	status string
@@ -292,11 +275,9 @@ func (s *ServerState) RestoreMetadata(m TrackerMetadata) {
 
 func newServerState() *ServerState {
 	return &ServerState{
-		stats:      make(map[string]*PlayerStats),
-		accountMap: make(map[string]string),
-		slotMap:    make(map[int]string),
-		inWarmup:   false,
-		maxKills:   200,
+		stats:    make(map[string]*PlayerStats),
+		inWarmup: false,
+		maxKills: 200,
 	}
 }
 
@@ -409,12 +390,10 @@ func (s *ServerState) KillCount() int {
 func (s *ServerState) GetKillsSince(since int) []Kill {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	// How many new kills since `since`
 	newCount := s.killSeq - since
 	if newCount <= 0 {
 		return nil
 	}
-	// The new kills are the last `newCount` entries in the array
 	if newCount > len(s.kills) {
 		newCount = len(s.kills)
 	}
@@ -430,12 +409,23 @@ func (s *ServerState) GetScoreboard() []PlayerStats {
 	result := make([]PlayerStats, 0, len(s.stats))
 	for _, ps := range s.stats {
 		cp := *ps
-		// Copy the weapons map
 		if ps.Weapons != nil {
 			cp.Weapons = make(map[string]bool, len(ps.Weapons))
 			for k, v := range ps.Weapons {
 				cp.Weapons[k] = v
 			}
+		}
+		// Derive HSPercent, KDR, ADR from counters.
+		if cp.Kills > 0 {
+			cp.HSPercent = float64(cp.HeadshotKills) / float64(cp.Kills) * 100
+		}
+		if cp.Deaths > 0 {
+			cp.KDR = float64(cp.Kills) / float64(cp.Deaths)
+		} else if cp.Kills > 0 {
+			cp.KDR = float64(cp.Kills)
+		}
+		if s.roundsPlayed > 0 {
+			cp.ADR = cp.Damage / float64(s.roundsPlayed)
 		}
 		result = append(result, cp)
 	}
@@ -466,392 +456,122 @@ func (s *ServerState) ensurePlayer(name string) *PlayerStats {
 	return s.stats[name]
 }
 
-type KillModifiers struct {
-	Headshot, Wallbang, Noscope, BlindKill, InAir, ThroughSmoke bool
-}
-
-func (s *ServerState) recordKill(killer, killerTeam, victim, victimTeam, weapon string, mods KillModifiers) {
+// snapshotParticipants mirrors authoritative entity-graph fields from the
+// demoinfocs parser (money, inventory, armor, helmet, defuser, bomb, alive,
+// team) into PlayerStats. Returns true if any field moved so the caller can
+// decide whether to notify subscribers. The parser provides live-updated
+// entity properties for all of these, which is strictly more reliable than
+// the Source 1 ItemPickup/Drop/Equip events that don't fire on CS2 CSTV+.
+func (s *ServerState) snapshotParticipants(players []*common.Player) bool {
+	changed := false
 	s.mu.Lock()
-	k := Kill{
-		Time: time.Now(), Killer: killer, KillerTeam: killerTeam,
-		Victim: victim, VictimTeam: victimTeam,
-		Weapon: weapon, Headshot: mods.Headshot, Wallbang: mods.Wallbang,
-		Noscope: mods.Noscope, BlindKill: mods.BlindKill,
-		InAir: mods.InAir, ThroughSmoke: mods.ThroughSmoke,
-	}
-	s.appendKill(k)
-	isKnife := strings.HasPrefix(weapon, "knife") || weapon == "bayonet"
-	if killer != "" {
-		p := s.ensurePlayer(killer)
-		p.Kills++
-		if killerTeam != "" {
-			p.Team = killerTeam
-		}
-		if mods.Headshot {
-			p.HeadshotKills++
-		}
-		if weapon == "taser" {
-			p.ZeusKills++
-		} else if isKnife {
-			p.KnifeKills++
-		}
-		// Arms race level tracking
-		if s.gameMode == "armsrace" {
-			if isKnife {
-				p.Level++
-				p.LevelKills = 0
-			} else {
-				p.LevelKills++
-				if p.LevelKills >= 2 {
-					p.Level++
-					p.LevelKills = 0
-				}
-			}
-		}
-	}
-	p := s.ensurePlayer(victim)
-	p.Deaths++
-	p.Alive = false
-	if victimTeam != "" {
-		p.Team = victimTeam
-	}
-	// Arms race: victim loses a level on knife death
-	if s.gameMode == "armsrace" && isKnife && p.Level > 0 {
-		p.Level--
-		p.LevelKills = 0
-	}
-	s.mu.Unlock()
-	s.notify()
-}
-
-func (s *ServerState) recordSuicide(name, team, weapon string) {
-	s.mu.Lock()
-	k := Kill{
-		Time: time.Now(), Killer: name, KillerTeam: team,
-		Victim: name, VictimTeam: team,
-		Weapon: weapon,
-	}
-	s.appendKill(k)
-
-	p := s.ensurePlayer(name)
-	p.Deaths++
-	p.Alive = false
-	if team != "" {
-		p.Team = team
-	}
-	s.mu.Unlock()
-	s.notify()
-}
-
-func (s *ServerState) recordBombKill(name, team string) {
-	s.mu.Lock()
-	k := Kill{
-		Time: time.Now(), Killer: "", Victim: name, VictimTeam: team,
-		Weapon: "planted_c4",
-	}
-	s.appendKill(k)
-	p := s.ensurePlayer(name)
-	p.Deaths++
-	p.Alive = false
-	if team != "" {
-		p.Team = team
-	}
-	s.mu.Unlock()
-	s.notify()
-}
-
-func (s *ServerState) recordAssist(assister, team, victim string, flash bool) {
-	s.mu.Lock()
-	p := s.ensurePlayer(assister)
-	p.Assists++
-	if team != "" {
-		p.Team = team
-	}
-	// Attach assister to the most recent kill of this victim
-	for i := len(s.kills) - 1; i >= 0; i-- {
-		if s.kills[i].Victim == victim && !s.kills[i].IsSystem {
-			s.kills[i].Assister = assister
-			s.kills[i].AssisterTeam = team
-			s.kills[i].FlashAssist = flash
-			break
-		}
-	}
-	s.mu.Unlock()
-	s.notify()
-}
-
-func (s *ServerState) recordPurchase(name, team, weapon string) {
-	s.mu.Lock()
-	p := s.ensurePlayer(name)
-	if team != "" {
-		p.Team = team
-	}
-	// Deduct cost from money
-	if price, ok := WeaponPrice[weapon]; ok && p.Money >= price {
-		p.Money -= price
-	}
-	// Normalize weapon name
-	weapon = strings.ToLower(strings.TrimPrefix(weapon, "weapon_"))
-	// Add weapon/equipment to loadout
-	switch {
-	case weapon == "kevlar":
-		p.HasArmor = true
-	case weapon == "assaultsuit":
-		p.HasArmor = true
-		p.HasHelmet = true
-	case weapon == "defuser":
-		p.HasDefuser = true
-	case strings.HasPrefix(weapon, "knife"):
-		// skip knives
-	case weapon == "c4":
-		p.HasBomb = true
-	default:
-		p.Weapons[weapon] = true
-	}
-	s.mu.Unlock()
-	s.notify()
-}
-
-// recordBuyzone sets a player's full loadout from "left buyzone" log line.
-// items is the bracket content, e.g. "weapon_knife weapon_hkp2000 defuser kevlar(100) helmet"
-func (s *ServerState) recordBuyzone(name, team, items string) {
-	s.mu.Lock()
-	p, ok := s.stats[name]
-	if !ok {
-		s.mu.Unlock()
-		return
-	}
-	if team != "" {
-		p.Team = team
-	}
-	p.Weapons = make(map[string]bool)
-	p.HasArmor = false
-	p.HasHelmet = false
-	p.HasDefuser = false
-	p.HasBomb = false
-
-	for _, item := range strings.Fields(items) {
-		item = strings.ToLower(strings.TrimPrefix(item, "weapon_"))
-		if strings.HasPrefix(item, "kevlar") {
-			p.HasArmor = true
+	for _, pl := range players {
+		if pl == nil {
 			continue
 		}
-		if item == "helmet" {
-			p.HasHelmet = true
+		name := pl.Name
+		if name == "" {
 			continue
 		}
-		if item == "defuser" {
-			p.HasDefuser = true
-			continue
-		}
-		if item == "c4" {
-			p.HasBomb = true
-			continue
-		}
-		// Skip knives
-		if strings.HasPrefix(item, "knife") {
-			continue
-		}
-		p.Weapons[item] = true
-	}
-	s.mu.Unlock()
-	s.notify()
-}
-
-func (s *ServerState) recordThrow(name, team, weapon string) {
-	s.mu.Lock()
-	p := s.ensurePlayer(name)
-	if team != "" {
-		p.Team = team
-	}
-	delete(p.Weapons, weapon)
-	s.mu.Unlock()
-	s.notify()
-}
-
-func (s *ServerState) recordTeamSwitch(name, team string) {
-	if team == "Spectator" || team == "Unassigned" {
-		team = "SPECTATOR"
-	}
-	s.mu.Lock()
-	p := s.ensurePlayer(name)
-	p.Team = team
-	s.mu.Unlock()
-	s.notify()
-}
-
-func (s *ServerState) recordConnect(name string, isBot bool) {
-	s.mu.Lock()
-	p := s.ensurePlayer(name)
-	p.Online = true
-	p.IsBot = isBot
-	s.mu.Unlock()
-	s.notify()
-}
-
-func (s *ServerState) recordDisconnect(name string) {
-	s.mu.Lock()
-	if p, ok := s.stats[name]; ok {
-		if p.IsBot {
-			delete(s.stats, name)
-		} else {
-			p.Online = false
-			p.Weapons = make(map[string]bool)
-		}
-	}
-	s.mu.Unlock()
-	s.notify()
-}
-
-// SyncRCON updates ping/duration/address from RCON status data.
-func (s *ServerState) SyncRCON(rconPlayers map[string]RCONPlayerInfo) {
-	s.mu.Lock()
-	for name, info := range rconPlayers {
 		p := s.ensurePlayer(name)
-		p.Ping = info.Ping
-		p.Duration = info.Duration
-		p.Address = info.Address
-		p.IsBot = info.IsBot
-		p.Online = true
-	}
-	s.mu.Unlock()
-	s.notify()
-}
 
-// RCONPlayerInfo holds supplementary data from RCON status.
-type RCONPlayerInfo struct {
-	IsBot    bool
-	Ping     int
-	Duration string
-	Address  string
-}
-
-func (s *ServerState) clearWeaponsOnRound() {
-	s.mu.Lock()
-	for _, p := range s.stats {
-		p.Weapons = make(map[string]bool)
-		p.HasBomb = false
-		p.Alive = true
-	}
-	s.mu.Unlock()
-	s.notify()
-}
-
-// parseRoundStats processes the accumulated JSON round_stats block.
-// Updates money for each player and cross-checks scores.
-func (s *ServerState) parseRoundStats(lines []string) {
-	// Join all lines, strip log prefixes
-	var fields string
-	playerLines := make(map[string]string)
-	roundNum, scoreT, scoreCT := 0, 0, 0
-	var mapName string
-
-	for _, line := range lines {
-		// Strip "L MM/DD/YYYY - HH:MM:SS: " prefix
-		if idx := strings.Index(line, ": "); idx >= 0 {
-			line = strings.TrimSpace(line[idx+2:])
+		// Team
+		if t := teamString(pl.Team); t != "" && p.Team != t {
+			p.Team = t
+			changed = true
 		}
-		// Remove surrounding quotes for key-value lines
-		if strings.HasPrefix(line, "\"round_number\"") {
-			fmt.Sscanf(line, `"round_number" : "%d"`, &roundNum)
-		} else if strings.HasPrefix(line, "\"score_t\"") {
-			fmt.Sscanf(line, `"score_t" : "%d"`, &scoreT)
-		} else if strings.HasPrefix(line, "\"score_ct\"") {
-			fmt.Sscanf(line, `"score_ct" : "%d"`, &scoreCT)
-		} else if strings.HasPrefix(line, "\"map\"") {
-			// "map" : "de_dust2"
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				mapName = strings.Trim(strings.TrimSpace(parts[1]), "\" ,")
-			}
-		} else if strings.HasPrefix(line, "\"fields\"") {
-			// Extract field names
-			if idx := strings.Index(line, ":"); idx >= 0 {
-				fields = strings.Trim(strings.TrimSpace(line[idx+1:]), "\"")
-			}
-		} else if strings.HasPrefix(line, "\"player_") {
-			// "player_0" : "  914801619, 2, 1000, ..."
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				key := strings.Trim(strings.TrimSpace(parts[0]), "\"")
-				val := strings.Trim(strings.TrimSpace(parts[1]), "\"")
-				playerLines[key] = val
-			}
+		// IsBot / Online
+		if p.IsBot != pl.IsBot {
+			p.IsBot = pl.IsBot
+			changed = true
 		}
-	}
-
-	_ = fields // fields header tells us column order, but it's always the same
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if roundNum > 0 {
-		s.round = roundNum
-	}
-	if mapName != "" {
-		s.currentMap = mapName
-	}
-	s.ctScore = scoreCT
-	s.markMetaDirty()
-	s.tScore = scoreT
-
-	// Parse each player line: accountid, team, money, kills, deaths, assists, ...
-	// "player_N" maps to slot ID N in the slotMap
-	for key, val := range playerLines {
-		parts := strings.Split(val, ",")
-		if len(parts) < 6 {
-			continue
+		if pl.IsConnected && !p.Online {
+			p.Online = true
+			changed = true
 		}
-		accountID := strings.TrimSpace(parts[0])
-		teamNum := strings.TrimSpace(parts[1])
-		money := 0
-		fmt.Sscanf(strings.TrimSpace(parts[2]), "%d", &money)
-
-		team := ""
-		switch teamNum {
-		case "2":
-			team = "TERRORIST"
-		case "3":
-			team = "CT"
+		// Alive
+		alive := pl.IsAlive()
+		if p.Alive != alive {
+			p.Alive = alive
+			changed = true
 		}
-
-		// Resolve player name: try slot ID first (works for bots), then account ID
-		var playerName string
-
-		// Extract slot from "player_N"
-		slotID := -1
-		fmt.Sscanf(key, "player_%d", &slotID)
-		if slotID >= 0 {
-			playerName = s.slotMap[slotID]
-		}
-
-		// Fall back to account ID for human players
-		if playerName == "" && accountID != "0" {
-			playerName = s.accountMap[accountID]
-		}
-
-		if playerName == "" {
-			continue
-		}
-
-		if p, ok := s.stats[playerName]; ok {
+		// Money
+		money := pl.Money()
+		if p.Money != money {
 			p.Money = money
-			if team != "" {
-				p.Team = team
+			changed = true
+		}
+		// Health / Armor / Helmet / Defuser — authoritative entity values.
+		health := pl.Health()
+		if p.Health != health {
+			p.Health = health
+			changed = true
+		}
+		armor := pl.Armor()
+		if p.Armor != armor {
+			p.Armor = armor
+			changed = true
+		}
+		hasArmor := armor > 0
+		if p.HasArmor != hasArmor {
+			p.HasArmor = hasArmor
+			changed = true
+		}
+		helmet := pl.HasHelmet()
+		if p.HasHelmet != helmet {
+			p.HasHelmet = helmet
+			changed = true
+		}
+		defuser := pl.HasDefuseKit()
+		if p.HasDefuser != defuser {
+			p.HasDefuser = defuser
+			changed = true
+		}
+
+		// Weapons + bomb flag — rebuild from live inventory each snapshot.
+		newWeapons := make(map[string]bool)
+		hasBomb := false
+		for _, eq := range pl.Weapons() {
+			if eq == nil {
+				continue
 			}
-			// fields: accountid(0), team(1), money(2), kills(3), deaths(4), assists(5),
-			//         dmg(6), hsp(7), kdr(8), adr(9), mvp(10), ef(11), ud(12), ...
-			if len(parts) > 12 {
-				fmt.Sscanf(strings.TrimSpace(parts[6]), "%f", &p.Damage)
-				fmt.Sscanf(strings.TrimSpace(parts[7]), "%f", &p.HSPercent)
-				fmt.Sscanf(strings.TrimSpace(parts[8]), "%f", &p.KDR)
-				fmt.Sscanf(strings.TrimSpace(parts[9]), "%f", &p.ADR)
-				fmt.Sscanf(strings.TrimSpace(parts[10]), "%d", &p.MVPs)
-				fmt.Sscanf(strings.TrimSpace(parts[11]), "%d", &p.EF)
-				fmt.Sscanf(strings.TrimSpace(parts[12]), "%f", &p.UD)
+			if eq.Type == common.EqBomb {
+				hasBomb = true
+				continue
 			}
+			if eq.Type == common.EqKnife {
+				continue
+			}
+			wn := weaponName(eq)
+			if wn == "" || wn == "world" {
+				continue
+			}
+			newWeapons[wn] = true
+		}
+		if p.HasBomb != hasBomb {
+			p.HasBomb = hasBomb
+			changed = true
+		}
+		if !weaponsEqual(p.Weapons, newWeapons) {
+			p.Weapons = newWeapons
+			changed = true
 		}
 	}
+	s.mu.Unlock()
+	return changed
+}
+
+// weaponsEqual returns whether two weapon-name sets have identical keys.
+func weaponsEqual(a, b map[string]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if !b[k] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *ServerState) addSystemMessage(msg string) {
@@ -868,7 +588,6 @@ func (s *ServerState) ResetStats() {
 
 func (s *ServerState) resetWithMessage(reason string) {
 	s.mu.Lock()
-	// Keep players but zero their stats
 	for _, p := range s.stats {
 		p.Kills = 0
 		p.Deaths = 0
@@ -892,6 +611,8 @@ func (s *ServerState) resetWithMessage(reason string) {
 		p.HasDefuser = false
 		p.HasBomb = false
 		p.Alive = true
+		p.Health = 0
+		p.Armor = 0
 	}
 	s.round = 0
 	s.ctScore = 0
@@ -900,19 +621,16 @@ func (s *ServerState) resetWithMessage(reason string) {
 	s.halfRound = 0
 	s.maxRounds = 0
 	s.isPaused = false
+	s.roundsPlayed = 0
 	s.markMetaDirty()
 	s.appendKill(Kill{Time: time.Now(), IsSystem: true, Message: reason})
 	s.mu.Unlock()
 	s.notify()
 }
 
-// LogStreamFunc returns a channel of log lines for a container.
-type LogStreamFunc func(ctx context.Context, name string) (<-chan string, func(), error)
-
 // RCONFunc sends an RCON command to a server.
 type RCONFunc func(addr, password, command string) (string, error)
 
-// Manager manages game trackers for all servers.
 // GameOverInfo contains the final state of a match when Game Over is detected.
 type GameOverInfo struct {
 	ServerName string
@@ -939,24 +657,34 @@ type PersistFunc func(serverName string, m TrackerMetadata)
 // ReadyFunc is called when a player sends ".ready" in chat.
 type ReadyFunc func(serverName, playerName, team string)
 
+// Manager manages game trackers for all servers.
 type Manager struct {
 	mu         sync.Mutex
 	servers    map[string]*ServerState
 	cancels    map[string]context.CancelFunc
-	streamFn   LogStreamFunc
+	relay      *cstv.Relay
 	rconFn     RCONFunc
+	panelPort  int
 	gameOverFn GameOverFunc
 	roundEndFn RoundEndFunc
 	persistFn  PersistFunc
 	readyFn    ReadyFunc
 }
 
-func NewManager(streamFn LogStreamFunc, rconFn RCONFunc) *Manager {
+// NewManager constructs a Manager.
+//
+//   - relay is the CSTV broadcast relay the game will POST fragments to and the
+//     parser will GET fragments from.
+//   - rconFn sends RCON commands (used to enable broadcast + poll status).
+//   - panelPort is the panel's HTTP listen port; used to build the broadcast
+//     URL the game server is told to POST to (via host networking).
+func NewManager(relay *cstv.Relay, rconFn RCONFunc, panelPort int) *Manager {
 	return &Manager{
-		servers:  make(map[string]*ServerState),
-		cancels:  make(map[string]context.CancelFunc),
-		streamFn: streamFn,
-		rconFn:   rconFn,
+		servers:   make(map[string]*ServerState),
+		cancels:   make(map[string]context.CancelFunc),
+		relay:     relay,
+		rconFn:    rconFn,
+		panelPort: panelPort,
 	}
 }
 
@@ -1025,7 +753,6 @@ func (m *Manager) StopTracking(name string) {
 	cancel, hasCancel := m.cancels[name]
 	m.mu.Unlock()
 
-	// Notify game WS subscribers before teardown (skip if already marked restarting)
 	if state != nil && state.Status() == "" {
 		state.MarkStopped()
 	}
@@ -1037,6 +764,9 @@ func (m *Manager) StopTracking(name string) {
 		delete(m.cancels, name)
 		delete(m.servers, name)
 	}
+	if m.relay != nil {
+		m.relay.Close(name)
+	}
 }
 
 func (m *Manager) StopAll() {
@@ -1046,6 +776,9 @@ func (m *Manager) StopAll() {
 		cancel()
 		delete(m.cancels, name)
 		delete(m.servers, name)
+		if m.relay != nil {
+			m.relay.Close(name)
+		}
 	}
 }
 
@@ -1058,32 +791,61 @@ func (m *Manager) StopNotIn(running map[string]bool) {
 			cancel()
 			delete(m.cancels, name)
 			delete(m.servers, name)
+			if m.relay != nil {
+				m.relay.Close(name)
+			}
 		}
 	}
 }
 
+// setupAndTrack is the per-server worker goroutine: it enables CSTV broadcast
+// via RCON, starts the RCON status poller, waits for the game to start POSTing
+// fragments, then runs a demoinfocs parser against the relay URL.
 func (m *Manager) setupAndTrack(ctx context.Context, name string, gamePort int, rconPassword string, state *ServerState) {
 	addr := fmt.Sprintf("localhost:%d", gamePort)
-	for _, cmd := range games.Default().RCON().SetupLogging {
-		resp, err := m.rconFn(addr, rconPassword, cmd)
-		if err != nil {
-			slog.Warn("gametracker: rcon setup", "server", name, "cmd", cmd, "err", err)
-		} else if resp != "" {
-			slog.Info("gametracker: rcon setup", "server", name, "cmd", cmd, "resp", resp)
-		}
-	}
-	slog.Info("gametracker: started", "server", name, "mode", state.gameMode)
+	broadcastURL := fmt.Sprintf("http://127.0.0.1:%d/cstv/%s", m.panelPort, name)
 
-	// Start RCON poller for ping/duration (single goroutine per server)
-	go m.rconPoller(ctx, name, addr, rconPassword, state)
+	// Compose the setup commands. We keep the game registry generic and do
+	// the per-server substitution here since only the tracker knows the URL.
+	setupCmds := []string{
+		"tv_delay 0",
+		fmt.Sprintf(`tv_broadcast_url "%s"`, broadcastURL),
+		"tv_broadcast 1",
+	}
+	for _, extra := range games.Default().RCON().SetupLogging {
+		setupCmds = append(setupCmds, extra)
+	}
+
+	// CS2 can take 10-30s from container start to RCON being ready. Block
+	// here until every command lands; otherwise tv_broadcast is never
+	// enabled and no fragments ever arrive. Retry with backoff, up to ~60s.
+	if !m.sendSetupWithRetry(ctx, name, addr, rconPassword, setupCmds) {
+		return // context cancelled before the server came up
+	}
+	slog.Info("gametracker: started", "server", name, "mode", state.gameMode, "broadcast", broadcastURL)
+
+	// NB: no background RCON status poller. Everything on the scoreboard
+	// (team, money, alive, loadout, armor/helmet/defuser) now comes from the
+	// broadcast's entity stream; polling RCON every 5 s just burned a push
+	// cycle on stale ping/duration/address fields. RCON stays available for
+	// on-demand commands (match restart, pause, chat) via rm.Execute.
+	_ = addr
+	_ = rconPassword
 
 	retryDelay := 2 * time.Second
 	maxDelay := 30 * time.Second
 
 	for {
-		lines, cleanup, err := m.streamFn(ctx, name)
+		// Wait for the relay to see the first ready fragment, or context cancellation.
+		select {
+		case <-ctx.Done():
+			return
+		case <-m.relay.Ready(name):
+		}
+
+		parser, err := demoinfocs.NewCSTVBroadcastParser(broadcastURL)
 		if err != nil {
-			slog.Warn("gametracker: stream error", "server", name, "err", err)
+			slog.Warn("gametracker: broadcast parser init", "server", name, "err", err)
 			select {
 			case <-ctx.Done():
 				return
@@ -1092,666 +854,733 @@ func (m *Manager) setupAndTrack(ctx context.Context, name string, gamePort int, 
 				continue
 			}
 		}
+		retryDelay = 2 * time.Second
 
-		retryDelay = 2 * time.Second // reset on successful connect
+		w := &eventWiring{state: state, parser: parser}
+		w.register()
 
-	readLoop:
-		for {
-			select {
-			case <-ctx.Done():
-				cleanup()
-				return
-			case line, ok := <-lines:
-				if !ok {
-					slog.Info("gametracker: stream ended, reconnecting", "server", name)
-					cleanup()
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(retryDelay):
-						retryDelay = min(retryDelay*2, maxDelay)
-					}
-					break readLoop
-				}
-				parseLine(line, state)
+		// ParseToEnd blocks. Cancel from another goroutine when ctx fires.
+		done := make(chan struct{})
+		go func() {
+			<-ctx.Done()
+			parser.Cancel()
+			// Evict fragments so in-flight /delta GETs return 404 and the
+			// reader exits via its internal timeout.
+			if m.relay != nil {
+				m.relay.Close(name)
 			}
+			close(done)
+		}()
+
+		err = parser.ParseToEnd()
+		// Ensure the cancel goroutine has exited (or will shortly).
+		select {
+		case <-done:
+		default:
 		}
-	}
-}
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			slog.Info("gametracker: broadcast parser ended", "server", name, "err", err)
+		}
 
-// rconPoller polls RCON status every 5s to update ping/duration for players.
-// Runs once per tracked server regardless of how many viewers are connected.
-func (m *Manager) rconPoller(ctx context.Context, name, addr, rconPassword string, state *ServerState) {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for {
+		// The broadcast stream ended (map change, server idle, EOF). Reset
+		// the relay's buffered fragments and wait for a fresh signup.
+		if m.relay != nil {
+			m.relay.Close(name)
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			resp, err := m.rconFn(addr, rconPassword, "status")
-			if err != nil {
+		case <-time.After(retryDelay):
+			retryDelay = min(retryDelay*2, maxDelay)
+		}
+	}
+}
+
+// sendSetupWithRetry runs the first RCON command in a loop until it succeeds
+// (so we don't spam warnings during the ~10-30s container boot), then fires
+// the rest. Returns false if the context is cancelled before RCON comes up.
+func (m *Manager) sendSetupWithRetry(ctx context.Context, name, addr, rconPassword string, cmds []string) bool {
+	if len(cmds) == 0 {
+		return true
+	}
+	backoff := 1 * time.Second
+	maxBackoff := 10 * time.Second
+	firstWarn := true
+	for {
+		if ctx.Err() != nil {
+			return false
+		}
+		// Probe with the first command. Once it succeeds the server is up.
+		if _, err := m.rconFn(addr, rconPassword, cmds[0]); err != nil {
+			if firstWarn {
+				slog.Info("gametracker: waiting for rcon", "server", name, "err", err)
+				firstWarn = false
+			}
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(backoff):
+				backoff = min(backoff*2, maxBackoff)
 				continue
 			}
-			status := parseRCONStatus(resp)
-			if len(status) > 0 {
-				state.SyncRCON(status)
-			}
+		}
+		break
+	}
+	// RCON is up — send the remaining setup commands. These are best-effort;
+	// log warnings but don't block on them.
+	for _, cmd := range cmds[1:] {
+		resp, err := m.rconFn(addr, rconPassword, cmd)
+		if err != nil {
+			slog.Warn("gametracker: rcon setup", "server", name, "cmd", cmd, "err", err)
+		} else if resp != "" {
+			slog.Info("gametracker: rcon setup", "server", name, "cmd", cmd, "resp", resp)
 		}
 	}
+	return true
 }
 
-// parseRCONStatus extracts player ping/duration from RCON status output.
-func parseRCONStatus(raw string) map[string]RCONPlayerInfo {
-	result := make(map[string]RCONPlayerInfo)
-	lines := strings.Split(raw, "\n")
-	inPlayers := false
+// eventWiring bundles the parser and state so event handlers can be methods
+// on a value with shared context.
+type eventWiring struct {
+	state  *ServerState
+	parser demoinfocs.Parser
+	// Reusable flag dedupe: skip short flashes below a threshold for EF stat.
+	// (CS2 scoreboard EF counts "enemies flashed for at least 0.7s", matching
+	// mp_flashbang_flashduration logic used by MatchMaking.)
+	efThreshold time.Duration
 
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-
-		if strings.HasPrefix(trimmed, "---------players") {
-			inPlayers = true
-			continue
-		}
-		if trimmed == "#end" {
-			break
-		}
-		if !inPlayers || strings.HasPrefix(trimmed, "id") || strings.Contains(trimmed, "[NoChan]") {
-			continue
-		}
-
-		if m := rcon.PlayerLineRe.FindStringSubmatch(trimmed); m != nil {
-			ping := 0
-			fmt.Sscanf(m[3], "%d", &ping)
-			isBot := m[2] == "BOT"
-			info := RCONPlayerInfo{
-				IsBot:    isBot,
-				Ping:     ping,
-				Duration: m[2],
-				Address:  m[7],
-			}
-			result[m[8]] = info
-		}
-	}
-	return result
+	// snapshotInterval throttles the per-frame GameState poll. We walk every
+	// participant and copy authoritative fields (money, inventory, armor,
+	// helmet, defuser, alive, team) at most once per this much game time.
+	snapshotInterval time.Duration
+	lastSnapshot     time.Duration
 }
 
-// Use shared regex from rcon package — removed duplicate
-
-// Log line patterns — all game event lines start with "L MM/DD/YYYY"
-var (
-	// Kill: "killer<id><steamid><TEAM>" ... killed "victim<id><steamid><TEAM>" ... with "weapon" (headshot)?
-	killRe = regexp.MustCompile(`"(.+?)<(\d+)><(.+?)><(CT|TERRORIST|Unassigned)?>".*killed "(.+?)<(\d+)><(.+?)><(CT|TERRORIST|Unassigned)?>".*with "(.+?)"(.*)`)
-
-	// Killed other (chicken, props): "player<id><steamid><TEAM>" killed other "entity<id>"  with "weapon"
-	killedOtherRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST|Unassigned)?>".*killed other "(chicken)<\d+>".*with "(.+?)"`)
-
-	// Assist
-	assistRe      = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)?>" assisted killing "(.+?)<`)
-	flashAssistRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)?>" flash-assisted killing "(.+?)<`)
-
-	// Purchase: "player<id><steamid><TEAM>" purchased "weapon"
-	purchaseRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)>" purchased "(.+?)"`)
-
-	// Left buyzone: "player<id><steamid><TEAM>" left buyzone with [ items... ]
-	buyzoneRe = regexp.MustCompile(`"(.+?)<(\d+)><(.+?)><(CT|TERRORIST)>" left buyzone with \[\s*(.+?)\s*\]`)
-
-	// Killed by bomb: "player<id><steamid><TEAM>" was killed by the bomb.
-	bombKillRe = regexp.MustCompile(`"(.+?)<(\d+)><(.+?)><(CT|TERRORIST|Unassigned)?>".*was killed by the bomb`)
-
-	// Suicide: "player<id><steamid><TEAM>" committed suicide with "weapon"
-	suicideRe = regexp.MustCompile(`"(.+?)<(\d+)><(.+?)><(CT|TERRORIST|Unassigned)?>" .* committed suicide with "(.+?)"`)
-
-	// Killed by world/bomb: "player<id><steamid><TEAM>" was killed by ...  (less common)
-	// Also handles: triggered "Killed_A_Hostage", blinded by, etc.
-
-	// Player triggered: Got_The_Bomb, Dropped_The_Bomb, Planted_The_Bomb, Defused_The_Bomb
-	bombActionRe  = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)>" triggered "(Got_The_Bomb|Dropped_The_Bomb|Planted_The_Bomb|Defused_The_Bomb)"`)
-	beginDefuseRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)>" triggered "Begin_Bomb_Defuse_(With|Without)_Kit"`)
-
-	// Threw grenade
-	threwRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)>" threw\s+(\w+)`)
-
-	// Team switch
-	teamSwitchRe = regexp.MustCompile(`"(.+?)<\d+><[^>]*>(?:<[^>]*>)?" switched from team \S+ to <?(CT|TERRORIST|Spectator|Unassigned)>?`)
-
-	// Chat: ".ready" command from player
-	sayReadyRe = regexp.MustCompile(`"(.+?)<\d+><.+?><(CT|TERRORIST)>" say "\.ready"`)
-
-	// Player entered
-	enteredRe = regexp.MustCompile(`"(.+?)<(\d+)><(BOT|.+?)><.*?>" entered the game`)
-
-	// Player disconnected
-	disconnectRe = regexp.MustCompile(`"(.+?)<\d+><.+?><.+?>" disconnected`)
-
-	// World events
-	worldRe = regexp.MustCompile(`World triggered "(Match_Start|Round_Start|Game_Over|Warmup_Start|Warmup_End|Game_Halftime)"`)
-
-	// Team win: Team "CT" triggered "SFUI_Notice_CTs_Win" (CT "5") (T "3")
-	teamWinRe = regexp.MustCompile(`Team "(CT|TERRORIST)" triggered "(SFUI_Notice_\w+)" \(CT "(\d+)"\) \(T "(\d+)"\)`)
-
-	// MatchStatus: Score: 4:2 on map "de_dust2" RoundsPlayed: 6
-	matchStatusRe = regexp.MustCompile(`MatchStatus: Score: (\d+):(\d+) on map ".+?" RoundsPlayed: (\d+)`)
-
-	// Loading map (fires before Started map — bots disconnect here)
-	loadingMapRe = regexp.MustCompile(`Loading map "(.+?)"`)
-
-	// Map change: Started map "de_dust2"
-	mapChangeRe = regexp.MustCompile(`Started map "(.+?)"`)
-
-	// Extract account ID from steam ID like [U:1:914801619]
-	accountIDRe = regexp.MustCompile(`\[U:\d+:(\d+)\]`)
-)
-
-func parseLine(line string, state *ServerState) {
-	// JSON round_stats block accumulation
-	if strings.Contains(line, "JSON_BEGIN{") {
-		state.mu.Lock()
-		state.inJSON = true
-		state.jsonBuf = nil
-		state.mu.Unlock()
-		return
+func (w *eventWiring) register() {
+	if w.efThreshold == 0 {
+		w.efThreshold = 700 * time.Millisecond
 	}
-	if strings.Contains(line, "}}JSON_END") {
-		state.mu.Lock()
-		lines := state.jsonBuf
-		state.inJSON = false
-		state.jsonBuf = nil
-		state.mu.Unlock()
-		if len(lines) > 0 {
-			state.parseRoundStats(lines)
-			state.notify()
-		}
-		return
+	if w.snapshotInterval == 0 {
+		w.snapshotInterval = 1 * time.Second
 	}
-	state.mu.RLock()
-	inJSON := state.inJSON
-	state.mu.RUnlock()
-	if inJSON {
-		state.mu.Lock()
-		state.jsonBuf = append(state.jsonBuf, line)
-		state.mu.Unlock()
-		return
-	}
+	p := w.parser
 
-	// Loading map — set map and remove bot players (they reconnect fresh on new map)
-	if m := loadingMapRe.FindStringSubmatch(line); m != nil {
-		state.mu.Lock()
-		state.currentMap = m[1]
-		state.markMetaDirty()
-		for name, p := range state.stats {
-			if p.IsBot {
-				delete(state.stats, name)
-			}
-		}
-		state.mu.Unlock()
-		state.notify()
-		return
-	}
+	p.RegisterEventHandler(w.onKill)
+	p.RegisterEventHandler(w.onPlayerHurt)
+	p.RegisterEventHandler(w.onPlayerFlashed)
+	p.RegisterEventHandler(w.onRoundStart)
+	p.RegisterEventHandler(w.onRoundEnd)
+	p.RegisterEventHandler(w.onRoundMVP)
+	p.RegisterEventHandler(w.onMatchStartedChanged)
+	p.RegisterEventHandler(w.onAnnouncementWinPanel)
+	p.RegisterEventHandler(w.onPlayerConnect)
+	p.RegisterEventHandler(w.onBotConnect)
+	p.RegisterEventHandler(w.onPlayerDisconnected)
+	p.RegisterEventHandler(w.onPlayerTeamChange)
+	p.RegisterEventHandler(w.onChatMessage)
+	p.RegisterEventHandler(w.onWarmupChanged)
+	p.RegisterEventHandler(w.onConVarsUpdated)
+	p.RegisterEventHandler(w.onBombPlanted)
+	p.RegisterEventHandler(w.onBombDefused)
+	p.RegisterEventHandler(w.onBombExplode)
+	p.RegisterEventHandler(w.onTeamSideSwitch)
+	p.RegisterEventHandler(w.onFrameDone)
 
-	// BeginMatch — match is starting, reset stats
-	if strings.TrimSpace(line) == "BeginMatch" {
-		state.resetWithMessage("Match Started")
-		return
-	}
-
-	// Half time detection: "SwitchTeamsAtRoundReset" appears when teams swap
-	if strings.Contains(line, "SwitchTeamsAtRoundReset") {
-		state.mu.Lock()
-		if state.halfRound == 0 {
-			// Use score total (CT + T) as the authoritative round count for half time
-			// This avoids race conditions where round_stats JSON or Round_Start
-			// may have already advanced state.round
-			playedRounds := state.ctScore + state.tScore
-			if playedRounds == 0 {
-				playedRounds = len(state.rounds)
-			}
-			if playedRounds == 0 {
-				playedRounds = state.round
-			}
-			state.halfRound = playedRounds
-			state.maxRounds = playedRounds * 2
-			state.markMetaDirty()
-			slog.Info("gametracker: half time", "server", state.serverName, "round", playedRounds, "max_rounds", state.maxRounds)
-		}
-		state.mu.Unlock()
-		state.addSystemMessage("Half Time")
-		return
-	}
-
-	// Match reset for arms race and deathmatch (no quotes in this line, must check before bailout)
-	if (state.gameMode == "armsrace" || state.gameMode == "deathmatch") && strings.Contains(line, "GMR_ResetMatch") {
-		state.resetWithMessage("Match Reset")
-		return
-	}
-
-	// Game Over: detect mode and add to killfeed
-	// e.g. "Game Over: scrimcomp2v2 mg_active de_dust2 score 2:2 after 3 min"
-	if strings.Contains(line, "Game Over:") {
-		slog.Info("gametracker: game over detected", "server", state.serverName)
-		parts := strings.Fields(line)
-		for i, p := range parts {
-			if p == "Over:" && i+1 < len(parts) {
-				newMode := parts[i+1]
-				state.mu.Lock()
-				if newMode != state.gameMode {
-					state.gameMode = newMode
-					state.markMetaDirty()
-				}
-				state.mu.Unlock()
-				break
-			}
-		}
-		// Extract "score X:Y" for the killfeed message
-		msg := "Game Over"
-		for i, p := range parts {
-			if p == "score" && i+1 < len(parts) {
-				msg = "Game Over — " + parts[i+1]
-				break
-			}
-		}
-		state.addSystemMessage(msg)
-
-		// Fire game-over callback before stats are reset
-		if state.gameOverFn != nil {
-			score := state.GetScore()
-			scoreboard := state.GetScoreboard()
-			slog.Info("gametracker: game over callback", "server", state.serverName,
-				"ct", score.CT, "t", score.T, "rounds", len(score.Rounds), "players", len(scoreboard))
-			go state.gameOverFn(GameOverInfo{
-				ServerName: state.serverName,
-				Score:      score,
-				Players:    scoreboard,
-			})
-		} else {
-			slog.Warn("gametracker: game over (no callback)", "server", state.serverName)
-		}
-		return
-	}
-
-	// Pause/unpause detection from rcon command logs
-	rconCmds := games.Default().RCON()
-	if strings.Contains(line, `command "`+rconCmds.PauseMatch+`"`) {
-		state.mu.Lock()
-		state.isPaused = true
-		state.markMetaDirty()
-		state.mu.Unlock()
-		state.addSystemMessage("Match Paused")
-		return
-	}
-	if strings.Contains(line, `command "`+rconCmds.UnpauseMatch+`"`) {
-		state.mu.Lock()
-		state.isPaused = false
-		state.markMetaDirty()
-		state.mu.Unlock()
-		state.addSystemMessage("Match Unpaused")
-		return
-	}
-
-	// Track game_type/game_mode rcon changes for mode switching
-	if strings.Contains(line, `command "game_type`) {
-		// Extract number from: command "game_type 1"
-		if idx := strings.Index(line, "game_type "); idx >= 0 {
-			var gt int
-			if _, err := fmt.Sscanf(line[idx:], "game_type %d", &gt); err == nil {
-				state.mu.Lock()
-				state.gameType = gt
-				state.mu.Unlock()
-			}
-		}
-		return
-	}
-	if strings.Contains(line, `command "game_mode`) {
-		if idx := strings.Index(line, "game_mode "); idx >= 0 {
-			var gm int
-			if _, err := fmt.Sscanf(line[idx:], "game_mode %d", &gm); err == nil {
-				state.mu.Lock()
-				state.gameModeNum = gm
-				newMode := resolveGameMode(state.gameType, state.gameModeNum)
-				if newMode != "" && newMode != state.gameMode {
-					state.gameMode = newMode
-					state.markMetaDirty()
-				}
-				state.mu.Unlock()
-				state.notify()
-			}
-		}
-		return
-	}
-
-	// Early bailout: all remaining game events contain a quoted string
-	if !strings.Contains(line, `"`) {
-		return
-	}
-
-	// Team win
-	if m := teamWinRe.FindStringSubmatch(line); m != nil {
-		ct, t := 0, 0
-		fmt.Sscanf(m[3], "%d", &ct)
-		fmt.Sscanf(m[4], "%d", &t)
-		trigger := m[2]
-
-		// Map trigger to win reason
-		reason := "elimination"
-		switch trigger {
-		case "SFUI_Notice_Target_Bombed":
-			reason = "bomb"
-		case "SFUI_Notice_Bomb_Defused":
-			reason = "defuse"
-		case "SFUI_Notice_Target_Saved":
-			reason = "time"
-		}
-
-		winner := "CT"
-		if m[1] == "TERRORIST" {
-			winner = "T"
-		}
-
-		state.mu.Lock()
-		state.ctScore = ct
-		state.tScore = t
-		state.markMetaDirty()
-		state.rounds = append(state.rounds, RoundResult{
-			Round: ct + t, Winner: winner, Reason: reason,
-		})
-		if reason == "defuse" && state.defuser != "" {
-			state.appendKill(Kill{
-				Time: time.Now(), Killer: state.defuser, KillerTeam: state.defuserTeam,
-				Weapon: "defuser", IsSystem: false,
-				Message: "defused the bomb",
-			})
-			state.defuser = ""
-			state.defuserTeam = ""
-		}
-		state.mu.Unlock()
-		state.addSystemMessage(fmt.Sprintf("%s wins — Score: CT %d - %d T", winner, ct, t))
-
-		// Fire round-end callback for live bracket updates
-		if state.roundEndFn != nil {
-			go state.roundEndFn(RoundEndInfo{
-				ServerName: state.serverName, CT: ct, T: t,
-			})
-		}
-		return
-	}
-
-	// MatchStatus: authoritative score (round count tracked by Round_Start only)
-	if m := matchStatusRe.FindStringSubmatch(line); m != nil {
-		ct, t := 0, 0
-		fmt.Sscanf(m[1], "%d", &ct)
-		fmt.Sscanf(m[2], "%d", &t)
-		state.mu.Lock()
-		state.ctScore = ct
-		state.tScore = t
-		state.markMetaDirty()
-		state.mu.Unlock()
-		state.notify()
-		return
-	}
-
-	// World events
-	if m := worldRe.FindStringSubmatch(line); m != nil {
-		switch m[1] {
-		case "Match_Start":
-			state.mu.Lock()
-			state.inWarmup = false
-			state.markMetaDirty()
-			for name, p := range state.stats {
-				if !p.Online {
-					delete(state.stats, name)
-				}
-			}
-			state.mu.Unlock()
-		case "Game_Over":
-			state.resetWithMessage("Game Over - Stats Reset")
-		case "Warmup_Start":
-			state.mu.RLock()
-			already := state.inWarmup
-			state.mu.RUnlock()
-			if already {
-				return
-			}
-			state.mu.Lock()
-			state.inWarmup = true
-			state.markMetaDirty()
-			state.mu.Unlock()
-			state.resetWithMessage("Warmup Started")
-		case "Warmup_End":
-			state.mu.Lock()
-			state.inWarmup = false
-			state.markMetaDirty()
-			state.mu.Unlock()
-			state.resetWithMessage("Warmup Ended - Stats Reset")
-		case "Round_Start":
-			state.mu.Lock()
-			state.isPaused = false
-			state.markMetaDirty()
-			state.defuser = ""
-			state.defuserTeam = ""
-			round := state.round
-			if round == 0 {
-				round = 1
-			}
-			state.mu.Unlock()
-			state.clearWeaponsOnRound()
-			state.addSystemMessage(fmt.Sprintf("Round %d", round))
-		case "Game_Halftime":
-			state.mu.Lock()
-			state.halfRound = state.round
-			state.markMetaDirty()
-			state.mu.Unlock()
-			state.addSystemMessage("Half Time")
-		}
-		return
-	}
-
-	// Map change
-	if m := mapChangeRe.FindStringSubmatch(line); m != nil {
-		state.mu.Lock()
-		state.currentMap = m[1]
-		state.mu.Unlock()
-		state.resetWithMessage(fmt.Sprintf("Map Changed to %s - Stats Reset", m[1]))
-		return
-	}
-
-	// Kill — also extracts slot IDs and account IDs for JSON mapping
-	if m := killRe.FindStringSubmatch(line); m != nil {
-		killerName, killerSlot, killerSteamID, killerTeam := m[1], m[2], m[3], m[4]
-		victimName, victimSlot, victimSteamID, victimTeam := m[5], m[6], m[7], m[8]
-		weapon := m[9]
-		extras := m[10]
-		mods := KillModifiers{
-			Headshot:     strings.Contains(extras, "headshot"),
-			Wallbang:     strings.Contains(extras, "penetrated"),
-			Noscope:      strings.Contains(extras, "noscope"),
-			BlindKill:    strings.Contains(extras, "blindkill"),
-			InAir:        strings.Contains(extras, "inair"),
-			ThroughSmoke: strings.Contains(extras, "throughsmoke"),
-		}
-
-		mapPlayerIDs(state, killerName, killerSlot, killerSteamID)
-		mapPlayerIDs(state, victimName, victimSlot, victimSteamID)
-
-		state.recordKill(killerName, killerTeam, victimName, victimTeam, weapon, mods)
-		return
-	}
-
-	// Chicken kill (killfeed only, no stats)
-	if m := killedOtherRe.FindStringSubmatch(line); m != nil {
-		killer, killerTeam, entity, weapon := m[1], m[2], m[3], m[4]
-		state.mu.Lock()
-		state.appendKill(Kill{
-			Time: time.Now(), Killer: killer, KillerTeam: killerTeam,
-			Victim: entity, Weapon: weapon,
-		})
-		state.mu.Unlock()
-		state.notify()
-		return
-	}
-
-	// Killed by bomb
-	if m := bombKillRe.FindStringSubmatch(line); m != nil {
-		name, slot, steamID, team := m[1], m[2], m[3], m[4]
-		mapPlayerIDs(state, name, slot, steamID)
-		state.recordBombKill(name, team)
-		return
-	}
-
-	// Suicide — skip if player already dead (e.g. bomb kill followed by suicide "world")
-	if m := suicideRe.FindStringSubmatch(line); m != nil {
-		name, slot, steamID, team, weapon := m[1], m[2], m[3], m[4], m[5]
-		mapPlayerIDs(state, name, slot, steamID)
-		state.mu.RLock()
-		alreadyDead := false
-		if p, ok := state.stats[name]; ok {
-			alreadyDead = !p.Alive
-		}
-		state.mu.RUnlock()
-		if alreadyDead {
-			return
-		}
-		state.recordSuicide(name, team, weapon)
-		return
-	}
-
-	// Assist
-	if m := flashAssistRe.FindStringSubmatch(line); m != nil {
-		state.recordAssist(m[1], m[2], m[3], true)
-		return
-	}
-
-	if m := assistRe.FindStringSubmatch(line); m != nil {
-		state.recordAssist(m[1], m[2], m[3], false)
-		return
-	}
-
-	// Purchase — deduct money
-	if m := purchaseRe.FindStringSubmatch(line); m != nil {
-		state.recordPurchase(m[1], m[2], m[3])
-		return
-	}
-
-	// Left buyzone — definitive loadout
-	if m := buyzoneRe.FindStringSubmatch(line); m != nil {
-		mapPlayerIDs(state, m[1], m[2], m[3])
-		state.recordBuyzone(m[1], m[4], m[5])
-		return
-	}
-
-	// Threw grenade
-	if m := threwRe.FindStringSubmatch(line); m != nil {
-		state.recordThrow(m[1], m[2], m[3])
-		return
-	}
-
-	// Bomb actions
-	// Begin defuse — track who is defusing so we can attribute it on SFUI_Notice_Bomb_Defused
-	if m := beginDefuseRe.FindStringSubmatch(line); m != nil {
-		state.mu.Lock()
-		state.defuser = m[1]
-		state.defuserTeam = m[2]
-		state.mu.Unlock()
-		return
-	}
-
-	if m := bombActionRe.FindStringSubmatch(line); m != nil {
-		name, team, action := m[1], m[2], m[3]
-		state.mu.Lock()
-		p := state.ensurePlayer(name)
-		if team != "" {
-			p.Team = team
-		}
-		switch action {
-		case "Got_The_Bomb":
-			p.HasBomb = true
-		case "Dropped_The_Bomb":
-			p.HasBomb = false
-		case "Planted_The_Bomb":
-			p.HasBomb = false
-			state.appendKill(Kill{
-				Time: time.Now(), Killer: name, KillerTeam: team,
-				Weapon: "c4", IsSystem: false,
-				Message: "planted the bomb",
-			})
-		case "Defused_The_Bomb":
-			state.appendKill(Kill{
-				Time: time.Now(), Killer: name, KillerTeam: team,
-				Weapon: "defuser", IsSystem: false,
-				Message: "defused the bomb",
-			})
-		}
-		state.mu.Unlock()
-		state.notify()
-		return
-	}
-
-	// Chat: ".ready" command
-	if m := sayReadyRe.FindStringSubmatch(line); m != nil {
-		playerName, team := m[1], m[2]
-		if state.readyFn != nil {
-			go state.readyFn(state.serverName, playerName, team)
-		}
-		return
-	}
-
-	// Team switch
-	if m := teamSwitchRe.FindStringSubmatch(line); m != nil {
-		state.recordTeamSwitch(m[1], m[2])
-		return
-	}
-
-	// Player entered
-	if m := enteredRe.FindStringSubmatch(line); m != nil {
-		mapPlayerIDs(state, m[1], m[2], m[3])
-		isBot := m[3] == "BOT"
-		state.recordConnect(m[1], isBot)
-		return
-	}
-
-	// Player disconnected
-	if m := disconnectRe.FindStringSubmatch(line); m != nil {
-		state.recordDisconnect(m[1])
-		return
-	}
+	// CDemoFileHeader carries the map name at stream start; subsequent map
+	// changes come through a fresh parser connection (tv_broadcast restarts).
+	p.RegisterNetMessageHandler(w.onDemoHeader)
 }
 
-// resolveGameMode maps game_type + game_mode numbers to a mode name.
-func resolveGameMode(gameType, gameMode int) string {
-	switch gameType {
-	case 0:
-		switch gameMode {
-		case 0:
-			return "casual"
-		case 1:
-			return "competitive"
-		case 2:
-			return "wingman"
-		}
-	case 1:
-		switch gameMode {
-		case 0:
-			return "armsrace"
-		case 1:
-			return "demolition"
-		case 2:
-			return "deathmatch"
-		}
+// --- event handlers ---
+
+// playerName resolves a common.Player to the in-game name used as the
+// ServerState key. Bots may share names; we let that ride — it matches the
+// old log-based behavior.
+func playerName(p *common.Player) string {
+	if p == nil {
+		return ""
+	}
+	return p.Name
+}
+
+// teamString maps demoinfocs team enum to the strings the rest of the panel
+// UI expects ("CT", "TERRORIST", "SPECTATOR", "").
+func teamString(t common.Team) string {
+	switch t {
+	case common.TeamCounterTerrorists:
+		return "CT"
+	case common.TeamTerrorists:
+		return "TERRORIST"
+	case common.TeamSpectators:
+		return "SPECTATOR"
 	}
 	return ""
 }
 
-// mapPlayerIDs maps slot ID and account ID to player name for JSON round_stats lookup.
-func mapPlayerIDs(state *ServerState, name, slotStr, steamID string) {
-	slotID := 0
-	fmt.Sscanf(slotStr, "%d", &slotID)
-
-	state.mu.Lock()
-	state.slotMap[slotID] = name
-	// Only map account ID for non-bots (bots all have account 0)
-	if m := accountIDRe.FindStringSubmatch(steamID); m != nil && m[1] != "0" {
-		state.accountMap[m[1]] = name
+// weaponName normalizes an equipment to the lowercased name used as a loadout
+// map key (e.g. "ak47", "usp_silencer", "hegrenade").
+func weaponName(e *common.Equipment) string {
+	if e == nil {
+		return ""
 	}
-	state.mu.Unlock()
+	// OriginalString is empty on CS2; fall back to Type name, lowercased and
+	// with the canonical logfile aliases (knife covers both sides, etc.).
+	switch e.Type {
+	case common.EqAK47:
+		return "ak47"
+	case common.EqM4A4:
+		return "m4a1"
+	case common.EqM4A1:
+		return "m4a1_silencer"
+	case common.EqAWP:
+		return "awp"
+	case common.EqDeagle:
+		return "deagle"
+	case common.EqUSP:
+		return "usp_silencer"
+	case common.EqGlock:
+		return "glock"
+	case common.EqP2000:
+		return "hkp2000"
+	case common.EqFiveSeven:
+		return "fiveseven"
+	case common.EqTec9:
+		return "tec9"
+	case common.EqP250:
+		return "p250"
+	case common.EqCZ:
+		return "cz75a"
+	case common.EqDualBerettas:
+		return "elite"
+	case common.EqRevolver:
+		return "revolver"
+	case common.EqFamas:
+		return "famas"
+	case common.EqGalil:
+		return "galilar"
+	case common.EqAUG:
+		return "aug"
+	case common.EqSG553:
+		return "sg556"
+	case common.EqScout:
+		return "ssg08"
+	case common.EqScar20:
+		return "scar20"
+	case common.EqG3SG1:
+		return "g3sg1"
+	case common.EqMac10:
+		return "mac10"
+	case common.EqMP9:
+		return "mp9"
+	case common.EqMP7:
+		return "mp7"
+	case common.EqMP5:
+		return "mp5sd"
+	case common.EqUMP:
+		return "ump45"
+	case common.EqP90:
+		return "p90"
+	case common.EqBizon:
+		return "bizon"
+	case common.EqNova:
+		return "nova"
+	case common.EqXM1014:
+		return "xm1014"
+	case common.EqSwag7: // also EqMag7
+		return "mag7"
+	case common.EqSawedOff:
+		return "sawedoff"
+	case common.EqM249:
+		return "m249"
+	case common.EqNegev:
+		return "negev"
+	case common.EqKnife:
+		return "knife"
+	case common.EqZeus:
+		return "taser"
+	case common.EqHE:
+		return "hegrenade"
+	case common.EqFlash:
+		return "flashbang"
+	case common.EqSmoke:
+		return "smokegrenade"
+	case common.EqDecoy:
+		return "decoy"
+	case common.EqMolotov:
+		return "molotov"
+	case common.EqIncendiary:
+		return "incgrenade"
+	case common.EqBomb:
+		return "c4"
+	case common.EqKevlar:
+		return "kevlar"
+	case common.EqHelmet:
+		return "assaultsuit"
+	case common.EqDefuseKit:
+		return "defuser"
+	case common.EqWorld:
+		return "world"
+	}
+	return ""
 }
+
+func (w *eventWiring) onKill(e events.Kill) {
+	s := w.state
+	killer := playerName(e.Killer)
+	victim := playerName(e.Victim)
+	if victim == "" {
+		return
+	}
+	killerTeam := ""
+	if e.Killer != nil {
+		killerTeam = teamString(e.Killer.Team)
+	}
+	victimTeam := ""
+	if e.Victim != nil {
+		victimTeam = teamString(e.Victim.Team)
+	}
+	weapon := weaponName(e.Weapon)
+	isKnife := e.Weapon != nil && e.Weapon.Type == common.EqKnife
+	isZeus := e.Weapon != nil && e.Weapon.Type == common.EqZeus
+	isAirborne := false
+	if e.Killer != nil {
+		isAirborne = e.Killer.IsAirborne()
+	}
+
+	s.mu.Lock()
+	k := Kill{
+		Time:         time.Now(),
+		Killer:       killer,
+		KillerTeam:   killerTeam,
+		Victim:       victim,
+		VictimTeam:   victimTeam,
+		Weapon:       weapon,
+		Headshot:     e.IsHeadshot,
+		Wallbang:     e.PenetratedObjects > 0,
+		Noscope:      e.NoScope,
+		ThroughSmoke: e.ThroughSmoke,
+		BlindKill:    e.AttackerBlind,
+		InAir:        isAirborne,
+	}
+	if e.Assister != nil {
+		k.Assister = playerName(e.Assister)
+		k.AssisterTeam = teamString(e.Assister.Team)
+		k.FlashAssist = e.AssistedFlash
+	}
+	s.appendKill(k)
+
+	// Killer counters
+	if killer != "" && killer != victim {
+		p := s.ensurePlayer(killer)
+		p.Kills++
+		if killerTeam != "" {
+			p.Team = killerTeam
+		}
+		if e.IsHeadshot {
+			p.HeadshotKills++
+		}
+		if isZeus {
+			p.ZeusKills++
+		} else if isKnife {
+			p.KnifeKills++
+		}
+	}
+
+	// Victim counters
+	p := s.ensurePlayer(victim)
+	p.Deaths++
+	p.Alive = false
+	if victimTeam != "" {
+		p.Team = victimTeam
+	}
+
+	// Assist counter (flash assists do not award a scoreboard assist in CS2)
+	if e.Assister != nil && !e.AssistedFlash {
+		ap := s.ensurePlayer(playerName(e.Assister))
+		ap.Assists++
+		if t := teamString(e.Assister.Team); t != "" {
+			ap.Team = t
+		}
+	}
+	s.mu.Unlock()
+	s.notify()
+}
+
+func (w *eventWiring) onPlayerHurt(e events.PlayerHurt) {
+	if e.Attacker == nil || e.Player == nil {
+		return
+	}
+	name := playerName(e.Attacker)
+	if name == "" || name == playerName(e.Player) {
+		return
+	}
+	// Friendly fire still counts as damage dealt in CS2; filtering is left to
+	// the scoreboard presentation layer.
+	dmg := e.HealthDamageTaken
+	isGrenade := e.Weapon != nil && e.Weapon.Class() == common.EqClassGrenade
+	s := w.state
+	s.mu.Lock()
+	p := s.ensurePlayer(name)
+	p.Damage += float64(dmg)
+	if isGrenade {
+		p.UD += float64(dmg)
+	}
+	s.mu.Unlock()
+	s.notify()
+}
+
+func (w *eventWiring) onPlayerFlashed(e events.PlayerFlashed) {
+	if e.Attacker == nil || e.Player == nil {
+		return
+	}
+	if e.Attacker == e.Player {
+		return
+	}
+	// Only count enemy flashes over the EF threshold.
+	if e.Attacker.Team == e.Player.Team {
+		return
+	}
+	dur := e.FlashDuration()
+	if dur < w.efThreshold {
+		return
+	}
+	s := w.state
+	s.mu.Lock()
+	p := s.ensurePlayer(playerName(e.Attacker))
+	p.EF++
+	s.mu.Unlock()
+	s.notify()
+}
+
+func (w *eventWiring) onRoundStart(e events.RoundStart) {
+	s := w.state
+	s.mu.Lock()
+	for _, p := range s.stats {
+		p.Alive = true
+		p.HasBomb = false
+		// Clear per-round weapons; they'll be repopulated via ItemPickup/Equip.
+		p.Weapons = make(map[string]bool)
+	}
+	// Pull canonical score/map/rounds from GameState for accuracy.
+	gs := w.parser.GameState()
+	if gs != nil {
+		if gs.TeamCounterTerrorists() != nil {
+			s.ctScore = gs.TeamCounterTerrorists().Score()
+		}
+		if gs.TeamTerrorists() != nil {
+			s.tScore = gs.TeamTerrorists().Score()
+		}
+		s.round = gs.TotalRoundsPlayed() + 1
+		s.inWarmup = gs.IsWarmupPeriod()
+		s.markMetaDirty()
+	}
+	s.mu.Unlock()
+	s.notify()
+	_ = e
+}
+
+func (w *eventWiring) onRoundEnd(e events.RoundEnd) {
+	s := w.state
+	reason := roundEndReasonString(e.Reason)
+	winner := ""
+	switch e.Winner {
+	case common.TeamCounterTerrorists:
+		winner = "CT"
+	case common.TeamTerrorists:
+		winner = "T"
+	}
+	gs := w.parser.GameState()
+	matchStarted := gs != nil && gs.IsMatchStarted()
+
+	s.mu.Lock()
+	// Round history (winner + reason). Match-started gate avoids warmup pollution.
+	if winner != "" && matchStarted {
+		s.rounds = append(s.rounds, RoundResult{Round: s.round, Winner: winner, Reason: reason})
+		s.roundsPlayed++
+	}
+	// Sync scores from GameState (TeamState.Score() has already incremented).
+	if gs != nil {
+		if gs.TeamCounterTerrorists() != nil {
+			s.ctScore = gs.TeamCounterTerrorists().Score()
+		}
+		if gs.TeamTerrorists() != nil {
+			s.tScore = gs.TeamTerrorists().Score()
+		}
+	}
+	s.markMetaDirty()
+	ct, t := s.ctScore, s.tScore
+	cb := s.roundEndFn
+	name := s.serverName
+	s.mu.Unlock()
+
+	// Round-win killfeed line, e.g. "CT wins — 5:3". Skip warmup rounds and
+	// non-team wins (draws). addSystemMessage calls notify() internally.
+	if winner != "" && matchStarted {
+		s.addSystemMessage(fmt.Sprintf("%s wins — %d:%d", winner, ct, t))
+	} else {
+		s.notify()
+	}
+
+	if cb != nil {
+		go cb(RoundEndInfo{ServerName: name, CT: ct, T: t})
+	}
+}
+
+// roundEndReasonString renders the demoinfocs RoundEndReason using the
+// vocabulary the panel UI + DB already understand.
+func roundEndReasonString(r events.RoundEndReason) string {
+	switch r {
+	case events.RoundEndReasonTargetBombed:
+		return "bomb"
+	case events.RoundEndReasonBombDefused:
+		return "defuse"
+	case events.RoundEndReasonCTWin, events.RoundEndReasonTerroristsWin:
+		return "elimination"
+	case events.RoundEndReasonTargetSaved:
+		return "time"
+	}
+	return ""
+}
+
+func (w *eventWiring) onRoundMVP(e events.RoundMVPAnnouncement) {
+	if e.Player == nil {
+		return
+	}
+	s := w.state
+	s.mu.Lock()
+	p := s.ensurePlayer(playerName(e.Player))
+	p.MVPs++
+	s.mu.Unlock()
+	s.notify()
+}
+
+func (w *eventWiring) onMatchStartedChanged(e events.MatchStartedChanged) {
+	// The Source 2 entity-driven signal. events.MatchStart is the Source 1
+	// game-event counterpart; on CSTV+ both can dispatch for the same match
+	// start and produce a duplicate "Match Started" line — we intentionally
+	// only subscribe to this one.
+	if !e.OldIsStarted && e.NewIsStarted {
+		w.state.resetWithMessage("Match Started")
+	}
+}
+
+func (w *eventWiring) onAnnouncementWinPanel(_ events.AnnouncementWinPanelMatch) {
+	s := w.state
+	s.addSystemMessage("Game Over")
+	if s.gameOverFn == nil {
+		return
+	}
+	score := s.GetScore()
+	scoreboard := s.GetScoreboard()
+	slog.Info("gametracker: game over", "server", s.serverName,
+		"ct", score.CT, "t", score.T, "rounds", len(score.Rounds), "players", len(scoreboard))
+	cb := s.gameOverFn
+	name := s.serverName
+	go cb(GameOverInfo{ServerName: name, Score: score, Players: scoreboard})
+}
+
+func (w *eventWiring) onPlayerConnect(e events.PlayerConnect) {
+	if e.Player == nil {
+		return
+	}
+	w.recordConnect(e.Player, false)
+}
+func (w *eventWiring) onBotConnect(e events.BotConnect) {
+	if e.Player == nil {
+		return
+	}
+	w.recordConnect(e.Player, true)
+}
+func (w *eventWiring) recordConnect(pl *common.Player, isBot bool) {
+	name := playerName(pl)
+	if name == "" {
+		return
+	}
+	s := w.state
+	s.mu.Lock()
+	p := s.ensurePlayer(name)
+	p.Online = true
+	p.IsBot = isBot || pl.IsBot
+	if t := teamString(pl.Team); t != "" {
+		p.Team = t
+	}
+	s.mu.Unlock()
+	s.notify()
+}
+
+func (w *eventWiring) onPlayerDisconnected(e events.PlayerDisconnected) {
+	if e.Player == nil {
+		return
+	}
+	name := playerName(e.Player)
+	s := w.state
+	s.mu.Lock()
+	if p, ok := s.stats[name]; ok {
+		if p.IsBot {
+			delete(s.stats, name)
+		} else {
+			p.Online = false
+			p.Weapons = make(map[string]bool)
+		}
+	}
+	s.mu.Unlock()
+	s.notify()
+}
+
+func (w *eventWiring) onPlayerTeamChange(e events.PlayerTeamChange) {
+	if e.Player == nil {
+		return
+	}
+	name := playerName(e.Player)
+	s := w.state
+	s.mu.Lock()
+	p := s.ensurePlayer(name)
+	p.Team = teamString(e.NewTeam)
+	s.mu.Unlock()
+	s.notify()
+}
+
+func (w *eventWiring) onChatMessage(e events.ChatMessage) {
+	if e.Sender == nil {
+		return
+	}
+	text := strings.TrimSpace(e.Text)
+	if text != ".ready" {
+		return
+	}
+	s := w.state
+	s.mu.RLock()
+	cb := s.readyFn
+	name := s.serverName
+	s.mu.RUnlock()
+	if cb == nil {
+		return
+	}
+	go cb(name, playerName(e.Sender), teamString(e.Sender.Team))
+}
+
+func (w *eventWiring) onWarmupChanged(e events.IsWarmupPeriodChanged) {
+	s := w.state
+	s.mu.Lock()
+	if s.inWarmup != e.NewIsWarmupPeriod {
+		s.inWarmup = e.NewIsWarmupPeriod
+		s.markMetaDirty()
+	}
+	s.mu.Unlock()
+	s.notify()
+}
+
+func (w *eventWiring) onConVarsUpdated(e events.ConVarsUpdated) {
+	paused := false
+	seenPauseCvar := false
+	for k, v := range e.UpdatedConVars {
+		if k == "mp_pause_match" {
+			seenPauseCvar = true
+			paused = v == "1" || strings.EqualFold(v, "true")
+		}
+	}
+	if !seenPauseCvar {
+		return
+	}
+	s := w.state
+	s.mu.Lock()
+	if s.isPaused != paused {
+		s.isPaused = paused
+		s.markMetaDirty()
+	}
+	s.mu.Unlock()
+	s.notify()
+}
+
+func (w *eventWiring) onBombPlanted(e events.BombPlanted) {
+	msg := "Bomb Planted"
+	if e.Player != nil && e.Player.Name != "" {
+		msg = e.Player.Name + " planted the bomb"
+	}
+	w.state.addSystemMessage(msg)
+}
+
+func (w *eventWiring) onBombDefused(e events.BombDefused) {
+	msg := "Bomb Defused"
+	if e.Player != nil && e.Player.Name != "" {
+		msg = e.Player.Name + " defused the bomb"
+	}
+	w.state.addSystemMessage(msg)
+}
+
+func (w *eventWiring) onBombExplode(_ events.BombExplode) {
+	w.state.addSystemMessage("Bomb Exploded")
+}
+
+func (w *eventWiring) onDemoHeader(m *msg.CDemoFileHeader) {
+	mapName := m.GetMapName()
+	if mapName == "" {
+		return
+	}
+	s := w.state
+	s.mu.Lock()
+	if s.currentMap != mapName {
+		s.currentMap = mapName
+		s.markMetaDirty()
+	}
+	s.mu.Unlock()
+	s.notify()
+}
+
+// onTeamSideSwitch marks halftime and captures the halfRound bookkeeping used
+// for overtime detection and the scoreboard's round divider. TeamSideSwitch
+// is preferred over GameHalfEnded for two reasons: (1) it fires only on
+// *actual* side swaps (regulation + each OT half), not on match end, so
+// "Half Time" messaging isn't fired at the final round; (2) by the time
+// the game-phase entity has advanced far enough to dispatch TeamSideSwitch,
+// the final round's TeamState.Score() update has settled, so ctScore+tScore
+// is authoritative (GameHalfEnded races with score updates on some Source 2
+// demos, which produced a one-round-early divider).
+//
+// Per-player Team fields are corrected by the next snapshotParticipants pass.
+func (w *eventWiring) onTeamSideSwitch(_ events.TeamSideSwitch) {
+	s := w.state
+	s.mu.Lock()
+	if s.halfRound == 0 {
+		played := s.ctScore + s.tScore
+		if played == 0 {
+			played = len(s.rounds)
+		}
+		s.halfRound = played
+		s.maxRounds = played * 2
+		s.markMetaDirty()
+		slog.Info("gametracker: half ended", "server", s.serverName, "round", played, "max_rounds", s.maxRounds)
+	}
+	s.mu.Unlock()
+	s.addSystemMessage("Half Time")
+}
+
+// onFrameDone is the authoritative loadout/money/alive pump. CS2 broadcasts
+// don't reliably fire ItemPickup/Drop/Equip (library: "not available in all
+// demos"), and we want money/armor/helmet/defuser tracking that doesn't
+// depend on Source 1 game events. The parser's entity-graph view is always
+// current, so we just snapshot from it at a bounded rate.
+func (w *eventWiring) onFrameDone(_ events.FrameDone) {
+	now := w.parser.CurrentTime()
+	// CurrentTime() can go backwards briefly on broadcast reconnect; treat
+	// any non-forward delta as "poll now" so we don't starve.
+	if now >= w.lastSnapshot && now-w.lastSnapshot < w.snapshotInterval {
+		return
+	}
+	w.lastSnapshot = now
+	gs := w.parser.GameState()
+	if gs == nil {
+		return
+	}
+	parts := gs.Participants()
+	if parts == nil {
+		return
+	}
+	if w.state.snapshotParticipants(parts.All()) {
+		w.state.notify()
+	}
+}
+

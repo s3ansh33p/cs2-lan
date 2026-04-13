@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"unilan/internal/auth"
 	"io/fs"
 	"net/http"
@@ -17,6 +18,19 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 		}
 		return a.ValidateSession(c.Value)
 	}
+
+	// Send the current dashboard state to admins as soon as they subscribe,
+	// so they don't have to wait up to a poll interval for the first frame.
+	h.hub.RegisterSnapshot("dashboard", func() (string, any) {
+		data := h.getDashboardData()
+		if data == nil {
+			data = h.buildDashboardJSON()
+		}
+		if data == nil {
+			return "dashboard", nil
+		}
+		return "dashboard", json.RawMessage(data)
+	})
 
 	mux := http.NewServeMux()
 
@@ -43,6 +57,13 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	mux.HandleFunc("POST /teams/{id}/members/{mid}/delete", h.PublicRemoveMember)
 	mux.HandleFunc("POST /teams/{id}/rename", h.PublicRenameTeam)
 	mux.HandleFunc("GET /game/{gid}/stats", h.PublicGameStats)
+
+	// CSTV+ broadcast relay: CS2 game servers (running on the host via
+	// host-mode networking) POST demo fragments here. Mounted without auth
+	// because the game client doesn't authenticate; the relay itself is
+	// write-once-read-local-only, so unless someone is already on the LAN
+	// with the panel open there's nothing interesting to scrape.
+	mux.Handle("/cstv/", http.StripPrefix("/cstv", h.CSTVRelay.Handler()))
 
 	// Public routes — specific tournament by ID
 	mux.HandleFunc("GET /tournaments", h.PublicTournamentList)

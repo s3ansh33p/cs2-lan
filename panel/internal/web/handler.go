@@ -21,6 +21,7 @@ import (
 	"unilan/internal/db"
 	"unilan/internal/docker"
 	"unilan/internal/games"
+	"unilan/internal/games/cs2/cstv"
 	"unilan/internal/games/cs2/rcon"
 	"unilan/internal/games/cs2/tracker"
 	cs2web "unilan/internal/games/cs2/web"
@@ -150,9 +151,12 @@ type Handler struct {
 
 	// CS2-specific handlers (ready state, .ready chat, CT/T roster).
 	cs2 *cs2web.Handler
+
+	// CSTV+ broadcast relay mounted at /cstv/. Exposed for routes.go.
+	CSTVRelay *cstv.Relay
 }
 
-func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *tracker.Manager, database *db.DB, composeFile, defaultRCON string) (*Handler, error) {
+func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *tracker.Manager, relay *cstv.Relay, database *db.DB, composeFile, defaultRCON string) (*Handler, error) {
 	tmplFS, err := fs.Sub(webfs.Assets, "templates")
 	if err != nil {
 		return nil, fmt.Errorf("template fs: %w", err)
@@ -247,6 +251,7 @@ func NewHandler(dc *docker.Client, rm *rcon.Manager, tm *tracker.Manager, databa
 		announcement:    database.GetSetting("announcement"),
 		announceLink:    database.GetSetting("announcement_link"),
 		hub:             NewWSHub(),
+		CSTVRelay:       relay,
 	}
 	h.cs2 = cs2web.NewHandler(database, dc, tm, rm, h.render)
 	go h.dashboardPoller()

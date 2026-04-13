@@ -165,11 +165,14 @@ if [[ ! -z $CS2_RCON_PORT ]]; then
 fi
 
 echo "Starting CS2 Dedicated Server"
+# Reserve +2 slots on top of CS2_MAXPLAYERS so CSTV/GOTV always has room
+# without eating into the human player cap that the panel reports.
+CS2_MAXPLAYERS_WITH_TV=$((CS2_MAXPLAYERS + 2))
 eval stdbuf -oL "./cs2.sh" -dedicated \
         "${CS2_IP_ARGS}" -port "${CS2_PORT}" \
         -console \
         -usercon \
-        -maxplayers "${CS2_MAXPLAYERS}" \
+        -maxplayers "${CS2_MAXPLAYERS_WITH_TV}" \
         "${CS2_GAME_MODE_ARGS}" \
         "${CS2_MAPGROUP_ARGS}" \
         +map "${CS2_STARTMAP}" \

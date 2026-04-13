@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -24,9 +23,10 @@ import (
 	"unilan/internal/auth"
 	"unilan/internal/db"
 	"unilan/internal/docker"
+	"unilan/internal/games/cs2/cstv"
+	"unilan/internal/games/cs2/rcon"
 	"unilan/internal/games/cs2/tracker"
 	"unilan/internal/logger"
-	"unilan/internal/games/cs2/rcon"
 	"unilan/internal/web"
 
 	// Register supported games. Adding a new game = add a blank import here.
@@ -35,6 +35,7 @@ import (
 
 func main() {
 	port := flag.Int("port", 8080, "HTTP listen port")
+	cstvPort := flag.Int("cstv-port", 8089, "Loopback-only HTTP port for the CSTV+ broadcast relay (game servers POST here)")
 	password := flag.String("password", "", "Panel access password (required)")
 	defaultRCON := flag.String("rcon-default", "changeme", "Default RCON password for new servers")
 	dbPath := flag.String("db", "tournament.db", "Path to SQLite database file")
@@ -83,13 +84,34 @@ func main() {
 	rm := rcon.NewManager()
 	defer rm.CloseAll()
 
+	// CSTV+ broadcast relay: CS2 servers POST live demo fragments to
+	// http://127.0.0.1:<cstv-port>/cstv/<name>; the tracker's parser GETs
+	// them back. The relay listens on a dedicated loopback-only HTTP port so
+	// it keeps working when the main panel serves HTTPS on its own port.
+	relay := cstv.NewRelay()
+	// Cap fragment retention so a long match doesn't balloon panel memory.
+	// The parser only needs the latest few fragments for its delta loop;
+	// 128 fragments at ~3 s keyframe interval covers ~6 minutes, which is
+	// enough headroom for retries and WS reconnects.
+	relay.SetMaxFragments(128)
+	cstvMux := http.NewServeMux()
+	cstvMux.Handle("/cstv/", http.StripPrefix("/cstv", relay.Handler()))
+	cstvAddr := fmt.Sprintf("127.0.0.1:%d", *cstvPort)
+	cstvSrv := &http.Server{Addr: cstvAddr, Handler: cstvMux}
+	go func() {
+		slog.Info("cstv relay listening", "addr", cstvAddr)
+		if err := cstvSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("cstv relay exited", "err", err)
+		}
+	}()
+	defer cstvSrv.Close()
+
 	tm := tracker.NewManager(
-		func(ctx context.Context, name string) (<-chan string, func(), error) {
-			return dc.StreamLogLines(ctx, name)
-		},
+		relay,
 		func(addr, password, command string) (string, error) {
 			return rm.Execute(addr, password, command)
 		},
+		*cstvPort,
 	)
 	defer tm.StopAll()
 
@@ -105,7 +127,7 @@ func main() {
 		a.SetSecure(true)
 	}
 
-	h, err := web.NewHandler(dc, rm, tm, database, absCompose, *defaultRCON)
+	h, err := web.NewHandler(dc, rm, tm, relay, database, absCompose, *defaultRCON)
 	if err != nil {
 		slog.Error("handler init failed", "err", err)
 		os.Exit(1)

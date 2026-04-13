@@ -1,5 +1,6 @@
 volumes:
-  cs2-base:  # Shared game files (~35GB, downloaded once)
+  cs2-base:  # Shared game files (~60GB, downloaded once)
+    name: cs2-lan_cs2-base # todo
 
 services:
   # Download/update game files: docker compose --profile update run --rm cs2-updater

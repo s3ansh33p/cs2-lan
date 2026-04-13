@@ -206,32 +206,6 @@ func ReadLogLines(reader io.Reader, isTTY bool, lines chan<- string, done <-chan
 	}
 }
 
-// StreamLogLines returns a channel of log lines for the gametracker.
-// It handles demultiplexing internally. The caller must call cleanup when done.
-func (c *Client) StreamLogLines(ctx context.Context, name string) (<-chan string, func(), error) {
-	reader, isTTY, err := c.StreamLogs(ctx, name)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	lines := make(chan string, 128)
-	done := make(chan struct{})
-
-	go func() {
-		ReadLogLines(reader, isTTY, lines, done)
-		close(lines)
-	}()
-
-	var once sync.Once
-	cleanup := func() {
-		once.Do(func() {
-			close(done)
-			reader.Close()
-		})
-	}
-
-	return lines, cleanup, nil
-}
 
 // ContainerResourceStats holds CPU and memory usage for a container.
 type ContainerResourceStats struct {

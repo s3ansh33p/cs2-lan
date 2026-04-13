@@ -59,10 +59,10 @@ func (c *Client) Launch(ctx context.Context, req LaunchRequest, composeFile stri
 	}
 
 	tvPort := req.Port + 1000
-	tvEnable := "0"
-	if req.TV {
-		tvEnable = "1"
-	}
+	// TV (GOTV/CSTV) must be on: the live tracker consumes the CSTV+ broadcast.
+	// The req.TV form flag is still honored downstream (it controls GOTV-specific
+	// UI bits) but the engine-level TV must be on for event parsing.
+	tvEnable := "1"
 
 	args := []string{
 		"compose", "-f", composeFile,

@@ -239,6 +239,8 @@ type gamePlayerJSON struct {
 	HasDefuser bool     `json:"defuser,omitempty"`
 	HasBomb    bool     `json:"bomb,omitempty"`
 	Alive      bool     `json:"alive"`
+	Health     int      `json:"hp,omitempty"`
+	Armor      int      `json:"ar,omitempty"`
 	HSPercent  float64  `json:"hsp"`
 	KDR        float64  `json:"kdr"`
 	ADR        float64  `json:"adr"`
@@ -451,6 +453,7 @@ func buildPlayerList(serverName string, tracker *tracker.Manager) []gamePlayerJS
 			Ping: ps.Ping, Duration: ps.Duration, Money: ps.Money,
 			Weapons: weapons, Grenades: grenades,
 			HasArmor: ps.HasArmor, HasHelmet: ps.HasHelmet, HasDefuser: ps.HasDefuser, HasBomb: ps.HasBomb, Alive: ps.Alive,
+			Health: ps.Health, Armor: ps.Armor,
 			HSPercent: hsp, KDR: kdr, ADR: ps.ADR, MVPs: ps.MVPs, EF: ps.EF, UD: ps.UD,
 			KnifeKills: ps.KnifeKills, ZeusKills: ps.ZeusKills, Level: ps.Level,
 		})

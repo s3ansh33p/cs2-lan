@@ -11,7 +11,11 @@ var rconCommands = games.RCONCommands{
 	PauseWarmup:  "mp_warmup_pausetimer 1",
 	PauseMatch:   "mp_pause_match",
 	UnpauseMatch: "mp_unpause_match",
-	SetupLogging: []string{"sv_logecho 1", "log on", "mp_logdetail 3"},
+	// Tracker state now comes from the CSTV+ broadcast parser, so the old
+	// srcds text-log hooks (sv_logecho/log on/mp_logdetail) aren't needed.
+	// Any additional commands added here will still run after the tracker
+	// enables broadcast — handy for per-game setup that isn't broadcast-related.
+	SetupLogging: nil,
 }
 
 func (Game) RCON() games.RCONCommands { return rconCommands }

@@ -28,6 +28,7 @@
     <td class="px-4 py-3 text-right">
         <a href="/admin/server/{{.Name}}" class="text-slate-400 hover:text-white text-sm mr-3">Manage</a>
         <button hx-post="/admin/server/{{.Name}}/stop" hx-confirm="Stop server {{.Name}}?" hx-target="closest tr" hx-swap="outerHTML"
+            hx-push-url="false"
             class="text-red-400 hover:text-red-300 text-sm">Stop</button>
     </td>
 </tr>

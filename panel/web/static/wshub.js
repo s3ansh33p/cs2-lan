@@ -128,4 +128,11 @@ window.Page = (function() {
     };
 })();
 
-document.addEventListener('htmx:beforeSwap', function() { Page._cleanup(); });
+// Fire page cleanups only on actual SPA navigation — i.e. when the top-level
+// content container is being swapped by an hx-boost link. Out-of-band HTMX
+// swaps (rcon-output append, killfeed partial, player row stop, etc.) must
+// NOT tear down the page's managed WebSockets, timers, or listeners.
+document.addEventListener('htmx:beforeSwap', function(e) {
+    var t = e.detail && e.detail.target;
+    if (t && t.id === 'main-content') Page._cleanup();
+});

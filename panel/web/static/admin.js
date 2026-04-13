@@ -746,6 +746,25 @@ function renderPlayers(players) {
             '<td class="px-4 py-2"><div class="flex flex-wrap items-center gap-1.5">' + equip + '</div></td>';
     }
 
+    // nameCellContent wraps the rendered name with a width-percent HP bar and
+    // an armor underline when we're in an econ mode (not arms race / DM) and
+    // the player is a live participant. The bar is positioned absolutely
+    // against the containing <td class="relative ...">; the name sits on top.
+    function nameCellContent(p, name) {
+        var showBar = !(isArmsRace || isDeathmatch) && p.online && p.team !== 'S';
+        if (!showBar) return name;
+        var hp = Math.max(0, Math.min(100, p.hp || 0));
+        var ar = Math.max(0, Math.min(100, p.ar || 0));
+        var hpColor = hp >= 70 ? 'bg-green-500/15' : (hp >= 30 ? 'bg-yellow-500/20' : 'bg-red-500/25');
+        var bars = '';
+        if (hp > 0) bars += '<div class="absolute inset-y-0 left-0 ' + hpColor + '" style="width:' + hp + '%"></div>';
+        if (ar > 0) bars += '<div class="absolute bottom-0 left-0 bg-blue-500/60" style="width:' + ar + '%;height:2px"></div>';
+        var badge = ar > 0
+            ? ' <span class="text-xs text-slate-400 ml-1">' + hp + ' <span class="text-slate-500">(' + ar + ')</span></span>'
+            : ' <span class="text-xs text-slate-400 ml-1">' + hp + '</span>';
+        return bars + '<span class="relative z-10">' + name + badge + '</span>';
+    }
+
     function playerRow(p) {
         var isDead = showAlive && p.online && !p.alive;
         var opacity = !p.online ? ' opacity-50' : (isDead ? ' opacity-40' : '');
@@ -758,7 +777,7 @@ function renderPlayers(players) {
         var rowClasses = noTeamSplit ? '' : 'border-b border-slate-700/50';
         var nameColor = noTeamSplit ? teamColor(p.team) : 'text-white';
         return '<tr class="' + rowClasses + opacity + '">' +
-            '<td class="px-4 py-2 ' + nameColor + '">' + name + '</td>' +
+            '<td class="relative px-4 py-2 ' + nameColor + '">' + nameCellContent(p, name) + '</td>' +
             statCells(p) + extraCells(p) +
             '<td class="px-4 py-2 text-slate-300">' + ping + '</td>' +
             '</tr>';
@@ -809,7 +828,7 @@ function renderPlayers(players) {
 
         return '<div class="bg-slate-700/30 rounded-lg p-3' + opacity + borderColor + '">' +
             '<div class="flex items-center gap-2 mb-1.5">' +
-                '<span class="' + cardNameColor + ' text-sm font-medium flex-1">' + name + '</span>' +
+                '<div class="relative flex-1 ' + cardNameColor + ' text-sm font-medium overflow-hidden">' + nameCellContent(p, name) + '</div>' +
                 (money ? '<span class="text-green-300 font-mono text-xs">' + money + '</span>' : '') +
                 '<span class="text-slate-400 text-xs">' + ping + '</span>' +
             '</div>' +

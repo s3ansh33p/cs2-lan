@@ -22,7 +22,16 @@ type WSHub struct {
 	// authFn checks if a request has a valid admin session.
 	// Set by the handler after construction.
 	authFn func(r *http.Request) bool
+
+	// snapshots[topic] returns the current state to send to a newly-subscribed
+	// client. Returning nil data skips the initial send.
+	snapshots map[string]SnapshotFn
 }
+
+// SnapshotFn produces the current state for a topic so a newly-subscribed
+// client can be brought up to date immediately, without waiting for the next
+// publish.
+type SnapshotFn func() (msgType string, data any)
 
 type wsClient struct {
 	hub    *WSHub
@@ -49,9 +58,19 @@ type wsMessage struct {
 // NewWSHub creates a new hub ready for use.
 func NewWSHub() *WSHub {
 	return &WSHub{
-		clients: make(map[*wsClient]bool),
-		topics:  make(map[string]map[*wsClient]bool),
+		clients:   make(map[*wsClient]bool),
+		topics:    make(map[string]map[*wsClient]bool),
+		snapshots: make(map[string]SnapshotFn),
 	}
+}
+
+// RegisterSnapshot installs a snapshot function for a topic. When a client
+// subscribes to that topic, the snapshot is sent immediately to that client
+// alone so it has current state without waiting for the next publish.
+func (h *WSHub) RegisterSnapshot(topic string, fn SnapshotFn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.snapshots[topic] = fn
 }
 
 // isAdminTopic returns true for topics that require authentication.
@@ -90,6 +109,8 @@ func (h *WSHub) Deregister(client *wsClient) {
 }
 
 // Subscribe adds a client to a topic. Admin topics require a valid session.
+// If a snapshot function is registered for the topic, the current state is
+// sent to this client alone right after the subscription is recorded.
 func (h *WSHub) Subscribe(client *wsClient, topic string) {
 	if isAdminTopic(topic) {
 		if h.authFn == nil || !h.authFn(client.req) {
@@ -99,13 +120,40 @@ func (h *WSHub) Subscribe(client *wsClient, topic string) {
 	}
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	client.topics[topic] = true
 	if h.topics[topic] == nil {
 		h.topics[topic] = make(map[*wsClient]bool)
 	}
 	h.topics[topic][client] = true
+	snapFn := h.snapshots[topic]
+	h.mu.Unlock()
+
+	if snapFn == nil {
+		return
+	}
+	msgType, data := snapFn()
+	if data == nil {
+		return
+	}
+	payload, err := json.Marshal(data)
+	if err != nil {
+		slog.Warn("wshub: snapshot marshal failed", "topic", topic, "err", err)
+		return
+	}
+	envelope, err := json.Marshal(wsMessage{
+		Topic: topic,
+		Type:  msgType,
+		Data:  json.RawMessage(payload),
+	})
+	if err != nil {
+		slog.Warn("wshub: snapshot envelope marshal failed", "topic", topic, "err", err)
+		return
+	}
+	select {
+	case client.send <- envelope:
+	default:
+		// send buffer full — client will get the next regular publish
+	}
 }
 
 // Unsubscribe removes a client from a topic.
