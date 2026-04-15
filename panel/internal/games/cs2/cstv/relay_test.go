@@ -3,6 +3,7 @@ package cstv
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -110,6 +111,190 @@ func TestRoundtrip(t *testing.T) {
 	}
 }
 
+// TestSyncParsesFloatTps covers the 2026-04-15 intdividebyzero crash: CS2
+// ships the tickrate as a float string ("tps=64.0") on the /start POST, which
+// strconv.Atoi rejects. That left m.tps at zero, shipped "tps": 0 down to the
+// client, and crashed engine2.dll with integer divide-by-zero on stream start.
+// This regression locks in float-tolerant parsing.
+func TestSyncParsesFloatTps(t *testing.T) {
+	r := NewRelay()
+	ts := httptest.NewServer(http.StripPrefix("/cstv", r.Handler()))
+	defer ts.Close()
+
+	base := ts.URL + "/cstv/srv1"
+	// Real CS2 query string shape, as observed in panel.log on 2026-04-15.
+	postRaw(t, base, "/tok1/0/start?tick=78&tps=64.0&map=de_inferno&keyframe_interval=3&protocol=5", []byte("x"))
+	postRaw(t, base, "/tok1/0/full?tick=1&endtick=2", []byte("y"))
+	postRaw(t, base, "/tok1/0/delta?tick=1&endtick=2", []byte("z"))
+
+	var s syncResponse
+	getJSON(t, base+"/tok1/sync", &s)
+	if s.Tps != 64 {
+		t.Errorf("sync tps = %d, want 64 (parsed from 64.0)", s.Tps)
+	}
+}
+
+// TestSyncDefaultsTpsWhenMissing ensures the fallback still protects the
+// client if CS2 ever drops the tps param entirely. See tpsOrDefault.
+func TestSyncDefaultsTpsWhenMissing(t *testing.T) {
+	r := NewRelay()
+	ts := httptest.NewServer(http.StripPrefix("/cstv", r.Handler()))
+	defer ts.Close()
+
+	base := ts.URL + "/cstv/srv1"
+	// Note: no tps param on any POST.
+	postRaw(t, base, "/tok1/0/start?tick=1&endtick=2&keyframe_interval=3&map=de_dust2&protocol=5&signup_fragment=0", []byte("x"))
+	postRaw(t, base, "/tok1/0/full?tick=1&endtick=2", []byte("y"))
+	postRaw(t, base, "/tok1/0/delta?tick=1&endtick=2", []byte("z"))
+
+	var s syncResponse
+	getJSON(t, base+"/tok1/sync", &s)
+	if s.Tps != 64 {
+		t.Errorf("sync tps = %d, want 64 (default fallback)", s.Tps)
+	}
+}
+
+// TestPublicHandlerGatesByFragmentAge exercises the anti-screen-peek delay:
+// the public mount must hide fragments younger than publicDelay and reveal
+// them once aged. /sync picks the newest aged fragment; field GETs return
+// 404 for too-fresh fragments.
+func TestPublicHandlerGatesByFragmentAge(t *testing.T) {
+	r := NewRelay()
+	r.SetPublicDelay(100 * time.Millisecond)
+	// Shrink the prefetch buffer to a hair under publicDelay so a single
+	// ~150ms Sleep can age a fragment past both the per-fragment gate AND
+	// the /sync cushion. The buffer behaviour has its own test below.
+	r.SetPublicSyncBuffer(20 * time.Millisecond)
+	// Internal (loopback) handler — no delay.
+	internal := httptest.NewServer(http.StripPrefix("/cstv", r.Handler()))
+	defer internal.Close()
+	// Public handler — 100ms gate.
+	public := httptest.NewServer(http.StripPrefix("/cstv", r.PublicHandler()))
+	defer public.Close()
+
+	base := "/cstv/srv1"
+	postFrag := func(frag, tick int, full, delta []byte) {
+		t.Helper()
+		qs := fmt.Sprintf("?tick=%d&endtick=%d&tps=64&keyframe_interval=3", tick, tick+64)
+		if frag == 0 {
+			postRaw(t, internal.URL+base, "/tok1/0/start"+qs+"&map=de_dust2&protocol=5&signup_fragment=0", []byte("start"))
+		}
+		postRaw(t, internal.URL+base, "/tok1/"+itoa(frag)+"/full"+qs, full)
+		postRaw(t, internal.URL+base, "/tok1/"+itoa(frag)+"/delta"+qs, delta)
+	}
+
+	// Fragment 0 posted now. Internal sees it immediately; public must 404
+	// until the 100ms gate elapses.
+	postFrag(0, 1000, []byte("full-0"), []byte("delta-0"))
+
+	// Internal /sync succeeds right away.
+	var si syncResponse
+	getJSON(t, internal.URL+base+"/tok1/sync", &si)
+	if si.Fragment != 0 {
+		t.Errorf("internal sync fragment = %d, want 0", si.Fragment)
+	}
+
+	// Public /sync must 404 while fragment 0 is still fresh.
+	resp, err := http.Get(public.URL + base + "/tok1/sync")
+	if err != nil {
+		t.Fatalf("public sync: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("public sync on fresh fragment: status = %d, want 404", resp.StatusCode)
+	}
+
+	// Public field GET on a fresh fragment is also gated.
+	resp, err = http.Get(public.URL + base + "/tok1/0/delta")
+	if err != nil {
+		t.Fatalf("public field: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("public field on fresh fragment: status = %d, want 404", resp.StatusCode)
+	}
+
+	// Wait past the gate, then the public mount must reveal the fragment.
+	time.Sleep(150 * time.Millisecond)
+
+	var sp syncResponse
+	getJSON(t, public.URL+base+"/tok1/sync", &sp)
+	if sp.Fragment != 0 {
+		t.Errorf("public sync after gate: fragment = %d, want 0", sp.Fragment)
+	}
+	if got := getBytes(t, public.URL+base+"/tok1/0/delta"); !bytes.Equal(got, []byte("delta-0")) {
+		t.Errorf("public delta after gate: got %q want %q", got, []byte("delta-0"))
+	}
+
+	// Post a brand-new fragment. Public /sync must still return fragment 0
+	// (the aged one), NOT the fresh fragment 1.
+	postFrag(1, 1064, []byte("full-1"), []byte("delta-1"))
+	var sp2 syncResponse
+	getJSON(t, public.URL+base+"/tok1/sync", &sp2)
+	if sp2.Fragment != 0 {
+		t.Errorf("public sync with fresh newer fragment: returned %d, want 0 (aged-only pick)", sp2.Fragment)
+	}
+}
+
+// TestPublicHandlerSyncBufferCoversPrefetch reproduces the 2026-04-15 connect
+// storm: /sync used to return the fragment right at publicDelay age, so the
+// CS2 client's 5-fragment prefetch immediately 404'd on fragments N+1..N+5
+// (all fresher than the gate), causing ~45-55s of adaptive playback-rate
+// damping before convergence. The fix biases /sync to a fragment old enough
+// that the whole prefetch window clears the per-fragment gate.
+//
+// This test posts 10 fragments at 10ms spacing, sets delay=50ms (gate) and
+// buffer=40ms (cushion). The newest-aged fragment is too fresh after +50ms
+// for a clean prefetch, but with the buffer /sync picks one ~90ms old — so
+// the next ~4 prefetched fragments (each 10ms newer) all still pass the 50ms
+// gate.
+func TestPublicHandlerSyncBufferCoversPrefetch(t *testing.T) {
+	r := NewRelay()
+	r.SetPublicDelay(50 * time.Millisecond)
+	r.SetPublicSyncBuffer(40 * time.Millisecond)
+	internal := httptest.NewServer(http.StripPrefix("/cstv", r.Handler()))
+	defer internal.Close()
+	public := httptest.NewServer(http.StripPrefix("/cstv", r.PublicHandler()))
+	defer public.Close()
+
+	base := "/cstv/srv1"
+	postRaw(t, internal.URL+base, "/tok1/0/start?tick=0&endtick=1&tps=64&keyframe_interval=3&map=de_dust2&protocol=5&signup_fragment=0", []byte("start"))
+
+	// Post 10 fragments 10ms apart. After the loop, fragments have ages
+	// roughly 100ms, 90ms, 80ms, ..., 10ms (newest).
+	for i := 0; i < 10; i++ {
+		qs := fmt.Sprintf("?tick=%d&endtick=%d&tps=64&keyframe_interval=3", i*64, (i+1)*64)
+		postRaw(t, internal.URL+base, "/tok1/"+itoa(i)+"/full"+qs, []byte("full-"+itoa(i)))
+		postRaw(t, internal.URL+base, "/tok1/"+itoa(i)+"/delta"+qs, []byte("delta-"+itoa(i)))
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// /sync must NOT return the newest-aged fragment (fragment 5 at ~50ms
+	// is on the strict gate but its +1/+2/+3/+4/+5 prefetch would all be
+	// fresher than 50ms and 404). The buffer pushes pick to ~90ms age,
+	// i.e. fragment 1 or earlier.
+	var s syncResponse
+	getJSON(t, public.URL+base+"/tok1/sync", &s)
+	if s.Fragment > 2 {
+		t.Errorf("public sync picked fragment %d; want <=2 so the client's 5-fragment prefetch lands above the 50ms per-fragment gate", s.Fragment)
+	}
+
+	// Every fragment at or before s.Fragment+5 (the prefetch window)
+	// must now serve on the public handler without 404. That's the whole
+	// point of the buffer — the client connects and immediately fetches
+	// this window without a storm of retries.
+	for i := s.Fragment; i <= s.Fragment+4 && i < 10; i++ {
+		resp, err := http.Get(public.URL + base + "/tok1/" + itoa(i) + "/delta")
+		if err != nil {
+			t.Fatalf("public delta %d: %v", i, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("public delta %d: status = %d, want 200 (in prefetch window)", i, resp.StatusCode)
+		}
+	}
+}
+
 func TestUnknownServerReturns404(t *testing.T) {
 	r := NewRelay()
 	ts := httptest.NewServer(http.StripPrefix("/cstv", r.Handler()))
@@ -210,6 +395,50 @@ func TestTokenChangedFiresOnFlip(t *testing.T) {
 	case <-ch2:
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("TokenChanged did not fire on tok2→tok3 flip")
+	}
+}
+
+// TestLastFragmentTime covers the tracker's staleness watchdog probe.
+func TestLastFragmentTime(t *testing.T) {
+	r := NewRelay()
+	ts := httptest.NewServer(http.StripPrefix("/cstv", r.Handler()))
+	defer ts.Close()
+
+	// Unknown server returns zero time — don't false-positive as stale.
+	if !r.LastFragmentTime("nobody").IsZero() {
+		t.Error("LastFragmentTime for unknown server should be zero")
+	}
+
+	// Server that has a ready channel but no POSTs still returns zero.
+	_ = r.Ready("srv1")
+	if !r.LastFragmentTime("srv1").IsZero() {
+		t.Error("LastFragmentTime before any POST should be zero")
+	}
+
+	base := ts.URL + "/cstv/srv1"
+	before := time.Now()
+	postRaw(t, base, "/tok1/10/start?tick=1&endtick=2&tps=64&keyframe_interval=3&map=de_dust2&protocol=5&signup_fragment=10", []byte("x"))
+	postRaw(t, base, "/tok1/10/full?tick=1&endtick=2", []byte("y"))
+	last := r.LastFragmentTime("srv1")
+	if last.IsZero() {
+		t.Fatal("LastFragmentTime zero after POST")
+	}
+	if last.Before(before) {
+		t.Errorf("LastFragmentTime = %v, want >= %v", last, before)
+	}
+
+	// A newer POST bumps the timestamp forward.
+	time.Sleep(5 * time.Millisecond)
+	postRaw(t, base, "/tok1/11/full?tick=3&endtick=4", []byte("z"))
+	next := r.LastFragmentTime("srv1")
+	if !next.After(last) {
+		t.Errorf("LastFragmentTime did not advance: %v then %v", last, next)
+	}
+
+	// Close evicts the server — zero again.
+	r.Close("srv1")
+	if !r.LastFragmentTime("srv1").IsZero() {
+		t.Error("LastFragmentTime after Close should be zero")
 	}
 }
 

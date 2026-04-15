@@ -63,7 +63,10 @@ func SetupRoutes(a *auth.Auth, h *Handler) http.Handler {
 	// because the game client doesn't authenticate; the relay itself is
 	// write-once-read-local-only, so unless someone is already on the LAN
 	// with the panel open there's nothing interesting to scrape.
-	mux.Handle("/cstv/", http.StripPrefix("/cstv", h.CSTVRelay.Handler()))
+	// PublicHandler applies the Relay's publicDelay so CS2 spectators see a
+	// lagged stream (anti-screen-peek). The tracker reads from the loopback
+	// mount in cmd/panel/main.go with no delay.
+	mux.Handle("/cstv/", http.StripPrefix("/cstv", h.CSTVRelay.PublicHandler()))
 
 	// Public routes — specific tournament by ID
 	mux.HandleFunc("GET /tournaments", h.PublicTournamentList)

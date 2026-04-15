@@ -43,6 +43,7 @@ func main() {
 	tlsCert := flag.String("tls-cert", "", "Path to TLS certificate file (optional, auto-generated if not set)")
 	tlsKey := flag.String("tls-key", "", "Path to TLS key file (optional, auto-generated if not set)")
 	logFile := flag.String("log-file", "panel.log", "Path to log file")
+	cstvPublicDelay := flag.Duration("cstv-public-delay", 45*time.Second, "Minimum age before a CSTV fragment is served on the public URL. Makes the spectate button lag live by this much to block screen-peeking. 0 disables the gate.")
 	flag.Parse()
 
 	if *password == "" {
@@ -94,6 +95,7 @@ func main() {
 	// 128 fragments at ~3 s keyframe interval covers ~6 minutes, which is
 	// enough headroom for retries and WS reconnects.
 	relay.SetMaxFragments(128)
+	relay.SetPublicDelay(*cstvPublicDelay)
 	cstvMux := http.NewServeMux()
 	cstvMux.Handle("/cstv/", http.StripPrefix("/cstv", relay.Handler()))
 	cstvAddr := fmt.Sprintf("127.0.0.1:%d", *cstvPort)

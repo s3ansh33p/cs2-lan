@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -31,10 +32,17 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 
 // LoggingMiddleware logs every HTTP request with method, path, status, duration, and client IP.
 // WebSocket upgrades are skipped — WS handlers log their own connect/disconnect events.
+// CSTV broadcast traffic is skipped — CS2 clients fetch dozens of fragment URLs per
+// second (start/full/delta plus parallel prefetch), which drowns the log. The relay
+// logs signup events of interest (see cstv/relay.go: "cstv start POST").
 func LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip WebSocket upgrades — logged by WS handlers
 		if r.Header.Get("Upgrade") == "websocket" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/cstv/") {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -358,6 +358,17 @@ const (
 	flushCeiling  = 4 * time.Second
 )
 
+// Broadcast liveness watchdog. CSTV posts a fragment every keyframe_interval
+// (typically 3 s), so > broadcastStaleAfter of silence while the parser is
+// attached almost always means the CS2 process restarted and lost its
+// tv_broadcast setting (ConVars reset on process start, and we only enable
+// them via RCON). The watchdog fires parser.Cancel() so the tracker loop can
+// re-send the RCON setup rather than blocking on ParseToEnd indefinitely.
+const (
+	staleCheckInterval  = 10 * time.Second
+	broadcastStaleAfter = 30 * time.Second
+)
+
 // ScoreInfo returns the current round scores.
 type ScoreInfo struct {
 	Round      int
@@ -1222,9 +1233,9 @@ func (m *Manager) setupAndTrack(ctx context.Context, name string, gamePort int, 
 	// (team, money, alive, loadout, armor/helmet/defuser) now comes from the
 	// broadcast's entity stream; polling RCON every 5 s just burned a push
 	// cycle on stale ping/duration/address fields. RCON stays available for
-	// on-demand commands (match restart, pause, chat) via rm.Execute.
-	_ = addr
-	_ = rconPassword
+	// on-demand commands (match restart, pause, chat) via rm.Execute. addr,
+	// rconPassword, and setupCmds are also re-used below to reassert
+	// tv_broadcast if the parser exits on a stale broadcast.
 
 	retryDelay := 2 * time.Second
 	maxDelay := 30 * time.Second
@@ -1271,6 +1282,8 @@ func (m *Manager) setupAndTrack(ctx context.Context, name string, gamePort int, 
 		//   - ctx cancelled (tracker shutting down)
 		//   - relay saw a token flip (new CSTV match, parser is pinned to old)
 		//   - game-over handler flipped parserCancelled (AnnouncementWinPanel)
+		//   - broadcast went stale (CS2 process likely restarted, tv_broadcast
+		//     defaulted off; without this we'd block on HTTP reads indefinitely)
 		// The tokenFlip flag distinguishes a clean hand-off (keep relay state
 		// so the already-buffered new-match fragments survive) from a real
 		// teardown (evict so the next attach starts from a known-empty slate).
@@ -1282,18 +1295,42 @@ func (m *Manager) setupAndTrack(ctx context.Context, name string, gamePort int, 
 		parserCancelSig := state.newParserCancel()
 		go func() {
 			defer close(watchdogDone)
-			select {
-			case <-ctx.Done():
-				parser.Cancel()
-				if m.relay != nil {
-					m.relay.Close(name)
+			staleCheck := time.NewTicker(staleCheckInterval)
+			defer staleCheck.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					parser.Cancel()
+					if m.relay != nil {
+						m.relay.Close(name)
+					}
+					return
+				case <-m.relay.TokenChanged(name):
+					tokenFlip = true
+					parser.Cancel()
+					return
+				case <-parserCancelSig:
+					parser.Cancel()
+					return
+				case <-parserDone:
+					return
+				case <-staleCheck.C:
+					if m.relay == nil {
+						continue
+					}
+					last := m.relay.LastFragmentTime(name)
+					// Zero = no fragment ever posted (Ready wouldn't have
+					// fired and we wouldn't be here); treat as not-yet-stale.
+					if last.IsZero() {
+						continue
+					}
+					if silence := time.Since(last); silence > broadcastStaleAfter {
+						slog.Info("gametracker: broadcast stale, cancelling parser",
+							"server", name, "silent_for", silence.Round(time.Second))
+						parser.Cancel()
+						return
+					}
 				}
-			case <-m.relay.TokenChanged(name):
-				tokenFlip = true
-				parser.Cancel()
-			case <-parserCancelSig:
-				parser.Cancel()
-			case <-parserDone:
 			}
 		}()
 
@@ -1312,6 +1349,18 @@ func (m *Manager) setupAndTrack(ctx context.Context, name string, gamePort int, 
 		// the new token. Otherwise evict and wait for fresh signup.
 		if !tokenFlip && m.relay != nil {
 			m.relay.Close(name)
+		}
+		// If this wasn't a token flip the broadcast died. The CS2 process may
+		// have restarted (container crash + Docker restart policy, external
+		// `docker restart`, `quit` in the server console) — in which case
+		// tv_broadcast defaulted back to off on the new process and nothing
+		// will POST to the relay until we re-enable it. Re-running the RCON
+		// setup is idempotent if the server is still broadcasting; if it's
+		// mid-restart, sendSetupWithRetry backs off until RCON responds.
+		if !tokenFlip {
+			if !m.sendSetupWithRetry(ctx, name, addr, rconPassword, setupCmds) {
+				return
+			}
 		}
 		select {
 		case <-ctx.Done():

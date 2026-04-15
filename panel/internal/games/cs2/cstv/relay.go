@@ -35,6 +35,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -91,13 +92,25 @@ type Relay struct {
 	// retention: keep at most this many fragments per match in memory.
 	// Older fragments are evicted. 0 = unlimited.
 	maxFragments int
+	// publicDelay gates PublicHandler serving: fragments younger than this are
+	// hidden (served as 404). Keeps spectators behind live by this duration,
+	// preventing screen-peeking from the panel's copy-spectate-command button.
+	publicDelay time.Duration
+	// publicSyncBuffer is extra age PublicHandler/sync biases toward on the
+	// initial pick so the client's 5-fragment (~15s) lookahead prefetch lands
+	// entirely inside the gate. Without it, connect produces a 45-55s storm
+	// of 404 retries while the client's adaptive playback rate converges.
+	// Configurable via SetPublicSyncBuffer; defaults to 20s in SetPublicDelay.
+	publicSyncBuffer time.Duration
 }
 
-// NewRelay returns an empty Relay with default retention (0 = unlimited).
+// NewRelay returns an empty Relay with default retention (0 = unlimited)
+// and a 20s /sync prefetch buffer (see publicSyncBuffer).
 func NewRelay() *Relay {
 	return &Relay{
-		servers:      make(map[string]*server),
-		maxFragments: 0,
+		servers:          make(map[string]*server),
+		maxFragments:     0,
+		publicSyncBuffer: 20 * time.Second,
 	}
 }
 
@@ -106,6 +119,24 @@ func NewRelay() *Relay {
 func (r *Relay) SetMaxFragments(n int) {
 	r.mu.Lock()
 	r.maxFragments = n
+	r.mu.Unlock()
+}
+
+// SetPublicDelay sets the duration PublicHandler hides fresh fragments for.
+// 0 disables the gate (public and internal handlers become identical).
+// Must be called before traffic starts.
+func (r *Relay) SetPublicDelay(d time.Duration) {
+	r.mu.Lock()
+	r.publicDelay = d
+	r.mu.Unlock()
+}
+
+// SetPublicSyncBuffer overrides the default /sync age-bias (20s). Mainly
+// useful for tests that need a short buffer to keep wall-clock runtime small.
+// Must be called before traffic starts.
+func (r *Relay) SetPublicSyncBuffer(d time.Duration) {
+	r.mu.Lock()
+	r.publicSyncBuffer = d
 	r.mu.Unlock()
 }
 
@@ -128,6 +159,27 @@ func (r *Relay) TokenChanged(serverName string) <-chan struct{} {
 	ch := s.tokenChanged
 	s.mu.RUnlock()
 	return ch
+}
+
+// LastFragmentTime returns the timestamp of the most recently stored fragment
+// on the server's current match, or the zero time if the server has no
+// fragments yet. Used by the tracker's staleness watchdog to detect a dead
+// broadcast (e.g. the CS2 process restarted and tv_broadcast defaulted off)
+// so the parser can be cancelled and the RCON setup re-asserted.
+func (r *Relay) LastFragmentTime(serverName string) time.Time {
+	srv := r.lookupServer(serverName)
+	if srv == nil {
+		return time.Time{}
+	}
+	srv.mu.RLock()
+	m := srv.matches[srv.currentToken]
+	srv.mu.RUnlock()
+	if m == nil {
+		return time.Time{}
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.latestTimestampLocked()
 }
 
 // Close discards all fragments under the given server name so memory is
@@ -191,13 +243,40 @@ func (s *server) lookupMatch(token string) *match {
 	return s.matches[token]
 }
 
-// Handler returns an http.Handler that implements the relay protocol. Mount
-// it with a prefix-stripping wrapper at /cstv/ on the router.
-func (r *Relay) Handler() http.Handler {
-	return http.HandlerFunc(r.serveHTTP)
+// boundHandler is the concrete http.Handler returned by Handler and
+// PublicHandler. A non-zero delay hides fragments younger than delay — used on
+// the public-facing mount so CS2 spectators see the broadcast on a configured
+// tape-delay while the tracker's loopback mount (delay=0) stays live.
+// syncBuffer is extra /sync-only age bias so the client's lookahead prefetch
+// all clears the per-fragment gate; see Relay.publicSyncBuffer.
+type boundHandler struct {
+	r          *Relay
+	delay      time.Duration
+	syncBuffer time.Duration
 }
 
-func (r *Relay) serveHTTP(w http.ResponseWriter, req *http.Request) {
+// Handler returns the internal-facing http.Handler with no delay. Used for
+// the loopback mount the tracker's parser reads from.
+func (r *Relay) Handler() http.Handler {
+	return &boundHandler{r: r}
+}
+
+// PublicHandler returns an http.Handler that applies the Relay's configured
+// publicDelay to every GET. Fragments younger than the delay return 404 so
+// CS2 spectator clients self-pace to stay at least publicDelay behind live.
+func (r *Relay) PublicHandler() http.Handler {
+	r.mu.RLock()
+	d := r.publicDelay
+	b := r.publicSyncBuffer
+	r.mu.RUnlock()
+	return &boundHandler{r: r, delay: d, syncBuffer: b}
+}
+
+func (h *boundHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	h.r.serveHTTP(w, req, h.delay, h.syncBuffer)
+}
+
+func (r *Relay) serveHTTP(w http.ResponseWriter, req *http.Request, delay, syncBuffer time.Duration) {
 	// Paths arrive here as "/<server>/..." after prefix strip.
 	path := strings.TrimPrefix(req.URL.Path, "/")
 	parts := strings.Split(path, "/")
@@ -230,7 +309,7 @@ func (r *Relay) serveHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 		// /<server>/sync — bare discovery
 		if len(parts) == 1 && parts[0] == "sync" {
-			r.handleServerSync(w, req, serverName)
+			r.handleServerSync(w, req, serverName, delay+syncBuffer)
 			return
 		}
 		token := parts[0]
@@ -241,7 +320,7 @@ func (r *Relay) serveHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 		// /<server>/<token>/sync
 		if len(parts) == 1 && parts[0] == "sync" {
-			r.handleMatchSync(w, req, serverName, token)
+			r.handleMatchSync(w, req, serverName, token, delay+syncBuffer)
 			return
 		}
 		frag, err := strconv.Atoi(parts[0])
@@ -251,9 +330,9 @@ func (r *Relay) serveHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 		switch len(parts) {
 		case 1:
-			r.handleFragmentMetadata(w, serverName, token, frag)
+			r.handleFragmentMetadata(w, serverName, token, frag, delay)
 		case 2:
-			r.handleField(w, serverName, token, frag, parts[1])
+			r.handleField(w, serverName, token, frag, parts[1], delay)
 		default:
 			http.NotFound(w, req)
 		}
@@ -275,10 +354,21 @@ func (r *Relay) handlePost(w http.ResponseWriter, req *http.Request, serverName,
 	m := srv.getOrCreateMatch(token)
 	q := req.URL.Query()
 
+	// Log /start POSTs once per signup fragment so we can see the actual
+	// query-param set CS2 ships (tickrate param name has drifted between
+	// builds; this is how we discover it without wire-tapping).
+	if field == "start" {
+		slog.Info("cstv start POST", "server", serverName, "token", token, "frag", frag, "query", req.URL.RawQuery)
+	}
+
 	m.mu.Lock()
+	// CS2 ships tps as a float string (e.g. "64.0"), not an int, so Atoi
+	// would silently reject it and leave m.tps at zero — which used to ship
+	// "tps": 0 down to the client and crash engine2.dll with integer
+	// divide-by-zero on stream start.
 	if v := q.Get("tps"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			m.tps = n
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			m.tps = int(f)
 		}
 	}
 	if v := q.Get("keyframe_interval"); v != "" {
@@ -394,7 +484,9 @@ type syncResponse struct {
 // handleServerSync answers GET /<server>/sync: the parser is bootstrapping
 // and doesn't yet know the game-token. Find the current match under this
 // server and return a sync response whose token_redirect points at it.
-func (r *Relay) handleServerSync(w http.ResponseWriter, req *http.Request, serverName string) {
+// minAge is the public-delay plus the sync-buffer; on the internal mount it's
+// zero and pickReadyLocked falls back to its live-behind-by-3-fragments logic.
+func (r *Relay) handleServerSync(w http.ResponseWriter, req *http.Request, serverName string, minAge time.Duration) {
 	srv := r.lookupServer(serverName)
 	if srv == nil {
 		http.Error(w, "server not found", http.StatusNotFound)
@@ -408,12 +500,12 @@ func (r *Relay) handleServerSync(w http.ResponseWriter, req *http.Request, serve
 		http.Error(w, "no match yet", http.StatusNotFound)
 		return
 	}
-	r.writeSyncResponse(w, req, m, token)
+	r.writeSyncResponse(w, req, m, token, minAge)
 }
 
 // handleMatchSync answers GET /<server>/<token>/sync: the parser has already
 // been redirected to the concrete match; no token_redirect needed.
-func (r *Relay) handleMatchSync(w http.ResponseWriter, req *http.Request, serverName, token string) {
+func (r *Relay) handleMatchSync(w http.ResponseWriter, req *http.Request, serverName, token string, minAge time.Duration) {
 	srv := r.lookupServer(serverName)
 	if srv == nil {
 		http.Error(w, "server not found", http.StatusNotFound)
@@ -424,15 +516,15 @@ func (r *Relay) handleMatchSync(w http.ResponseWriter, req *http.Request, server
 		http.Error(w, "match not found", http.StatusNotFound)
 		return
 	}
-	r.writeSyncResponse(w, req, m, "")
+	r.writeSyncResponse(w, req, m, "", minAge)
 }
 
-func (r *Relay) writeSyncResponse(w http.ResponseWriter, req *http.Request, m *match, tokenRedirect string) {
+func (r *Relay) writeSyncResponse(w http.ResponseWriter, req *http.Request, m *match, tokenRedirect string, minAge time.Duration) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	start, _ := strconv.Atoi(req.URL.Query().Get("fragment"))
-	idx, f := m.pickReadyLocked(start)
+	idx, f := m.pickReadyLocked(start, minAge)
 	if f == nil {
 		http.Error(w, "no fragment ready", http.StatusNotFound)
 		return
@@ -446,7 +538,7 @@ func (r *Relay) writeSyncResponse(w http.ResponseWriter, req *http.Request, m *m
 		RcvAge:           now.Sub(m.latestTimestampLocked()).Seconds(),
 		Fragment:         idx,
 		SignupFragment:   m.signupFragment,
-		Tps:              m.tps,
+		Tps:              m.tpsOrDefault(),
 		KeyframeInterval: m.keyframeInterval,
 		Map:              m.mapName,
 		Protocol:         m.protocolOrDefault(),
@@ -464,7 +556,43 @@ func (m *match) protocolOrDefault() int {
 	return 5 // Source 2 broadcast protocol
 }
 
-func (m *match) pickReadyLocked(startFrom int) (int, *fragment) {
+// tpsOrDefault returns the recorded tickrate, or CS2's default of 64 when the
+// game server's POSTs did not carry a tps query param. The client divides by
+// this value in its stream-start delay math; emitting 0 crashes engine2.dll
+// with an integer divide-by-zero.
+func (m *match) tpsOrDefault() int {
+	if m.tps != 0 {
+		return m.tps
+	}
+	return 64
+}
+
+func (m *match) pickReadyLocked(startFrom int, minAge time.Duration) (int, *fragment) {
+	// With minAge set, the caller is the public handler: pick the NEWEST
+	// fragment whose age >= minAge. minAge already includes the sync-buffer,
+	// so the client's 5-fragment (~15s) lookahead prefetch all lands inside
+	// the per-fragment delay gate — avoiding the 404 storm while the
+	// adaptive playback rate converges. Ignores startFrom since the client
+	// reconnect-with-?fragment=N semantics make no sense once the gate is
+	// active.
+	if minAge > 0 {
+		cutoff := time.Now().Add(-minAge)
+		for i := m.maxFragment; i >= m.signupFragment && i >= 0; i-- {
+			f, ok := m.fragments[i]
+			if !ok {
+				continue
+			}
+			if f.fields["full"] == nil || f.fields["delta"] == nil || f.tick == 0 || f.endtick == 0 {
+				continue
+			}
+			if f.timestamp.After(cutoff) {
+				continue // too fresh; keep looking further back
+			}
+			return i, f
+		}
+		return 0, nil
+	}
+
 	if startFrom == 0 {
 		startFrom = m.maxFragment - 3
 		if startFrom < m.signupFragment {
@@ -506,7 +634,7 @@ func (m *match) latestTimestampLocked() time.Time {
 	return latest
 }
 
-func (r *Relay) handleField(w http.ResponseWriter, serverName, token string, frag int, field string) {
+func (r *Relay) handleField(w http.ResponseWriter, serverName, token string, frag int, field string, delay time.Duration) {
 	srv := r.lookupServer(serverName)
 	if srv == nil {
 		http.Error(w, "server not found", http.StatusNotFound)
@@ -530,6 +658,12 @@ func (r *Relay) handleField(w http.ResponseWriter, serverName, token string, fra
 		http.Error(w, fmt.Sprintf("fragment %d not found", frag), http.StatusNotFound)
 		return
 	}
+	// Public (delayed) handler: refuse fragments younger than the delay so
+	// spectators self-pace behind live rather than skipping ahead.
+	if delay > 0 && f.timestamp.After(time.Now().Add(-delay)) {
+		http.Error(w, "fragment not available yet", http.StatusNotFound)
+		return
+	}
 	blob, ok := f.fields[field]
 	if !ok || blob == nil {
 		http.Error(w, "field not found", http.StatusNotFound)
@@ -540,7 +674,7 @@ func (r *Relay) handleField(w http.ResponseWriter, serverName, token string, fra
 	_, _ = w.Write(blob)
 }
 
-func (r *Relay) handleFragmentMetadata(w http.ResponseWriter, serverName, token string, frag int) {
+func (r *Relay) handleFragmentMetadata(w http.ResponseWriter, serverName, token string, frag int, delay time.Duration) {
 	srv := r.lookupServer(serverName)
 	if srv == nil {
 		http.Error(w, "server not found", http.StatusNotFound)
@@ -556,6 +690,10 @@ func (r *Relay) handleFragmentMetadata(w http.ResponseWriter, serverName, token 
 	f, ok := m.fragments[frag]
 	if !ok {
 		http.Error(w, "fragment not found", http.StatusNotFound)
+		return
+	}
+	if delay > 0 && f.timestamp.After(time.Now().Add(-delay)) {
+		http.Error(w, "fragment not available yet", http.StatusNotFound)
 		return
 	}
 	meta := map[string]any{
