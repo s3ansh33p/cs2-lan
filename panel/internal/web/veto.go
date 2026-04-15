@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"html"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -232,14 +233,18 @@ func (h *Handler) buildVetoState(matchID int64) (*vetoStateJSON, error) {
 		}
 	}
 
-	// Build veto steps JSON
+	// Build veto steps JSON. TeamName is admin-controlled input (run through
+	// sanitize() at set-time, but that's a regex tag-stripper — brittle);
+	// html-escape here so the admin UI's innerHTML render is safe regardless
+	// of what the form input contained. MapName comes from game.MapPools(),
+	// which is a hardcoded list, so no escape needed.
 	var steps []vetoStepJSON
 	for _, v := range vetoes {
 		steps = append(steps, vetoStepJSON{
 			Step:     v.Step,
 			Action:   v.Action,
 			TeamID:   v.TeamID,
-			TeamName: v.TeamName,
+			TeamName: html.EscapeString(v.TeamName),
 			MapName:  v.MapName,
 		})
 	}
@@ -262,9 +267,9 @@ func (h *Handler) buildVetoState(matchID int64) (*vetoStateJSON, error) {
 		state.NextTeamID = teamID
 		if teamID != nil {
 			if *teamID == derefInt64(match.Team1ID) {
-				state.NextTeamName = match.Team1Name
+				state.NextTeamName = html.EscapeString(match.Team1Name)
 			} else if *teamID == derefInt64(match.Team2ID) {
-				state.NextTeamName = match.Team2Name
+				state.NextTeamName = html.EscapeString(match.Team2Name)
 			}
 		}
 	}

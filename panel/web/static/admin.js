@@ -1262,6 +1262,11 @@ function rconQuick(cmds) {
             body: 'command=' + encodeURIComponent(cmd)
         }).then(function(r) { if (!r.ok) throw new Error(r.status); return r.text(); }).then(function(html) {
             if (output) {
+                // deepcode ignore DOMXSS: html is rendered server-side via
+                // Go html/template (partials/rcon_output.html) which
+                // auto-escapes {{.Command}} and {{.Response}}. RCON output
+                // may contain attacker-controlled player names from CS2
+                // (e.g. `status` output), but the template boundary escapes.
                 output.insertAdjacentHTML('beforeend', html);
                 output.scrollTop = output.scrollHeight;
             }
@@ -1628,6 +1633,11 @@ function toggleUnmatched(matchId, gameId, btn) {
                 html += '</select>';
                 html += '</div>';
             }
+            // deepcode ignore DOMXSS: data.unmatched[].originalName and
+            // data.roster[].name are html.EscapeString'd server-side in
+            // AdminGameStatsAdmin (admin_tournament.go) before JSON emission;
+            // kills/deaths/assists are numbers; matchId/gameId are ints from
+            // server-issued URLs. Policy: sanitize at server boundary.
             el.innerHTML = html;
         })
         .catch(function() {
@@ -2098,6 +2108,10 @@ function renderVetoPanel(matchId, state) {
     html += '</div>';
 
     html += '</div>';
+    // deepcode ignore DOMXSS: vetoStateJSON.teamName / nextTeamName are
+    // html.EscapeString'd server-side in buildVetoState (veto.go); mapName
+    // comes from the hardcoded game.MapPools() list; matchId is a server-
+    // issued int. Policy: sanitize at server boundary.
     panel.innerHTML = html;
 }
 

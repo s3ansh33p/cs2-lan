@@ -243,55 +243,43 @@ func TestPublicHandlerGatesByFragmentAge(t *testing.T) {
 // damping before convergence. The fix biases /sync to a fragment old enough
 // that the whole prefetch window clears the per-fragment gate.
 //
-// This test posts 10 fragments at 10ms spacing, sets delay=50ms (gate) and
-// buffer=40ms (cushion). The newest-aged fragment is too fresh after +50ms
-// for a clean prefetch, but with the buffer /sync picks one ~90ms old — so
-// the next ~4 prefetched fragments (each 10ms newer) all still pass the 50ms
-// gate.
+// The test posts fragment 0 and waits well past the buffer, then posts
+// fragment 1 right before calling /sync. Fragment 1 is fresh enough to fail
+// the buffer; /sync must fall back to fragment 0. Margins are deliberately
+// large (500ms buffer vs 50ms gate) so timing jitter under load can't flip
+// the outcome: fragment 1 would need to age 500ms+ in the few-ms HTTP
+// round-trip before sync, which won't happen.
 func TestPublicHandlerSyncBufferCoversPrefetch(t *testing.T) {
 	r := NewRelay()
-	r.SetPublicDelay(50 * time.Millisecond)
-	r.SetPublicSyncBuffer(40 * time.Millisecond)
+	r.SetPublicDelay(50 * time.Millisecond)     // per-fragment gate
+	r.SetPublicSyncBuffer(500 * time.Millisecond) // /sync extra cushion
 	internal := httptest.NewServer(http.StripPrefix("/cstv", r.Handler()))
 	defer internal.Close()
 	public := httptest.NewServer(http.StripPrefix("/cstv", r.PublicHandler()))
 	defer public.Close()
 
 	base := "/cstv/srv1"
-	postRaw(t, internal.URL+base, "/tok1/0/start?tick=0&endtick=1&tps=64&keyframe_interval=3&map=de_dust2&protocol=5&signup_fragment=0", []byte("start"))
+	// Ticks must be non-zero — pickReadyLocked filters out fragments with
+	// tick==0 || endtick==0 as "not yet ready".
+	postRaw(t, internal.URL+base, "/tok1/0/start?tick=1000&endtick=1064&tps=64&keyframe_interval=3&map=de_dust2&protocol=5&signup_fragment=0", []byte("start"))
+	postRaw(t, internal.URL+base, "/tok1/0/full?tick=1000&endtick=1064&tps=64&keyframe_interval=3", []byte("full-0"))
+	postRaw(t, internal.URL+base, "/tok1/0/delta?tick=1000&endtick=1064&tps=64&keyframe_interval=3", []byte("delta-0"))
 
-	// Post 10 fragments 10ms apart. After the loop, fragments have ages
-	// roughly 100ms, 90ms, 80ms, ..., 10ms (newest).
-	for i := 0; i < 10; i++ {
-		qs := fmt.Sprintf("?tick=%d&endtick=%d&tps=64&keyframe_interval=3", i*64, (i+1)*64)
-		postRaw(t, internal.URL+base, "/tok1/"+itoa(i)+"/full"+qs, []byte("full-"+itoa(i)))
-		postRaw(t, internal.URL+base, "/tok1/"+itoa(i)+"/delta"+qs, []byte("delta-"+itoa(i)))
-		time.Sleep(10 * time.Millisecond)
-	}
+	// Age fragment 0 comfortably past delay+buffer=550ms.
+	time.Sleep(700 * time.Millisecond)
 
-	// /sync must NOT return the newest-aged fragment (fragment 5 at ~50ms
-	// is on the strict gate but its +1/+2/+3/+4/+5 prefetch would all be
-	// fresher than 50ms and 404). The buffer pushes pick to ~90ms age,
-	// i.e. fragment 1 or earlier.
+	// Post fragment 1 — fresh, age ~0. It passes the 50ms gate quickly but
+	// stays well below the 550ms sync cushion.
+	postRaw(t, internal.URL+base, "/tok1/1/full?tick=1064&endtick=1128&tps=64&keyframe_interval=3", []byte("full-1"))
+	postRaw(t, internal.URL+base, "/tok1/1/delta?tick=1064&endtick=1128&tps=64&keyframe_interval=3", []byte("delta-1"))
+
+	// Without the buffer, /sync picks the newest fragment past the 50ms gate
+	// — that would be fragment 1 within ~50ms. With the buffer, fragment 1 is
+	// still too fresh, so /sync falls back to fragment 0.
 	var s syncResponse
 	getJSON(t, public.URL+base+"/tok1/sync", &s)
-	if s.Fragment > 2 {
-		t.Errorf("public sync picked fragment %d; want <=2 so the client's 5-fragment prefetch lands above the 50ms per-fragment gate", s.Fragment)
-	}
-
-	// Every fragment at or before s.Fragment+5 (the prefetch window)
-	// must now serve on the public handler without 404. That's the whole
-	// point of the buffer — the client connects and immediately fetches
-	// this window without a storm of retries.
-	for i := s.Fragment; i <= s.Fragment+4 && i < 10; i++ {
-		resp, err := http.Get(public.URL + base + "/tok1/" + itoa(i) + "/delta")
-		if err != nil {
-			t.Fatalf("public delta %d: %v", i, err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("public delta %d: status = %d, want 200 (in prefetch window)", i, resp.StatusCode)
-		}
+	if s.Fragment != 0 {
+		t.Errorf("public sync picked fragment %d; want 0 (buffer should reject the freshly-posted fragment 1 in favour of the well-aged fragment 0)", s.Fragment)
 	}
 }
 

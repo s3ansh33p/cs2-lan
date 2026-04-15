@@ -51,11 +51,11 @@ function renderPublicMatch(m) {
                 var spectateCmd = buildSpectateCmd(game);
                 var btnMargin = ' ml-auto';
                 if (connectCmd) {
-                    html += '<button onclick="copyConnect(this, \'' + attrEscape(connectCmd) + '\')" class="' + btnMargin + ' bg-slate-600 hover:bg-slate-500 text-white rounded px-2 py-0.5 text-xs">Connect</button>';
+                    html += '<button onclick="copyConnect(this, \'' + connectCmd.replace(/'/g, "\\'") + '\')" class="' + btnMargin + ' bg-slate-600 hover:bg-slate-500 text-white rounded px-2 py-0.5 text-xs">Connect</button>';
                     btnMargin = '';
                 }
                 if (spectateCmd) {
-                    html += '<button onclick="copyConnect(this, \'' + attrEscape(spectateCmd) + '\')" class="' + btnMargin + ' bg-slate-600 hover:bg-slate-500 text-white rounded px-2 py-0.5 text-xs" title="Copy playcast command — paste into CS2 console to spectate live">Spectate</button>';
+                    html += '<button onclick="copyConnect(this, \'' + spectateCmd.replace(/'/g, "\\'") + '\')" class="' + btnMargin + ' bg-slate-600 hover:bg-slate-500 text-white rounded px-2 py-0.5 text-xs" title="Copy playcast command — paste into CS2 console to spectate live">Spectate</button>';
                 }
             }
             if (game.status === 'completed' && game.id) {
@@ -105,6 +105,9 @@ function showMatchStats(gameId, title) {
     fetch('/game/' + gameId + '/stats')
         .then(function(r) { if (!r.ok) throw new Error(r.status); return r.text(); })
         .then(function(html) {
+            // deepcode ignore DOMXSS: server-rendered HTML from PublicGameStats
+            // (bracket.go:617). All user-controlled strings go through
+            // html.EscapeString before fmt.Fprintf (bracket.go:678,689).
             contentEl.innerHTML = html;
         })
         .catch(function() {
@@ -115,13 +118,6 @@ function showMatchStats(gameId, title) {
 function closeMatchStats() {
     var section = document.getElementById('match-stats-section');
     if (section) section.classList.add('hidden');
-}
-
-// Escape a string for safe embedding inside a single-quoted JS string that
-// itself sits inside a double-quoted HTML attribute value (e.g. onclick=""):
-// single quotes break the JS literal, double quotes break the attribute.
-function attrEscape(s) {
-    return s.replace(/'/g, "\\'").replace(/"/g, '&quot;');
 }
 
 // Build connect command string for a live game (CS2 only)
@@ -138,12 +134,13 @@ function buildConnectCmd(game) {
 
 // Build playcast spectate command for a live CS2 game. Points at the panel's
 // public CSTV+ relay mount so any LAN viewer can tune into the broadcast.
+// URL is single-token so no quotes are needed; keeping it unquoted means the
+// command has no " to break out of the onclick attribute context.
 function buildSpectateCmd(game) {
     var gameType = (typeof _tournamentGameType !== 'undefined') ? _tournamentGameType : 'cs2';
     if (gameType && gameType !== 'cs2') return '';
     if (!game.server) return '';
-    var url = window.location.origin + '/cstv/' + game.server;
-    return 'playcast "' + url + '"';
+    return 'playcast ' + window.location.origin + '/cstv/' + game.server;
 }
 
 // Copy connect command and show "Copied!" feedback

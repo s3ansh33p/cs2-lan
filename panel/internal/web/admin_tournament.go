@@ -1060,10 +1060,14 @@ func (h *Handler) AdminGameStatsAdmin(w http.ResponseWriter, r *http.Request) {
 		Roster    []rosterJSON    `json:"roster"`
 	}
 
+	// CS2 player names (OriginalName) and Steam names (roster.Name) are
+	// attacker-controllable; html-escape before JSON emission so the admin
+	// client's innerHTML render is safe without client-side escaping. Matches
+	// the convention used in ws.go / announce.go / bracket.go.
 	resp := response{}
 	for _, s := range unmatched {
 		resp.Unmatched = append(resp.Unmatched, unmatchedJSON{
-			OriginalName: s.OriginalName,
+			OriginalName: html.EscapeString(s.OriginalName),
 			TeamID:       s.TeamID,
 			Kills:        s.Kills,
 			Deaths:       s.Deaths,
@@ -1075,7 +1079,7 @@ func (h *Handler) AdminGameStatsAdmin(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, rm := range roster {
 		if !matchedNames[strings.ToLower(rm.Name)] {
-			resp.Roster = append(resp.Roster, rosterJSON{Name: rm.Name, TeamID: rm.TeamID})
+			resp.Roster = append(resp.Roster, rosterJSON{Name: html.EscapeString(rm.Name), TeamID: rm.TeamID})
 		}
 	}
 
